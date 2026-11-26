@@ -674,3 +674,28 @@ class TestDynamicThresholdsPerformance:
         avg_us = (elapsed / 5000) * 1_000_000
         print(f"\ncheck_emm_conditions(动态) 平均耗时: {avg_us:.2f} us/次 (5000次总计 {elapsed*1000:.2f}ms)")
         assert avg_us < 500, f"check_emm_conditions 过慢: {avg_us:.2f} us/次"
+
+@pytest.mark.asyncio
+async def test_complete_scan_calculates_dynamic_thresholds_before_publishing():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from strategies.hrs.candidate_pool import CandidatePool
+
+    market = MagicMock()
+    market.get_funding_rate = AsyncMock(return_value=0.0001)
+    market.get_oi_usd = AsyncMock(return_value=1_000_000)
+    market.get_market_cap_provenance = AsyncMock(
+        return_value=SimpleNamespace(source="coingecko", value=10_000_000),
+    )
+    market.get_klines_1h = AsyncMock(return_value=[])
+    pool = CandidatePool(_make_config(), market)
+    tickers = {f"T{i}USDT": {"lastPrice": "10", "quoteVolume": "100"} for i in range(10)}
+    computed = await pool._compute_dynamic_thresholds(tickers)
+    assert computed.is_valid()
+    assert computed.oi_market_cap_emm == pytest.approx(0.1)
+    assert computed.funding_rate_emm_short == pytest.approx(10.95)
+
+    market.get_market_cap_provenance.return_value = SimpleNamespace(source="oi_proxy", value=10_000_000)
+    missing_cap = await pool._compute_dynamic_thresholds(tickers)
+    assert not missing_cap.is_valid()
+    assert missing_cap.computed_at is None

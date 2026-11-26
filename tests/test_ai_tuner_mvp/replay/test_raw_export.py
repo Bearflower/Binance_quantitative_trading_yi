@@ -424,3 +424,17 @@ def test_cli_classifies_connection_error_without_leaking_dsn(monkeypatch, capsys
     assert code == 2
     assert json.loads(printed)["gaps"] == ["export_failed:connection"]
     assert "very-secret" not in printed and "password=" not in printed
+
+
+@pytest.mark.asyncio
+async def test_hrs_export_includes_recorded_scan_threshold_mode_when_available(tmp_path):
+    db = fake_db()
+    db.columns[("public", "ai_tuner_universe_scan_runs")]["dynamic_thresholds"] = "jsonb"
+    evidence = {"kind": "frozen_dynamic_thresholds_v1", "mode": "fixed"}
+    db.rows["public.ai_tuner_universe_scan_runs"][0]["dynamic_thresholds"] = json.dumps(evidence)
+    report = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="hrs", kline_pairs=[("BTCUSDT", "1h")],
+                                       timezone_bindings=TZ)
+    assert report["decision"] == "BLOCKED_DATA"
+    row = json.loads((tmp_path / "raw" / "public__ai_tuner_universe_scan_runs.jsonl").read_text())
+    assert row["dynamic_thresholds"] == evidence

@@ -371,3 +371,30 @@ async def test_weekly_claim_blocks_duplicate_and_interrupted_publication(reposit
         await memory.mark_published(pending, "V20261113", "review")
         await memory.acknowledge_version("grid", "V20261113")
         assert await conn.fetchval("SELECT is_applied FROM weekly_claim_test.strategy_memory WHERE id=$1", pending)
+
+
+async def test_dynamic_threshold_migration_preserves_old_scans_and_freezes_new_facts(repository_and_pool):
+    import json
+    from pathlib import Path
+
+    repository, pool = repository_and_pool
+    await repository.store_universe("hrs", AS_OF, [], [], "legacy", "a" * 64)
+    migration = (Path(__file__).resolve().parents[2] / "database/postgres/migrations"
+                 / "2026-11-18-hrs-scan-replay-thresholds.sql").read_text()
+    async with pool.acquire() as con:
+        await con.execute(migration)
+        await con.execute(migration)
+    evidence = {"kind": "frozen_dynamic_thresholds_v1", "mode": "fixed"}
+    await repository.store_universe(
+        "hrs", AS_OF + timedelta(hours=1), ["BTCUSDT"], [], "fresh", "b" * 64,
+        dynamic_thresholds=evidence,
+    )
+    await repository.store_universe(
+        "hrs", AS_OF + timedelta(hours=1), ["BTCUSDT"], [], "fresh", "b" * 64,
+        dynamic_thresholds={"kind": "later-retry", "mode": "unknown"},
+    )
+    rows = await pool.fetch(
+        "SELECT source_run_id,dynamic_thresholds FROM public.ai_tuner_universe_scan_runs ORDER BY observed_at"
+    )
+    assert rows[0]["source_run_id"] == "legacy" and rows[0]["dynamic_thresholds"] is None
+    assert json.loads(rows[1]["dynamic_thresholds"]) == evidence

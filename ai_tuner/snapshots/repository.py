@@ -133,18 +133,25 @@ class SnapshotRepository:
         long_symbols,
         source_run_id: str,
         config_hash: str,
+        *,
+        dynamic_thresholds=None,
     ) -> None:
         short_set = {str(symbol).upper() for symbol in short_symbols}
         long_set = {str(symbol).upper() for symbol in long_symbols}
         symbols = sorted(short_set | long_set)
+        values = (strategy_id, observed_at, source_run_id, config_hash, len(symbols))
+        column, parameter = "", ""
+        if dynamic_thresholds is not None:
+            column, parameter = ", dynamic_thresholds", ", $6::jsonb"
+            values += (json.dumps(dynamic_thresholds, sort_keys=True, allow_nan=False),)
         queries = [(
-            """
+            f"""
             INSERT INTO public.ai_tuner_universe_scan_runs
-                (strategy_id, observed_at, source_run_id, config_hash, symbol_count)
-            VALUES ($1, $2, $3, $4, $5)
+                (strategy_id, observed_at, source_run_id, config_hash, symbol_count{column})
+            VALUES ($1, $2, $3, $4, $5{parameter})
             ON CONFLICT (strategy_id, observed_at) DO NOTHING
             """,
-            (strategy_id, observed_at, source_run_id, config_hash, len(symbols)),
+            values,
         )]
         memberships = []
         for symbol in symbols:

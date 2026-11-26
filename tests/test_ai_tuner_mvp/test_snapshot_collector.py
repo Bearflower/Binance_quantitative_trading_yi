@@ -142,6 +142,7 @@ async def test_universe_snapshot_failure_is_side_effect_only():
     strategy.candidate_pool = MagicMock()
     strategy.candidate_pool.get_short_candidates.return_value = {"BTCUSDT"}
     strategy.candidate_pool.get_long_candidates.return_value = {"ETHUSDT"}
+    strategy.candidate_pool.get_dynamic_thresholds.return_value = None
     strategy.config = {"strategy": {"name": "hrs"}}
 
     await strategy._persist_universe_snapshot(AS_OF)

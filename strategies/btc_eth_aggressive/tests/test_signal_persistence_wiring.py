@@ -115,14 +115,20 @@ def patched_deps(monkeypatch):
     config_holder: Dict[str, Any] = {}
     strategy_holder: Dict[str, Any] = {}
 
-    monkeypatch.setattr(main_mod, "load_strategy_config", lambda _dir: config_holder["config"])
+    monkeypatch.setattr(main_mod, "load_strategy_config_with_metadata", lambda _dir: (
+        config_holder["config"], {
+            "config_hash": "a" * 64, "applied_overrides_version": None,
+            "requested_overrides_version": "V20260910",
+        },
+    ))
+    monkeypatch.setattr(main_mod, "record_loaded_version", lambda *_args: None)
 
     fake_db_instance = MagicMock(name="db_instance")
     fake_db_instance.connect = AsyncMock()
     fake_db_cls = MagicMock(name="DatabaseManager", return_value=fake_db_instance)
     monkeypatch.setattr(main_mod, "DatabaseManager", fake_db_cls)
 
-    fake_trade_logger = MagicMock(name="trade_logger")
+    fake_trade_logger = MagicMock(name="trade_logger", account_id="default")
     fake_trade_logger.ensure_table_exists = AsyncMock()
     monkeypatch.setattr(main_mod, "TradeLogger", MagicMock(return_value=fake_trade_logger))
 
@@ -173,9 +179,6 @@ def _setup_run_globals(monkeypatch, strategy: FakeStrategy, notification: FakeNo
         main_mod, "load_ownership_config",
         lambda cfg: {"my_record_name": "test"},
     )
-    monkeypatch.setattr(
-        main_mod, "filter_owned_positions", AsyncMock(return_value=({}, {})),
-    )
     monkeypatch.setattr(main_mod, "save_strategy_state", AsyncMock())
     monkeypatch.setattr(main_mod, "sync_open_positions", AsyncMock())
 
@@ -197,6 +200,13 @@ def test_initialize_calls_ensure_signal_table_exists(patched_deps, clean_env):
     call_args = patched_deps.ensure_signal.call_args.args
     assert call_args[0] is patched_deps.db_instance
     assert call_args[1] == "btc_eth_aggressive"
+    assert main_mod.strategy.loaded_config_identity == {
+        "account_id": "default",
+        "config_hash": "a" * 64,
+        "applied_overrides_version": None,
+        "requested_overrides_version": "V20260910",
+        "effective_version": "base",
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -207,6 +217,10 @@ def test_initialize_calls_ensure_signal_table_exists(patched_deps, clean_env):
 def test_run_strategy_calls_persist_signal_after_execute(monkeypatch, patched_deps):
     """persist_signal 在 execute_signal 之后被调用；schema="btc_eth_aggressive"。"""
     strategy = FakeStrategy(execute_signal_return=True)
+    strategy.loaded_config_identity = {
+        "config_hash": "a" * 64,
+        "applied_overrides_version": None,
+    }
     notification = FakeNotification()
     _setup_run_globals(monkeypatch, strategy, notification)
 
@@ -222,6 +236,7 @@ def test_run_strategy_calls_persist_signal_after_execute(monkeypatch, patched_de
     signal = call_kwargs["signal"]
     assert signal["trade_success"] is True
     assert signal["symbol"] == "BTCUSDT"
+    assert signal["decision_config_identity"] == strategy.loaded_config_identity
 
 
 def test_run_strategy_persist_signal_cancelled_on_failure(monkeypatch, patched_deps):

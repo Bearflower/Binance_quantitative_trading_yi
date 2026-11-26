@@ -17,12 +17,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..broker import PortfolioView
-from ..models import Bar, DataBlocked, QualificationBlocked, parse_utc
+from ..models import (
+    Bar, DataBlocked, ExternalSnapshot, FutureDataAccess, QualificationBlocked, parse_utc,
+)
 from .base import PreparedContext
 
 
@@ -124,6 +126,86 @@ class HrsAdapter:
         """保存最新外部时点快照引用（HRS 依赖外部数据），不做任何补值。"""
         self._latest_snapshot = snap
 
+    @staticmethod
+    def score_frozen_standard(
+        config: Mapping[str, Any], *, as_of: datetime, direction: str,
+        snapshot: ExternalSnapshot, bars_1h: Tuple[Bar, ...], bars_4h: Tuple[Bar, ...],
+        dynamic_thresholds: Any = None,
+    ) -> Tuple[Any, bool]:
+        """Reuse the live standard score for offline parity, before entry orchestration."""
+        from strategies.hrs.pattern import PatternRecognizer
+        from strategies.hrs.scoring_engine import ScoringEngine
+
+        cutoff = parse_utc(as_of)
+        if direction not in ("long", "short"):
+            raise ValueError("HRS direction must be long or short")
+        if snapshot.available_at > cutoff:
+            raise FutureDataAccess("hrs.score_frozen_standard", cutoff, "available_at", snapshot.available_at)
+        ratio, funding = snapshot.oi_market_cap_ratio, snapshot.funding_rate
+        cap = snapshot.market_cap_usd
+        if (snapshot.strategy_id != "hrs" or not snapshot.is_complete
+                or snapshot.market_cap_source not in ("coingecko", "cache_hit", "coingecko_cache")
+                or cap is None or not cap.is_finite() or cap <= 0
+                or ratio is None or not ratio.is_finite() or ratio <= 0
+                or funding is None or not funding.is_finite()):
+            raise DataBlocked(["hrs_standard_score_snapshot_incomplete"])
+
+        def score_bars(bars: Tuple[Bar, ...], interval: str) -> List[dict]:
+            if not bars or any(bar.symbol != snapshot.symbol or bar.interval != interval for bar in bars):
+                raise DataBlocked([f"hrs_standard_score_bars_missing:{interval}"])
+            for bar in bars:
+                if bar.close_time > cutoff:
+                    raise FutureDataAccess("hrs.score_frozen_standard", cutoff, "close_time", bar.close_time)
+            if any(
+                current.open_time - previous.close_time not in (timedelta(0), timedelta(milliseconds=1))
+                for previous, current in zip(bars, bars[1:])
+            ):
+                raise DataBlocked([f"hrs_standard_score_discontinuous_bars:{interval}"])
+            return [
+                {key: str(getattr(bar, key)) for key in ("open", "high", "low", "close", "volume")}
+                for bar in bars
+            ]
+
+        recognizer = PatternRecognizer(dict(config))
+        hourly = score_bars(bars_1h, "1h")
+        trend = score_bars(bars_4h, "4h")
+        if len(hourly) < recognizer.window_size:
+            raise DataBlocked(["hrs_standard_score_insufficient_pattern_bars"])
+        detect = recognizer.detect_long_patterns if direction == "long" else recognizer.detect_short_patterns
+        engine = ScoringEngine(dict(config))
+        if dynamic_thresholds is not None:
+            engine.set_dynamic_thresholds(dynamic_thresholds)
+        result = engine.score(
+            symbol=snapshot.symbol, direction=direction, oi_market_cap_ratio=float(ratio),
+            patterns=detect(hourly), funding_rate=float(funding), has_market_cap=True,
+            klines_4h=trend,
+        )
+        return result, engine.should_entry(result)
+
+    @classmethod
+    def score_frozen_candidate(
+        cls, config: Mapping[str, Any], *, as_of: datetime, snapshot: ExternalSnapshot,
+        scan: Mapping[str, Any], memberships: Sequence[Mapping[str, Any]],
+        bars_1h: Tuple[Bar, ...], bars_4h: Tuple[Bar, ...],
+    ) -> Dict[str, Tuple[Any, bool]]:
+        """Score standard paths for the recorded sides in one frozen, complete scan."""
+        cutoff = parse_utc(as_of)
+        if snapshot.available_at > cutoff:
+            raise FutureDataAccess("hrs.score_frozen_candidate", cutoff, "available_at", snapshot.available_at)
+        if snapshot.strategy_id != cls.strategy_id:
+            raise DataBlocked(["hrs_candidate_snapshot_strategy_mismatch"])
+        sides = _scan_memberships(scan, memberships, cutoff).get(snapshot.symbol, ())
+        if not sides:
+            return {}
+        thresholds = _restore_dynamic_thresholds(config, scan, cutoff)
+        return {
+            direction: cls.score_frozen_standard(
+                config, as_of=as_of, direction=direction, snapshot=snapshot,
+                bars_1h=bars_1h, bars_4h=bars_4h, dynamic_thresholds=thresholds,
+            )
+            for direction in sides
+        }
+
     def intents(self, ctx: PreparedContext) -> Tuple[Any, ...]:
         """产出意图：决策尚未接线，**无条件**抛 ``QualificationBlocked``。
 
@@ -140,6 +222,88 @@ class HrsAdapter:
         K 线就抛 ``QualificationBlocked``）。
         """
         return None
+
+
+_SIDES_BY_MEMBERSHIP = {"long": ("long",), "short": ("short",), "both": ("short", "long")}
+
+
+def _scan_timestamp(row: Mapping[str, Any], field: str, cutoff: datetime) -> datetime:
+    raw = row.get(field)
+    try:
+        time = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if time.utcoffset() is None:
+            raise ValueError("timezone required")
+    except (TypeError, ValueError) as error:
+        raise DataBlocked([f"hrs_candidate_scan_invalid:{field}"]) from error
+    if time > cutoff:
+        raise FutureDataAccess("hrs.score_frozen_candidate", cutoff, field, time)
+    return time
+
+
+def _scan_memberships(
+    scan: Mapping[str, Any], memberships: Sequence[Mapping[str, Any]], as_of: datetime,
+) -> Dict[str, Tuple[str, ...]]:
+    cutoff = parse_utc(as_of)
+    observed = _scan_timestamp(scan, "observed_at", cutoff)
+    created = _scan_timestamp(scan, "created_at", cutoff)
+    run_id = scan.get("source_run_id")
+    config_hash = scan.get("config_hash")
+    if (scan.get("strategy_id") != "hrs" or created < observed
+            or not isinstance(run_id, str) or not run_id.strip()
+            or not isinstance(config_hash, str) or len(config_hash) != 64
+            or any(char not in "0123456789abcdef" for char in config_hash)):
+        raise DataBlocked(["hrs_candidate_scan_invalid:identity"])
+    count = scan.get("symbol_count")
+    if type(count) is not int or count != len(memberships):
+        raise DataBlocked(["hrs_candidate_scan_incomplete"])
+
+    symbols = {}
+    for row in memberships:
+        row_observed = _scan_timestamp(row, "observed_at", cutoff)
+        row_created = _scan_timestamp(row, "created_at", cutoff)
+        symbol, membership = row.get("symbol"), row.get("membership")
+        if (row.get("strategy_id") != "hrs" or row_observed != observed or row_created < observed
+                or row.get("source_run_id") != run_id or row.get("config_hash") != config_hash):
+            raise DataBlocked(["hrs_candidate_scan_mixed_identity"])
+        if (not isinstance(symbol, str) or not symbol or symbol in symbols
+                or not isinstance(membership, str) or membership not in _SIDES_BY_MEMBERSHIP):
+            raise DataBlocked(["hrs_candidate_scan_invalid:membership"])
+        symbols[symbol] = _SIDES_BY_MEMBERSHIP[membership]
+    return symbols
+
+
+def _restore_dynamic_thresholds(
+    config: Mapping[str, Any], scan: Mapping[str, Any], cutoff: datetime,
+) -> Any:
+    if not config.get("candidate_pool", {}).get("dynamic_thresholds", {}).get("enabled"):
+        return None
+    evidence = scan.get("dynamic_thresholds")
+    if not isinstance(evidence, Mapping) or evidence.get("kind") != "frozen_dynamic_thresholds_v1":
+        raise DataBlocked(["hrs_dynamic_thresholds_history_missing"])
+    if evidence.get("mode") == "fixed":
+        return None
+    if evidence.get("mode") != "dynamic":
+        raise DataBlocked(["hrs_dynamic_thresholds_mode_invalid"])
+    from strategies.hrs.candidate_pool import DynamicThresholds
+
+    observed = _scan_timestamp(scan, "observed_at", cutoff)
+    restored = DynamicThresholds()
+    restored.computed_at = _scan_timestamp(evidence, "computed_at", observed)
+    for field, default in restored.to_dict().items():
+        value = evidence.get(field)
+        if type(default) is int:
+            valid = type(value) is int and value >= 0
+        else:
+            try:
+                valid = type(value) in (int, float) and abs(value) < float("inf")
+            except OverflowError:
+                valid = False
+        if not valid:
+            raise DataBlocked([f"hrs_dynamic_thresholds_invalid:{field}"])
+        setattr(restored, field, value)
+    if not restored.funding_sample_count or not restored.oi_market_cap_sample_count or not restored.is_valid():
+        raise DataBlocked(["hrs_dynamic_thresholds_sample_invalid"])
+    return restored
 
 
 def _validate_snapshot(

@@ -212,7 +212,7 @@ class TestHrsGapReporting:
         assert any("not_required_for_current_manifest" in g for g in aggr.gaps)
         # hrs 快照 required → gap 含原始快照表缺失文案
         hrs = result.candidates["hrs"]
-        assert any("无历史外部快照表" in g for g in hrs.gaps)
+        assert any("无可用于计算覆盖率" in g for g in hrs.gaps)
         assert result.decision == "STOP"
 
     async def test_hrs_schema_probe_returns_empty(self, config, as_of):

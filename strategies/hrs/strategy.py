@@ -1711,6 +1711,11 @@ class HRSStrategy(BaseStrategy):
             config_hash = hashlib.sha256(
                 json.dumps(self.config, sort_keys=True, default=str).encode()
             ).hexdigest()
+            thresholds = self.candidate_pool.get_dynamic_thresholds()
+            evidence = {"kind": "frozen_dynamic_thresholds_v1", "mode": "fixed"}
+            if thresholds is not None:
+                evidence.update(thresholds.to_dict(), mode="dynamic",
+                                computed_at=thresholds.computed_at.isoformat())
             await self.snapshot_repository.store_universe(
                 strategy_id="hrs",
                 observed_at=observed_at,
@@ -1718,6 +1723,7 @@ class HRSStrategy(BaseStrategy):
                 long_symbols=self.candidate_pool.get_long_candidates(),
                 source_run_id=f"hrs:{observed_at.isoformat()}",
                 config_hash=config_hash,
+                dynamic_thresholds=evidence,
             )
         except Exception as exc:
             logger.warning("HRS候选池历史快照写入失败", error=str(exc))

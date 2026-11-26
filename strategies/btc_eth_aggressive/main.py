@@ -154,6 +154,14 @@ async def initialize():
         notification_client=notification_client,
         db_manager=db_manager
     )
+    applied_version = tuner_metadata["applied_overrides_version"]
+    strategy.loaded_config_identity = {
+        "account_id": trade_logger.account_id,
+        "config_hash": tuner_metadata["config_hash"],
+        "applied_overrides_version": applied_version,
+        "requested_overrides_version": tuner_metadata.get("requested_overrides_version"),
+        "effective_version": applied_version or "base",
+    }
     record_loaded_version("btc_eth_aggressive", tuner_metadata)
     
     # 初始化条件单记录表（用于孤儿条件单清理和订单追踪）
@@ -208,6 +216,8 @@ async def run_strategy():
             
             for symbol in strategy.symbols:
                 try:
+                    identity = getattr(strategy, "loaded_config_identity", None)
+                    decision_identity = dict(identity) if identity else None
                     # 分析市场
                     result = await strategy.analyze(symbol)
                     
@@ -226,10 +236,11 @@ async def run_strategy():
                         # 信号持久化（一次性写终态：executed / cancelled）。
                         # 必须在 execute_signal 之后、且 trade_success 已写入 result 之后调用。
                         # 落库失败完全吞异常，绝不影响后续下单/通知逻辑。
+                        persisted_signal = {**result, "decision_config_identity": decision_identity} if decision_identity else result
                         await persist_signal(
                             db=strategy.db_manager,
                             schema="btc_eth_aggressive",
-                            signal=result,
+                            signal=persisted_signal,
                             notification=notification_client,
                         )
 
