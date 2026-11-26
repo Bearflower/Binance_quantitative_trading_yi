@@ -5,8 +5,8 @@
   "scope": "Final production candidate delta against latest authorized production grid/classic baseline 8dd906c9, not a new full-history audit",
   "snapshot": {
     "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
-    "snapshot": "377276d63824a7d4b021e34ac446b548485099ae",
-    "tree": "0fa356382b256905df393f677888d941afa87a5f",
+    "snapshot": "2e4b5b88b9b994546ba42fd57e6260c9f4c14c3f",
+    "tree": "64a7dc109fba7078d44efd76629c37b3979eb3ce",
     "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
     "output_exclusions": [
       "docs/reviews/2026-11-26-production-regression/ocr-review.json",
@@ -14,10 +14,10 @@
     ]
   },
   "ocr": {
-    "preview": "/tmp/binance-final-ocr/closure/preview.json",
-    "preview_sha256": "95666f67bf9232f874740c6bdfde75309ff0c50bfd692edae39dc7dc67f24473",
-    "rules": "/tmp/binance-final-ocr/closure/rules.json",
-    "rules_sha256": "231d2165c5063837afe7a46163b1e50258252e85f90bf42efbb3b85c2a30af8a",
+    "preview": "/tmp/binance-final-ocr/stage-runtime-fix/full-preview.json",
+    "preview_sha256": "5b29e2b197ec899556a1c1701664cccbe85037ce912dfd8214326649cf918163",
+    "rules": "/tmp/binance-final-ocr/stage-runtime-fix/full-rules.json",
+    "rules_sha256": "6e871049c5d490ceefe71db316873cdd99ea912e54eabba6826693119cfb4a09",
     "rule_groups": [
       {
         "group_id": 1,
@@ -125,16 +125,19 @@
         "files": [
           "database/postgres/permissions.json",
           "deployment/full-regression/build-plan.json",
-          "deployment/full-regression/source-mount-removals.json"
+          "deployment/full-regression/source-mount-removals.json",
+          "docs/reviews/2026-11-26-production-regression/all-tests.json",
+          "docs/reviews/2026-11-26-production-regression/per-file-results.json",
+          "docs/reviews/2026-11-26-production-regression/validation-results.json"
         ],
         "rule": "Check JSON files for spelling errors in json-keys; ignore the content of json-values."
       }
     ]
   },
   "summary": {
-    "total_changed_entries": 166,
-    "reviewable_entries": 70,
-    "reviewed_entries": 70,
+    "total_changed_entries": 169,
+    "reviewable_entries": 73,
+    "reviewed_entries": 73,
     "skipped_reviewable_entries": 0,
     "coverage_rate": 1.0,
     "excluded_entries": 96,
@@ -143,9 +146,9 @@
       "unsupported_ext": 9,
       "binary": 3
     },
-    "current_hash_verified_entries": 70,
-    "carried_forward_hash_matched": 67,
-    "supplementally_reviewed": 3,
+    "current_hash_verified_entries": 73,
+    "carried_forward_hash_matched": 69,
+    "supplementally_reviewed": 4,
     "open_findings": 0
   },
   "coverage": [
@@ -154,7 +157,7 @@
       "status": "modified",
       "sha256": "b950d55e150a4524f92e801b87dc3ab7ef51b8ae4cf26804fc2ccbdb5526434d",
       "review_status": "reviewed",
-      "rule_group": 0,
+      "rule_group": 1,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -180,7 +183,7 @@
       "status": "added",
       "sha256": "fad01db75f0aafbffe6a19011d5d1e92e019843f2910c1b33f02045c16649989",
       "review_status": "reviewed",
-      "rule_group": 1,
+      "rule_group": 2,
       "evidence": [
         {
           "report": "build-final",
@@ -200,7 +203,7 @@
       "status": "added",
       "sha256": "66d3cf0b9d05b017b3fa59b9afc962d9ee35bf7636435a45a54c95b69904652b",
       "review_status": "reviewed",
-      "rule_group": 1,
+      "rule_group": 2,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -215,7 +218,7 @@
       "status": "modified",
       "sha256": "009806d6abcc1cad5534a124f9181c1a0cb0aaec148f4e5a79d983fa93228184",
       "review_status": "reviewed",
-      "rule_group": 0,
+      "rule_group": 1,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -241,7 +244,7 @@
       "status": "added",
       "sha256": "c0367f119b30bbe1bccf8ef67a4b14e306c829f375116837be5047d4efe0c03d",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -256,7 +259,7 @@
       "status": "modified",
       "sha256": "dad494eb5956feb70639bbe84357995d9df3866f7a5f6915d93e1f51251ba071",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -271,7 +274,7 @@
       "status": "modified",
       "sha256": "a2943e5e7e4d03890632539362a73f2ed97a228a4f1f80ca9190136ed90afb7d",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -286,7 +289,7 @@
       "status": "modified",
       "sha256": "960b9eee986df0adff018cc2d38f5dbc0655cc8a1fa9a1e1084027b64903ef9a",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -301,7 +304,7 @@
       "status": "modified",
       "sha256": "76dcb08c6e44ddb4f4c36ca550f095b8e444b458e8ecac04e77445c2b1cca8e7",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -316,7 +319,7 @@
       "status": "modified",
       "sha256": "ae181e9d0252ba364018e4d54b47a3e6a9837292a853a049e0bb33f294a209c2",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -331,7 +334,7 @@
       "status": "modified",
       "sha256": "3b71e27e56e36ed7daf2b7f914bf705235ec3ee64b1273f2727853d536e765b7",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -346,7 +349,7 @@
       "status": "added",
       "sha256": "18bee8f5ab331e266a1d42a9dc267df7522d68e9bc7eb1e110d72012b88642e3",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -361,7 +364,7 @@
       "status": "added",
       "sha256": "6b1f20abb371563ad247ed5b03bdbd772e1ae463e72a334f94f27f09c821aeef",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -376,7 +379,7 @@
       "status": "modified",
       "sha256": "8f3030476a610bc3a9ef3542c4655d73b6db35234cfccad6890a9c19229f2835",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -391,7 +394,7 @@
       "status": "modified",
       "sha256": "2a1b944956a7a73a7f7c719f9eb3ec0b387ed745a80a35db8cfc55cfc2ddff87",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -406,7 +409,7 @@
       "status": "modified",
       "sha256": "0bc8a5ad11b954f8d1a439ea0f571dbf3fe23cf1d36b481cdb6ddf18a038b313",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -421,7 +424,7 @@
       "status": "modified",
       "sha256": "f3f5161cbe7724c9981aca0325db0b2fee6db2c82e404a206f9514d0a47ca3ec",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -436,7 +439,7 @@
       "status": "modified",
       "sha256": "83e68d9a0bed2c84aed18e703ba77e3f4a98c2ee9a7adc03f5de234a07a185dc",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -451,7 +454,7 @@
       "status": "added",
       "sha256": "a44173df924f2c501f67ceac63efef8a172992856ba32c6586b6c5954efada22",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -466,7 +469,7 @@
       "status": "modified",
       "sha256": "e9d25051c47e3ec2425244ab424d0dc211a508332230c7211b21975662987ed3",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -481,7 +484,7 @@
       "status": "modified",
       "sha256": "02b3f360aaed2c2511b19c8cce6293836b73860007616f89aafd7c9cb9be85bc",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -496,7 +499,7 @@
       "status": "modified",
       "sha256": "a4bc62f6491837bd96c9e580b771b007744ea3eb3e5cf5906079d3fea97ec7be",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -511,7 +514,7 @@
       "status": "modified",
       "sha256": "2958e05f2c8f9edfd9ffb4cd7dc8c2afa5efc57f7b158693ff23735a88c63781",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -526,7 +529,7 @@
       "status": "modified",
       "sha256": "36a369c4f996cbec89ef107ff1a3a0310737d8f5377d246697f118ea04e6bdc7",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -541,7 +544,7 @@
       "status": "modified",
       "sha256": "224988fcc9db2033b5c8f99ff244725c12c7a9b4b71d8afccabe478d3bc2a2d0",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -556,7 +559,7 @@
       "status": "modified",
       "sha256": "65115a6cede885937f2264b48f332895e27142c1a6c9436bb1b4048d1f107d3a",
       "review_status": "reviewed",
-      "rule_group": 0,
+      "rule_group": 1,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -571,7 +574,7 @@
       "status": "modified",
       "sha256": "a4e2adf5095a8200d5776b168473fefa0c3a3d4133c67360edf2a0a95227ac22",
       "review_status": "reviewed",
-      "rule_group": 3,
+      "rule_group": 4,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -586,7 +589,7 @@
       "status": "added",
       "sha256": "68e700863159b62b589673cdbed53652d2be0e9a00a7647d6d6c9b1c249dbcdc",
       "review_status": "reviewed",
-      "rule_group": 3,
+      "rule_group": 4,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -601,7 +604,7 @@
       "status": "modified",
       "sha256": "f04719897883937d4f7a03151e57d96f454da232ffd656d999f1ace2281f5c3c",
       "review_status": "reviewed",
-      "rule_group": 3,
+      "rule_group": 4,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -616,7 +619,7 @@
       "status": "modified",
       "sha256": "f84887ee07b6e5e0c27f7bde1c689fc449d1edf4047a676abf59df956be602a1",
       "review_status": "reviewed",
-      "rule_group": 4,
+      "rule_group": 5,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -631,7 +634,7 @@
       "status": "added",
       "sha256": "7024c9636e690d0f48e4239b571416d2be7bf6f0f77eec67525cf0b33781f23a",
       "review_status": "reviewed",
-      "rule_group": 4,
+      "rule_group": 5,
       "evidence": [
         {
           "report": "build-final",
@@ -651,7 +654,7 @@
       "status": "added",
       "sha256": "523e27f5f0ef34b01cce03a595aa6b9ed63202ed90c91852e0a9702374d6108d",
       "review_status": "reviewed",
-      "rule_group": 4,
+      "rule_group": 5,
       "evidence": [
         {
           "report": "maintenance-final",
@@ -670,7 +673,7 @@
       "status": "added",
       "sha256": "651ab7a94953e23f46a3a8f2488fedd50f0bcea140f0cc32e1fea9735f2cb4d4",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -681,11 +684,31 @@
       ]
     },
     {
+      "path": "docs/reviews/2026-11-26-production-regression/all-tests.json",
+      "status": "added",
+      "sha256": "ed889e508ef115d8bc4febaf6747488e6d50f06b63b0e0971c2c6414046720b6",
+      "review_status": "reviewed",
+      "rule_group": 5,
+      "evidence": [
+        {
+          "report": "stage-runtime-fix",
+          "sha256": "ed889e508ef115d8bc4febaf6747488e6d50f06b63b0e0971c2c6414046720b6",
+          "depth": "generated evidence schema and complete cross-file consistency validation",
+          "checks": [
+            "Parsed JSON and reviewed keys against resolved JSON rule.",
+            "537 unique discovered paths equal manifest and per-file result paths.",
+            "All 537 recorded SHA256 values match current test files; totals reconcile to 9172 passed with zero failures/errors/skips.",
+            "Release adaptation records exact current runner/test hashes and remains pending fresh commit/CI, without claiming production readiness."
+          ]
+        }
+      ]
+    },
+    {
       "path": "docs/reviews/2026-11-26-production-regression/localguard/sitecustomize.py",
       "status": "added",
       "sha256": "a0d04273c7147c4419c2dd17fe40e881b3a4598984f16bc6312ea20cd37df535",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "final-closure-supplement",
@@ -696,11 +719,31 @@
       ]
     },
     {
+      "path": "docs/reviews/2026-11-26-production-regression/per-file-results.json",
+      "status": "added",
+      "sha256": "80aad88e4efa8c893c7ced5f017411d4052423a0539cc56bf5626b9de82642e6",
+      "review_status": "reviewed",
+      "rule_group": 5,
+      "evidence": [
+        {
+          "report": "stage-runtime-fix",
+          "sha256": "80aad88e4efa8c893c7ced5f017411d4052423a0539cc56bf5626b9de82642e6",
+          "depth": "generated evidence schema and complete cross-file consistency validation",
+          "checks": [
+            "Parsed JSON and reviewed keys against resolved JSON rule.",
+            "537 unique discovered paths equal manifest and per-file result paths.",
+            "All 537 recorded SHA256 values match current test files; totals reconcile to 9172 passed with zero failures/errors/skips.",
+            "Release adaptation records exact current runner/test hashes and remains pending fresh commit/CI, without claiming production readiness."
+          ]
+        }
+      ]
+    },
+    {
       "path": "docs/reviews/2026-11-26-production-regression/run_matrix.py",
       "status": "added",
       "sha256": "105daf33f0dec82dfef28a7d5303e67a84c60f805b294f9d8b917fc67fb96acb",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "final-closure-supplement",
@@ -711,11 +754,31 @@
       ]
     },
     {
+      "path": "docs/reviews/2026-11-26-production-regression/validation-results.json",
+      "status": "added",
+      "sha256": "f3b85f3f64d292f6cdff7a8ab2d3d243cfeb618f389a01aa9d343aeb33404e1f",
+      "review_status": "reviewed",
+      "rule_group": 5,
+      "evidence": [
+        {
+          "report": "stage-runtime-fix",
+          "sha256": "f3b85f3f64d292f6cdff7a8ab2d3d243cfeb618f389a01aa9d343aeb33404e1f",
+          "depth": "generated evidence schema and complete cross-file consistency validation",
+          "checks": [
+            "Parsed JSON and reviewed keys against resolved JSON rule.",
+            "537 unique discovered paths equal manifest and per-file result paths.",
+            "All 537 recorded SHA256 values match current test files; totals reconcile to 9172 passed with zero failures/errors/skips.",
+            "Release adaptation records exact current runner/test hashes and remains pending fresh commit/CI, without claiming production readiness."
+          ]
+        }
+      ]
+    },
+    {
       "path": "scripts/backfill_realized_pnl.py",
       "status": "modified",
       "sha256": "4047a078a164fb9b39e9dd54b02233e301f695f7333ffb5bc800d7c4f72fbcbc",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -730,7 +793,7 @@
       "status": "modified",
       "sha256": "87f32b83cced902e2beabed8ed341ecba144180dc34d247104f43ea7de673853",
       "review_status": "reviewed",
-      "rule_group": 0,
+      "rule_group": 1,
       "evidence": [
         {
           "report": "final-closure-supplement",
@@ -743,9 +806,9 @@
     {
       "path": "scripts/deploy_full_regression.py",
       "status": "added",
-      "sha256": "fb58c3b1ca2eda422cd3e01eabd4dea83b1b48b590e6d86c6d004b8610566527",
+      "sha256": "b037cce05eef31948fb01d7bea0f585582574a622c97e468d3d38aad68373e6b",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "maintenance-final",
@@ -768,6 +831,18 @@
             "context_checked": true,
             "failure_paths_checked": true
           }
+        },
+        {
+          "report": "stage-runtime-fix",
+          "sha256": "b037cce05eef31948fb01d7bea0f585582574a622c97e468d3d38aad68373e6b",
+          "depth": "deep delta and surrounding runtime construction/validation",
+          "checks": [
+            "Observed Docker 29.6.2/API 1.44 difference is only HostConfig.OomKillDisable null to false; Config including Env/Labels and network settings match.",
+            "Builder canonicalizes only explicitly present null; missing key and explicit booleans preserved; malformed integer/string predecessor values rejected.",
+            "validate_staged_runtime AST is identical to committed 9243f52; exact Config/HostConfig checks remain, with existing network set/alias/custom addressing checks unchanged.",
+            "Independent tampering checks reject account/risk Env, command, entrypoint, user, healthcheck, binds, structured mounts, privilege, ports, restart, OOM policy and network drift.",
+            "Prior state remains untouched via deep copy; staged candidate is created/stopped and old grid healthy; no activation or remote mutation in this review."
+          ]
         }
       ]
     },
@@ -776,7 +851,7 @@
       "status": "added",
       "sha256": "88975b65c141ef10eae55cef41cd64b896d7cdb42e70fdca984e3941b103b3c1",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -802,7 +877,7 @@
       "status": "added",
       "sha256": "ed323ace57f4181e1ec9d8c357e19fc91707655f33ee6d1b6cb74604c9f3ed53",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "maintenance-final",
@@ -832,7 +907,7 @@
       "status": "added",
       "sha256": "a2fc2b24d4579a8977eec13bdbb6752c9c2a0c550d02b86bfab94074594f32e9",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "maintenance-final",
@@ -853,7 +928,7 @@
       "status": "modified",
       "sha256": "d6dbe971d760a16079718b6ebf50148bbc3b7910c8b3fe541ef2f4a531887677",
       "review_status": "reviewed",
-      "rule_group": 0,
+      "rule_group": 1,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -868,7 +943,7 @@
       "status": "modified",
       "sha256": "44bfe4229d7fce6974486d475b522c5bcd1c4551e16f4739964be86fbbcfc3e7",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -883,7 +958,7 @@
       "status": "modified",
       "sha256": "de977b6ca4d53ab3a340f8f41592fd92f1ff7fed48c2247f15e5ff1137fd7c37",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -898,7 +973,7 @@
       "status": "modified",
       "sha256": "1a1491de01c48065c38dd3c8fd8aa9699a3bbdb4eb687e5507f54401b619fba8",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -913,7 +988,7 @@
       "status": "modified",
       "sha256": "79ad30a2743b5f2a4c902fbfb3fc071a844ec81a7e1513ade442db52a7635116",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -928,7 +1003,7 @@
       "status": "modified",
       "sha256": "73aceee9989e674655e2c1a185d6b3835fa7b3317daaf687494692d03b429e25",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -950,7 +1025,7 @@
       "status": "modified",
       "sha256": "9d66b519d298e8718d6392b74fdbc65b8720391311662f61d121a36696f5335a",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -972,7 +1047,7 @@
       "status": "added",
       "sha256": "2cc9ac34529e5c863452b66f023a3438c41beaf135b5f0731b3c191fb1906e66",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -994,7 +1069,7 @@
       "status": "modified",
       "sha256": "a6a2f8200805b26fde76fd47de5fa36cfe6ee5569c1e5925210c0adafe5a5a85",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1016,7 +1091,7 @@
       "status": "modified",
       "sha256": "ec898c30b06cfb2031e152fc5c5a7d3fb8184936f35037e9b6e73b96694d7ca1",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1038,7 +1113,7 @@
       "status": "modified",
       "sha256": "0fe25260a60d8c4806b341524deb8936f652e0626ad3e0aefae56f71c50c5d39",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1060,7 +1135,7 @@
       "status": "modified",
       "sha256": "450fc0cac569652077a9f04e791be63c99774bd124e324f5143acc139b8d6142",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1082,7 +1157,7 @@
       "status": "modified",
       "sha256": "7d9fc7c10b40b4281a6182ef0a5c02908fb734203f40776f0af06402db29a7ff",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1104,7 +1179,7 @@
       "status": "modified",
       "sha256": "05d6e60f2cd26e07cc0d28f371e3311152afb231b1b919f1a1f42a697abea021",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1126,7 +1201,7 @@
       "status": "added",
       "sha256": "d757e4fa165c579ac4fbd36d00dbc5a5808261353e37ecc46cbe787565332ef4",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -1141,7 +1216,7 @@
       "status": "modified",
       "sha256": "75a277cda27b4dd0347a180e168bd120b186641f257712af3717cb1af6578ec3",
       "review_status": "reviewed",
-      "rule_group": 0,
+      "rule_group": 1,
       "evidence": [
         {
           "report": "build-final",
@@ -1161,7 +1236,7 @@
       "status": "modified",
       "sha256": "7d0a5f636ca6efb36e73b47e9ff4baba17541abd7499ec1bcad015d5088962b3",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "grid-final",
@@ -1180,7 +1255,7 @@
       "status": "modified",
       "sha256": "6bb2e16129be946e655b7de3aa82e8224ec7baaa6b1b7488af60ca273ee459b2",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -1205,7 +1280,7 @@
       "status": "modified",
       "sha256": "3baade879be55d27603a9af4a037c11329f3e36b5c1e14162a5134db50f62a7c",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -1230,7 +1305,7 @@
       "status": "modified",
       "sha256": "e63cb181f92028640dbcb72d42215a515e1f943ddde223311ba2c8fa7a399e8a",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -1255,7 +1330,7 @@
       "status": "modified",
       "sha256": "326528b071e7f9d30e48930c4008297e1f088912b28f0f368865d44c94651328",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1270,7 +1345,7 @@
       "status": "modified",
       "sha256": "0884fe9f6508d0787ae1e4afb9e9165b5f4596c5c387f140816a82250e4a5d48",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1292,7 +1367,7 @@
       "status": "modified",
       "sha256": "65461d4ba788ed764351435572146db1e82c6df854c739137c2c1f9ce7a6b6c3",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1314,7 +1389,7 @@
       "status": "modified",
       "sha256": "c59cb56ccb2187ea8892651de8f7c73c0311eadb5fad628ae05c2a7f8447b567",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1336,7 +1411,7 @@
       "status": "modified",
       "sha256": "459fdfc82a749209be84bd4a846194d9f577c293641f5f356bcace26506f898d",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1358,7 +1433,7 @@
       "status": "modified",
       "sha256": "0b2a4b0bc6cc48bd5a4190fa3ce3d2fa5f1b707a373d430cb33b0199304c4011",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "cross-trading",
@@ -1380,7 +1455,7 @@
       "status": "added",
       "sha256": "ded28306c5cec857e166a11233117dce9c0ba88bbb9de8324a6fcbe90be0eded",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -1395,7 +1470,7 @@
       "status": "modified",
       "sha256": "8c5f974bcf18d2105488b7ad2ef1b8cd15d65c5dc456415b89949ea9cf7f4b7b",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -1410,7 +1485,7 @@
       "status": "added",
       "sha256": "d757e4fa165c579ac4fbd36d00dbc5a5808261353e37ecc46cbe787565332ef4",
       "review_status": "reviewed",
-      "rule_group": 2,
+      "rule_group": 3,
       "evidence": [
         {
           "report": "root-reviewed",
@@ -1467,7 +1542,7 @@
     {
       "path": "docs/reviews/2026-11-26-production-regression/README.md",
       "status": "added",
-      "insertions": 24,
+      "insertions": 34,
       "deletions": 0,
       "exclude_reason": "unsupported_ext"
     },
@@ -1831,7 +1906,7 @@
     {
       "path": "tests/test_scripts/test_full_regression_deploy.py",
       "status": "added",
-      "insertions": 567,
+      "insertions": 612,
       "deletions": 0,
       "exclude_reason": "default_path"
     },
@@ -2290,6 +2365,19 @@
         },
         "failure_before": "/tmp/binance-build-freshness-before.txt"
       }
+    },
+    {
+      "name": "stage-runtime-fix",
+      "path": "/tmp/binance-final-ocr/stage-runtime-fix/review.json",
+      "sha256": "1474751e90db46fbb6d6da19c437ab7d1c9525b18d05e3b0449fbe8e24ed35e5",
+      "summary": "Strict runtime validation retained; confirmed Docker legacy null default encoded before create. Generated regression artifacts validated.",
+      "tests": {
+        "independent_module_passed": 68,
+        "independent_boundaries": 18,
+        "owner_release_suite_passed": 113,
+        "owner_red_failed": 1,
+        "owner_red_passed": 2
+      }
     }
   ],
   "resolved_findings": [
@@ -2386,19 +2474,62 @@
       "status": "fixed",
       "content": "The emitted artifact lacked nested paths and source files required by Release.__init__. Include reviewed build plan, source mount removals, five release/permission scripts and permission manifest using cp --parents, in addition to VERSION, digest manifest and source inventory.",
       "source_report": "build-final"
+    },
+    {
+      "path": "scripts/deploy_full_regression.py",
+      "start_line": 70,
+      "end_line": 77,
+      "category": "bug",
+      "severity": "medium",
+      "content": "Confirmed real stage blocker: Docker create materializes the legacy nullable OomKillDisable as false, so the previously literal expected body differed despite unchanged account, mount and network settings. Fixed by explicit null-to-false request normalization while keeping runtime equality validation strict.",
+      "source_report": "stage-runtime-fix",
+      "status": "fixed",
+      "validation": {
+        "independent_module_passed": 68,
+        "independent_boundaries": 18,
+        "owner_release_suite_passed": 113,
+        "actual_created_container_strict_comparison": true
+      },
+      "production_activation_performed": false
     }
   ],
   "findings": [],
   "supplemental_validation": [
     "compile() passed both short Python report helpers without writing bytecode",
     "bash -n scripts/check_code_sync.sh passed",
-    "Every current reviewable file SHA256 equals the synthetic snapshot blob and at least one completed review record"
+    "Every current reviewable file SHA256 equals the synthetic snapshot blob and at least one completed review record",
+    {
+      "name": "Docker runtime normalization and generated final regression evidence",
+      "report": "/tmp/binance-final-ocr/stage-runtime-fix/review.json",
+      "summary": {
+        "discovery_files": 537,
+        "unique_paths": 537,
+        "current_test_hashes_verified": 537,
+        "passing_tests": 9172,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    }
   ],
   "limitations": [
     "Review outputs ocr-review.json and ocr-review.md are excluded from the synthetic snapshot to avoid self-reference; no business/test source is excluded by this exception.",
     "OCR default_path excludes test paths from source review; tests are separately exercised and retained in the parent regression evidence. unsupported_ext entries retain their exact exclusion reason.",
     "Coverage describes changed source against 8dd906c9; inherited code is not represented as newly reviewed line by line.",
     "Local offline tests and exact COPY-tree imports do not replace successful real CI builds, immutable digest verification, fresh account gates or production acceptance.",
-    "No deployment success is claimed by this report."
+    "No deployment success is claimed by this report.",
+    "The Docker create default correction was reviewed and verified against a stopped created candidate without activation. Refreshed snapshot includes final generated regression JSON; new source commit, CI and postdeployment acceptance remain separate requirements."
+  ],
+  "snapshot_history": [
+    {
+      "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
+      "snapshot": "377276d63824a7d4b021e34ac446b548485099ae",
+      "tree": "0fa356382b256905df393f677888d941afa87a5f",
+      "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
+      "output_exclusions": [
+        "docs/reviews/2026-11-26-production-regression/ocr-review.json",
+        "docs/reviews/2026-11-26-production-regression/ocr-review.md"
+      ]
+    }
   ]
 }

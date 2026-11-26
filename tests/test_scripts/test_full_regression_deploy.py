@@ -565,3 +565,48 @@ def test_grid_probe_preserves_helper_observation_start_time(grid_activation):
     release.grid_probe('trading_system-grid-executor')
     proof = json.loads((release.directory / 'trading_system-grid-executor-grid-live.json').read_text())
     assert proof['observed_at'] == NOW-60 and proof['old_id'] == old['Id']
+
+
+def test_legacy_unset_oom_flag_matches_docker_create_without_relaxing_validation():
+    old = running('trading_system-grid-executor')
+    old['HostConfig']['OomKillDisable'] = None
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    new = dict(Config={key:value for key,value in body.items() if key not in ('HostConfig','NetworkingConfig')},
+               HostConfig=copy.deepcopy(body['HostConfig']),
+               NetworkSettings=dict(Networks=copy.deepcopy(body['NetworkingConfig']['EndpointsConfig'])))
+    # Actual first staging evidence: Docker 29.6 / API 1.44 materializes the
+    # predecessor's legacy null field as false; every other field matched.
+    new['HostConfig']['OomKillDisable'] = False
+    release_mod.validate_staged_runtime(new, body)
+    assert body['HostConfig']['OomKillDisable'] is False
+    assert old['HostConfig']['OomKillDisable'] is None
+
+
+@pytest.mark.parametrize('disabled', [True, False])
+def test_explicit_oom_policy_is_preserved_and_opposite_runtime_flag_rejected(disabled):
+    old = running('trading_system-grid-executor')
+    old['HostConfig']['OomKillDisable'] = disabled
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    assert body['HostConfig']['OomKillDisable'] is disabled
+    actual_host = copy.deepcopy(body['HostConfig'])
+    actual_host['OomKillDisable'] = not disabled
+    new = dict(Config={key:value for key,value in body.items() if key not in ('HostConfig','NetworkingConfig')},
+               HostConfig=actual_host,
+               NetworkSettings=dict(Networks=copy.deepcopy(body['NetworkingConfig']['EndpointsConfig'])))
+    with pytest.raises(ReleaseError, match='configuration'):
+        release_mod.validate_staged_runtime(new, body)
+
+
+@pytest.mark.parametrize('invalid', [0, 1, 'false'])
+def test_non_boolean_oom_policy_cannot_be_mistaken_for_false_or_true(invalid):
+    old = running('trading_system-grid-executor')
+    old['HostConfig']['OomKillDisable'] = invalid
+    with pytest.raises(ReleaseError, match='OOM policy type'):
+        build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+
+
+def test_missing_oom_flag_is_not_invented():
+    old = running('trading_system-grid-executor')
+    assert 'OomKillDisable' not in old['HostConfig']
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    assert 'OomKillDisable' not in body['HostConfig']

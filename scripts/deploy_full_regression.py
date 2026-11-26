@@ -67,6 +67,13 @@ def build_container_body(old, image_id, sha, *, source_removals=()):
     body.pop('Hostname', None)
     body.pop('MacAddress', None)
     host = copy.deepcopy(old['HostConfig'])
+    # Docker create materializes this legacy nullable flag as false. Encode
+    # that default explicitly; the resulting security policy is still checked
+    # by exact HostConfig equality, including explicit true/false values.
+    if 'OomKillDisable' in host and host['OomKillDisable'] is None:
+        host['OomKillDisable'] = False
+    elif 'OomKillDisable' in host and type(host['OomKillDisable']) is not bool:
+        raise ReleaseError('invalid predecessor OOM policy type')
     for removal in source_removals:
         if removal['container'] != old['Name'].lstrip('/'):
             raise ReleaseError('source mount removal belongs to another container')

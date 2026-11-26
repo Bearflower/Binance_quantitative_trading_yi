@@ -1,6 +1,6 @@
 # 全仓回归与生产发布验收（2026-11-26）
 
-状态：最终交叉复审与生产发布准备中，尚未宣称完成部署。
+状态：首次候选已通过回归与 CI；真实 stage 发现 Docker 规范化差异，发布适配专组已复测通过，等待新候选提交、CI 和生产验收。
 
 本轮在独立工作区 `codex/full-regression-production-20261126` 整合主分支、经典账户已发布版本及完整审查修复。原工作区未解决的文档冲突和无关修改保持原状。网格以已发布的 `8dd906c914c5c07e4ba63bd81b778ff1e213ed25` 为最新基线。
 
@@ -25,8 +25,10 @@ python docs/reviews/2026-11-26-production-regression/run_matrix.py \
 
 ## 最终回归记录
 
-重新发现仓库中 `test_*.py` 与 `*_test.py`，共 **537 个测试文件**。合并独立文件矩阵后，**9165 项通过，0 失败、0 错误、0 跳过**；没有遗漏或额外文件。每条采用结果均已与当前测试文件 SHA256 核对，日志和 JUnit 计数也逐项一致。
+此前候选 `9243f52cbc665a33144fbaa53c3a9ab85a4677b6` 的完整回归为 **537 个测试文件、9165 项通过，0 失败、0 错误、0 跳过**；CI Run `45843458488` 的 11 个镜像构建和离线导入也全部通过。
 
-`tests/test_scripts/test_grid_release_guard.py` 在网格与发布组重复执行，统计只采用最新发布组结果。构建 artifact 断言更新后，已通过同一 runner、`final-env.json` 和本机网络隔离重新单独运行 `test_full_regression_build.py`，15 项通过。
+真实 stage 随后发现 Docker 29.6 / API 1.44 将 `HostConfig.OomKillDisable` 的显式 `null` 规范化为 `false`。发布适配只规范化创建请求中的这一显式空值，严格运行配置校验保持不变，并新增 7 项回归测试。修复冻结后，使用相同 runner、`final-env.json` 和本机网络隔离重新运行全部 **4 个发布测试文件，113 项通过，0 失败、0 错误、0 跳过**。
 
-仓库内已保留 [测试清单](all-tests.json)、[逐文件结果与 SHA256](per-file-results.json) 和 [汇总结果](validation-results.json)；完整逐文件哈希、日志和 JUnit 路径见 `/tmp/binance-production-readiness/final-consolidated.json`。这些结果证明当前回归覆盖；**尚未部署，也未据此宣称生产可用**。真实 CI 镜像构建、只读账户联调和部署后验收另行留证。
+合并未改动业务测试的既有结果及最新发布专组结果，当前证据覆盖 **537 个测试文件、9172 项通过，0 失败、0 错误、0 跳过**。没有遗漏或额外文件；每条采用结果均与当前测试文件 SHA256 匹配，日志和 JUnit 计数逐项一致。网格与发布组重复运行的 `test_grid_release_guard.py` 只统计最新发布组结果。
+
+仓库内已保留 [测试清单](all-tests.json)、[逐文件结果与 SHA256](per-file-results.json) 和 [汇总结果](validation-results.json)；完整日志和 JUnit 路径见 `/tmp/binance-production-readiness/final-consolidated.json`。本次发布适配必须绑定新的候选提交和重新构建的镜像；此前 SHA 的成功 CI 不作为适配后的镜像证明。**尚未完成生产部署，也未据此宣称生产可用**；真实联调和部署后验收另行留证。

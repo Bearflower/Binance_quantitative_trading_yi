@@ -3232,8 +3232,8 @@
   },
   {
     "path": "tests/test_scripts/test_full_regression_deploy.py",
-    "sha256": "f00870f6cfcddc7dc3d195d357dbd67def16b85b8fdede42111596c79643845d",
-    "tests": 61,
+    "sha256": "2dc6eb4bc9bedd3d4af176708c4354072ba5523f1612dd4e91a4dd67ab97ac6b",
+    "tests": 68,
     "failures": 0,
     "errors": 0,
     "skipped": 0,

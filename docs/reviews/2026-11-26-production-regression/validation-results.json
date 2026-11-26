@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-11-26T14:38:51.400581+00:00",
+  "generated_at_utc": "2026-11-26T15:03:10.299491+00:00",
   "root": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
   "discovery_command": "rg --files --hidden -g test_*.py -g *_test.py",
   "discovery_uses_repository_ignore_rules": true,
@@ -8,7 +8,7 @@
     "unique_test_files": 537,
     "covered_files": 537,
     "coverage_rate": 1.0,
-    "tests": 9165,
+    "tests": 9172,
     "failures": 0,
     "errors": 0,
     "skipped": 0,
@@ -17,7 +17,7 @@
     "extra_files": [],
     "artifact_errors": [],
     "nonpassing_files": [],
-    "passed": 9165
+    "passed": 9172
   },
   "groups_before_deduplication": [
     {
@@ -47,7 +47,7 @@
     {
       "group": "final-release",
       "files": 4,
-      "tests": 106,
+      "tests": 113,
       "failures": 0,
       "errors": 0,
       "skipped": 0
@@ -65,9 +65,12 @@
     }
   ],
   "refreshed_files": [
-    "tests/test_scripts/test_full_regression_build.py"
+    "tests/test_scripts/test_full_regression_build.py",
+    "tests/test_scripts/test_full_regression_deploy.py",
+    "tests/test_scripts/test_full_regression_live_gate.py",
+    "tests/test_scripts/test_grid_release_guard.py"
   ],
-  "refresh_command": "docs/reviews/2026-11-26-production-regression/run_matrix.py --manifest /tmp/binance-production-readiness/final-release-refresh-tests.json --out /tmp/binance-production-readiness/final-release-refresh --jobs 1 --timeout 900",
+  "refresh_command": "docs/reviews/2026-11-26-production-regression/run_matrix.py --manifest /tmp/binance-production-readiness/final-release-docker29-tests.json --out /tmp/binance-production-readiness/final-release-docker29 --jobs 1 --timeout 900",
   "runtime_environment": {
     "python": "/tmp/binance-candidate-venv/bin/python",
     "variables_file": "/tmp/binance-production-readiness/final-env.json",
@@ -75,7 +78,41 @@
     "postgres": "local disposable test databases; serial PG suite",
     "kline": "authorized read-only local SSH tunnel; no exchange trading"
   },
-  "deployment_status": "not_deployed",
+  "deployment_status": "release_adaptation_pending_new_commit_and_ci",
   "production_readiness_claimed": false,
+  "previous_full_regression": {
+    "source_commit": "9243f52cbc665a33144fbaa53c3a9ab85a4677b6",
+    "summary": {
+      "discovered_files": 537,
+      "unique_test_files": 537,
+      "covered_files": 537,
+      "coverage_rate": 1.0,
+      "tests": 9165,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256_mismatches": [],
+      "missing_files": [],
+      "extra_files": [],
+      "artifact_errors": [],
+      "nonpassing_files": [],
+      "passed": 9165
+    },
+    "ci_run_id": 45843458488,
+    "ci_build_and_import_images_passed": 11,
+    "result": "full regression and CI passed; real stage exposed Docker runtime normalization mismatch"
+  },
+  "release_adaptation": {
+    "reason": "Docker 29.6 / API 1.44 canonicalizes HostConfig.OomKillDisable null to false",
+    "scope": "normalize explicit null to False in container request; strict validator unchanged",
+    "runner_sha256": "b037cce05eef31948fb01d7bea0f585582574a622c97e468d3d38aad68373e6b",
+    "changed_test": "tests/test_scripts/test_full_regression_deploy.py",
+    "changed_test_sha256": "2dc6eb4bc9bedd3d4af176708c4354072ba5523f1612dd4e91a4dd67ab97ac6b",
+    "added_regression_cases": 7,
+    "release_files_rerun": 4,
+    "release_tests_passed": 113,
+    "unchanged_business_tests": "reuse prior passing per-file evidence; no business code change in this adaptation",
+    "candidate_commit": "pending parent commit and fresh CI build"
+  },
   "detailed_report": "/tmp/binance-production-readiness/final-consolidated.json"
 }
