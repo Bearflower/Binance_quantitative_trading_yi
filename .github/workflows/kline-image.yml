@@ -13,15 +13,15 @@ jobs:
         service:
           - role: signal
             image: trading-grid
-            base: ghcr.io/bearflower/trading-grid@sha256:1e36b058152ae2bcdb0b1db07ceb5937921dbfc998d3f95244464e1612c16dfe
+            base: ghcr.io/bearflower/trading-grid@sha256:d22979bb57567be960b53fb1961a2d5d418409c5beb250a223f98a84406e858a
           - role: executor
             image: trading-grid
-            base: ghcr.io/bearflower/trading-grid@sha256:557a3f0a68a26ef635eb51e38725b2d80a8152bbe953bde57dfef92167dc997a
+            base: ghcr.io/bearflower/trading-grid@sha256:9ccdb3554fcae42f75cd2bb08810ca37c67f183af16b1448ab2b135e67997bd7
           - role: hrs
             image: trading-hrs
-            base: ghcr.io/bearflower/trading-hrs@sha256:8a245cfa1f92e799ec56986ae8d1c13556fcb9e1cf2a97b7fb07ca3b5c20f399
+            base: ghcr.io/bearflower/trading-hrs@sha256:83f174679b47dbbb1a4d88335af4cbb793552a01ca994019d2ecf751429472ef
     env:
-      SOURCE_SHA: 30ab34fdbd71dd59029f6e85bf367506f92c0df8
+      SOURCE_SHA: bf01d948cdac85bbc4af14037a6c225e58ac801d
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,7 +29,7 @@ jobs:
       - name: Prepare exact reviewed overlay
         run: |
           mkdir -p runtime-layer/overlay
-          cp --parents strategies/grid/execution/engine.py strategies/grid/execution/exchange.py strategies/grid/execution/main.py strategies/grid/execution/planner.py strategies/grid/execution/position_recovery.py strategies/grid/execution/request_budget.py strategies/grid/execution/signal_receipt.py strategies/grid/execution/sizing.py strategies/grid/execution/store.py strategies/grid/execution/trailing.py strategies/grid/execution/trailing_store.py strategies/grid/signal_bot.py runtime-layer/overlay/
+          cp --parents strategies/grid/execution/engine.py strategies/grid/execution/exchange.py strategies/grid/execution/main.py strategies/grid/execution/request_budget.py runtime-layer/overlay/
           printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > runtime-layer/overlay/VERSION
           printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
           if [ '${{ matrix.service.role }}' = 'hrs' ]; then
