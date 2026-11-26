@@ -68,7 +68,13 @@ class SignalReceiptWriter:
         if (not sizing or sizing.get('decision_id') != decision_id
                 or not 0 <= now - sizing.get('checked_at_ms', 0) <= 60_000):
             sizing = None
-        report = dict(decision_id=decision_id, updated_at_ms=now, state=state['state'],
+        active_sizing = None
+        epoch = store.active_epoch_id()
+        if epoch is not None:
+            row = store.conn.execute('SELECT value FROM schema_meta WHERE key=?',
+                                    ('grid_epoch_sizing:%s' % epoch,)).fetchone()
+            active_sizing = json.loads(row[0]) if row else None
+        report = dict(active_sizing=active_sizing, decision_id=decision_id, updated_at_ms=now, state=state['state'],
                       reason=state['lock_reason'], processed=store.cursor() == decision_id,
                       stream_ready=service.stream.ready, risk=token[-1], sizing=sizing,
                       account=None, reduction=last_reduction(store),
@@ -118,7 +124,12 @@ def render_receipt(report, decision_id, *, now_ms=None):
     if sizing.get('leverage') is not None:
         lines += [f"- 实盘杠杆: {sizing['leverage']}x（已核验账户设置）",
                   f"- 本次建单保证金预算: {sizing['budget']} USDT；实盘保证金上限 {sizing['max_margin']} USDT",
-                  '- 预算取策略建议、可用余额与实盘上限的最小值。']
+                  ('- 正数建议预算不足时，仅补到最少网格可行预算；仍受余额与硬上限约束。'
+                   if sizing.get('version') == 2 else '- 预算取策略建议、可用余额与实盘上限的最小值。')]
+        if sizing.get('version') == 2:
+            lines.append(f"- 原始建议预算: {sizing['advisory_budget']} USDT；预算来源: {sizing['budget_source']}")
+            lines.append(f"- 实际计划: {sizing['grid_count']} 格；全价格层预留保证金 {sizing['reserved_margin']} USDT")
+            lines.append(f"- 最低价层单笔金额: {sizing['min_order_notional']} USDT")
     elif report.get('expected_leverage'):
         lines.append(f"- 执行器要求杠杆: {report['expected_leverage']}x（本次尚无账户杠杆校验回执）")
     reasons = {'order notional below minimum': '单笔订单名义金额低于交易所最低要求',
@@ -136,6 +147,9 @@ def render_receipt(report, decision_id, *, now_ms=None):
         lines.append(f"- 信号状态: {report.get('signal_state', 'UNKNOWN')}")
     if sizing.get('min_notional'):
         lines.append(f"- 交易所单笔最低名义金额: {sizing['min_notional']} USDT")
+    active = report.get('active_sizing')
+    if active:
+        lines.append(f"- 当前网格建单依据: {active['grid_count']} 格，{active['leverage']}x，预算 {active['budget']} USDT")
     lines.append(f"- 执行状态: {report.get('state', 'UNKNOWN')}；本次决策{'已处理' if report.get('processed') else '尚未处理完成'}；风控 {report.get('risk', 'UNKNOWN')}")
     if report.get('reason'):
         lines.append(f"- 执行限制: {report['reason']}")

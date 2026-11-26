@@ -8,6 +8,7 @@ from shared.readonly_client import ReadOnlyBinanceClient
 from shared.binance_api import BinanceClient, BinanceAPIError
 from .contracts import ExecutionSettings, subaccount_pm
 from .planner import ExchangeFilters
+from .request_budget import GridBinanceClient
 
 
 class AccountModeError(RuntimeError):
@@ -52,7 +53,7 @@ class GridExchange:
         wallet = (BinanceClient(api_key=settings.api_key, api_secret=settings.api_secret,
                                use_unified_account=False, testnet=False,
                                base_url="https://api.binance.com") if settings.use_unified_account else None)
-        return adapter(BinanceClient(
+        return adapter(GridBinanceClient(
             api_key=settings.api_key, api_secret=settings.api_secret,
             testnet=False, use_unified_account=settings.use_unified_account), wallet)
 

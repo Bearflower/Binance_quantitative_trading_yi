@@ -463,7 +463,7 @@ class DecisionStore:
     def finish_position_recovery(self, locked_at_ms: int, epoch_id: int, checked_trades: int,
                                  recovered_at_ms: int, *, reason=POSITION_MISMATCH_LOCK) -> bool:
         """Commit the scoped unlock and the fresh-signal barrier together."""
-        if reason not in (POSITION_MISMATCH_LOCK, FILL_HANDLING_LOCK):
+        if reason not in (POSITION_MISMATCH_LOCK, FILL_HANDLING_LOCK, "position unavailable while exiting"):
             return False
         self.conn.execute("BEGIN IMMEDIATE")
         try:

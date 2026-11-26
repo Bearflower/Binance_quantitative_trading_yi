@@ -39,7 +39,7 @@ class PositionLockRecovery:
     def can_recover(self, state):
         if state["state"] != "LOCKED":
             return False
-        if state["lock_reason"] == POSITION_MISMATCH_LOCK:
+        if state["lock_reason"] in (POSITION_MISMATCH_LOCK, "position unavailable while exiting"):
             return True
         if state["lock_reason"] != FILL_HANDLING_LOCK:
             return False

@@ -52,6 +52,12 @@ class TrailingStore:
         if row is None:
             raise ValueError('trailing epoch lacks original signal')
         decision = json.loads(row[0]); params = decision['grid_params']
+        if decision.get('sizing_version') == 2:
+            sizing = self.conn.execute('SELECT value FROM schema_meta WHERE key=?',
+                                      ('grid_epoch_sizing:%s' % epoch,)).fetchone()
+            if sizing is None:
+                raise ValueError('trailing epoch lacks executed sizing evidence')
+            params = json.loads(sizing[0])['grid_params']
         levels = tuple(map(Decimal, json.loads(context['levels_json'])))
         quantities = {Decimal(o['quantity']) for o in self.store.all_orders()
                       if o['epoch_id'] == epoch and o['role'] == 'ENTRY'}

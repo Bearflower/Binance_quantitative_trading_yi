@@ -150,6 +150,12 @@ class GridEngine:
             if self.store.engine_state()["state"] in ("LOCKED", "EXITING"):
                 await self.exit_all(epoch_id)
                 return False
+            # Ownership/status validation above still runs for every ACK. An
+            # accepted NEW carries no fill and creates no protection obligation.
+            if (update.execution_type == "NEW" and update.order_status == "NEW"
+                    and update.cumulative_quantity == 0
+                    and source["status"] == "NEW" and Decimal(source["executed_qty"]) == 0):
+                return True
             positions = await self.exchange.position()
             if len(positions) != 1 or positions[0].get("positionSide") != "BOTH":
                 return self._lock("position unavailable after fill")
@@ -488,6 +494,11 @@ class GridEngine:
             self._plan_digest(plan, stop_low, stop_high),
             levels=plan.levels,
             stop_loss_low=stop_low, stop_loss_high=stop_high)
+        if plan.sizing is not None:
+            # Persist the executed geometry before the first exchange write.
+            import json
+            self.store.conn.execute('INSERT INTO schema_meta(key,value) VALUES(?,?)',
+                ('grid_epoch_sizing:%s' % epoch_id, json.dumps(plan.sizing, sort_keys=True)))
         for order in plan.orders:
             token = "%s:%s:%s" % (epoch_id, order.level_index, order.side)
             client_id = "eg-" + hashlib.sha256(token.encode()).hexdigest()[:24]

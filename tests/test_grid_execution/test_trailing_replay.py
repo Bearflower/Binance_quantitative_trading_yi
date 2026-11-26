@@ -378,9 +378,10 @@ async def test_settled_late_exit_fill_lock_requires_exact_evidence(replay, block
 
 
 @pytest.mark.asyncio
-async def test_closed_mismatch_auto_unlocks_and_waits_for_a_new_signal(replay):
+@pytest.mark.parametrize('reason', ['position does not match journal fills', 'position unavailable while exiting'])
+async def test_closed_mismatch_auto_unlocks_and_waits_for_a_new_signal(replay, reason):
     store, exchange, service, signal, *_ = replay
-    closed_mismatch(replay)
+    closed_mismatch(replay, reason)
     exchange.clock += 10_000
     await service.tick()
     assert store.engine_state()['state'] == 'LOCKED'
@@ -411,10 +412,11 @@ async def test_closed_mismatch_auto_unlocks_and_waits_for_a_new_signal(replay):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('blocker', ['manual', 'risk', 'disconnected', 'foreign', 'foreign_order', 'missing', 'pending', 'unsafe_relock'])
-async def test_closed_mismatch_cannot_unlock_without_all_recovery_evidence(replay, blocker):
+@pytest.mark.parametrize('reason', ['position does not match journal fills', 'position unavailable while exiting'])
+async def test_closed_mismatch_cannot_unlock_without_all_recovery_evidence(replay, blocker, reason):
     store, exchange, service, signal, *_ = replay
     trades = closed_mismatch(replay, 'risk: daily_usdt' if blocker == 'manual'
-                             else 'position does not match journal fills')
+                             else reason)
     if blocker == 'risk':
         service._risk.return_value = RiskAssessment(RiskStatus.EXIT_LOCKED, ('daily_usdt',))
     elif blocker == 'disconnected':
@@ -590,3 +592,22 @@ async def test_strong_trend_preempts_confirmed_candidate_waiting_for_flat(replay
     assert store.active_epoch_id() is None
     assert exchange.quantity == 0
     exchange.close_position.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', [False,True])
+async def test_empty_canceled_epoch_cleanup_lock_requires_every_exchange_order(replay,missing):
+    store,exchange,service,*_=replay
+    epoch=store.create_epoch('canceled-round')
+    cid='eg-canceled'
+    store.prepare_order(epoch,0,'ENTRY','BUY',D(1600),D('.013'),cid)
+    store.record_order(cid,'123','CANCELED',D(0));store.close_epoch(epoch)
+    store.set_engine_state('LOCKED','position unavailable while exiting')
+    exchange.trade_history=AsyncMock(return_value=[])
+    exchange.order_history=AsyncMock(return_value=[] if missing else [dict(symbol='ETHUSDT',
+        orderId=123,clientOrderId=cid,side='BUY',origQty='.013',executedQty='0',status='CANCELED')])
+    for _ in range(2):
+        exchange.clock+=31000
+        await service.tick()
+    assert store.engine_state()['state']==('LOCKED' if missing else 'FLAT')
+    exchange.place_limit.assert_not_awaited()

@@ -39,6 +39,7 @@ class GridPlan:
     max_margin_usdt: Decimal
     stop_loss_low: Decimal = None
     stop_loss_high: Decimal = None
+    sizing: dict = None
 
 
 class PlanLimitExceeded(ValueError):
@@ -73,20 +74,7 @@ def build_plan(params: DynamicGridParams, feasibility: CapitalFeasibility,
     qty = _round(feasibility.qty_per_grid, exchange_filters.step_size, ROUND_FLOOR)
     if qty < exchange_filters.min_qty:
         raise ValueError("quantity below minimum")
-    raw_levels = []
-    for index in range(params.grid_count + 1):
-        if params.grid_mode == GridMode.ARITHMETIC:
-            raw = params.lower_boundary + (
-                params.upper_boundary - params.lower_boundary
-            ) * Decimal(index) / Decimal(params.grid_count)
-        elif params.grid_mode == GridMode.GEOMETRIC:
-            ratio = params.upper_boundary / params.lower_boundary
-            raw = params.lower_boundary * (ratio ** (Decimal(index) / Decimal(params.grid_count)))
-        else:
-            raise ValueError("unknown grid mode")
-        raw_levels.append(raw)
-
-    levels = tuple(_round(raw, exchange_filters.tick_size, ROUND_FLOOR) for raw in raw_levels)
+    raw_levels, levels = price_levels(params, exchange_filters)
     if any(left >= right for left, right in zip(levels, levels[1:])):
         raise ValueError("rounded grid levels overlap")
     # Compare each rounded interval with its own unrounded interval. Arithmetic
@@ -134,3 +122,21 @@ def build_plan(params: DynamicGridParams, feasibility: CapitalFeasibility,
     if not 0 < stop_low < levels[0] or stop_high <= levels[-1]:
         raise ValueError("rounded stop boundaries invalid")
     return GridPlan(tuple(orders), levels, total_notional, margin, stop_low, stop_high)
+
+
+def price_levels(params, exchange_filters):
+    raw_levels = []
+    for index in range(params.grid_count + 1):
+        if params.grid_mode == GridMode.ARITHMETIC:
+            raw = params.lower_boundary + (
+                params.upper_boundary - params.lower_boundary
+            ) * Decimal(index) / Decimal(params.grid_count)
+        elif params.grid_mode == GridMode.GEOMETRIC:
+            ratio = params.upper_boundary / params.lower_boundary
+            raw = params.lower_boundary * (ratio ** (Decimal(index) / Decimal(params.grid_count)))
+        else:
+            raise ValueError("unknown grid mode")
+        raw_levels.append(raw)
+
+    levels = tuple(_round(raw, exchange_filters.tick_size, ROUND_FLOOR) for raw in raw_levels)
+    return raw_levels, levels

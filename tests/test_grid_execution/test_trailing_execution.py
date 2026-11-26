@@ -565,3 +565,57 @@ async def test_stop_settlement_during_replacement_never_reopens_grid(moving, mon
     assert store.stopped_epoch(epoch)
     assert store.engine_state()['state'] == 'EXITING'
     assert not exchange.place_calls
+
+
+@pytest.mark.asyncio
+async def test_idle_audit_is_bounded_but_real_move_reconciles_fresh(moving, monkeypatch):
+    store, exchange, engine, controller, filters, epoch = moving
+    exchange.mark = D(120)
+    clock = [100.0]
+    monkeypatch.setattr('strategies.grid.execution.trailing.time.monotonic', lambda: clock[0])
+    engine.reconcile = AsyncMock(return_value=True)
+    for _ in range(12):
+        assert await controller.tick(epoch, filters)
+        clock[0] += 5
+    assert engine.reconcile.await_count == 2
+    exchange.mark = D(150)
+    assert await controller.tick(epoch, filters)
+    assert engine.reconcile.await_count >= 3
+
+
+@pytest.mark.asyncio
+async def test_executed_grid_count_survives_restart_and_ack_burst(tmp_path):
+    from dataclasses import asdict
+    from strategies.grid.execution.sizing import size_grid
+    from strategies.grid.execution.risk import RiskAssessment, RiskStatus
+    from strategies.grid.grid_calculator import DynamicGridParams, GridMode
+    path=tmp_path/'joint'; migrate(path); store=DecisionStore(path)
+    p=DynamicGridParams(D('1595.0536694579707'),D('1804.3263305420293'),10,
+                        GridMode.ARITHMETIC,D('1553.20'),D('1846.18'))
+    f=ExchangeFilters(D('.01'),D('.001'),D('.001'),D('20'))
+    limits=HardLimits(D(240),D(2400),13,5)
+    plan=size_grid(p,D('1699.70'),f,limits,advisory_margin=D(17),available_margin=D(286),min_grid_count=4)
+    params={k:(v.name if isinstance(v,GridMode) else str(v) if isinstance(v,D) else v) for k,v in asdict(p).items()}
+    now=int(time.time()*1000)
+    payload=dict(symbol='ETHUSDT',state='WEAK_TREND',executable=True,calculated_at_ms=now,
+        last_closed_kline_ms={tf:now-60000 for tf in ('15m','1h','4h')},
+        grid_params=params,feasibility=dict(feasible=True),sizing_version=2)
+    decision=store.publish(payload,'joint');payload['decision_id']=decision
+    x=MovingExchange();x.mark=D('1699.70');x.verify_account=AsyncMock(return_value=f)
+    engine=GridEngine(store,x,limits)
+    assert await engine.start_grid(payload,plan,RiskAssessment(RiskStatus.ALLOW,()),leverage=5,now_ms=now)
+    epoch=store.active_epoch_id()
+    x.position=AsyncMock(wraps=x.position);x.open_orders=AsyncMock(wraps=x.open_orders)
+    for order in store.all_orders():
+        assert await engine.on_order_update({'e':'ORDER_TRADE_UPDATE','o':dict(s='ETHUSDT',
+            c=order['client_order_id'],i=order['exchange_order_id'],S=order['side'],x='NEW',X='NEW',
+            l='0',z='0',L='0',t=0)},epoch_id=epoch,levels=plan.levels,filters=f,
+            stop_loss_low=plan.stop_loss_low,stop_loss_high=plan.stop_loss_high)
+    x.position.assert_not_awaited();x.open_orders.assert_not_awaited()
+    store.close();store=DecisionStore(path)
+    controller=TrailingController(GridEngine(store,x,limits))
+    policy=controller.ensure_epoch(epoch,f)
+    assert policy.grid_count==4
+    assert controller.state.window(epoch)['upper_index']==4
+    assert json.loads(store.conn.execute('SELECT payload_json FROM decisions').fetchone()[0])['grid_params']['grid_count']==10
+    store.close()

@@ -554,6 +554,9 @@ class GridSignalBot:
             "feasibility": encode(asdict(signal.capital_feasibility)) if signal.capital_feasibility else None,
             "margin_used": str(signal.margin_used) if signal.margin_used is not None else None,
         }
+        payload['sizing_version'] = 2
+        payload['execution_constraints'] = {
+            'min_grid_count': self._state_grid_bounds(signal.market_analysis.state)[0]}
         config_hash = self._metadata.get("config_hash") or hashlib.sha256(
             json.dumps(self.config, sort_keys=True, default=str).encode()).hexdigest()
         return self._decision_store.publish(payload, config_hash)
@@ -565,6 +568,9 @@ class GridSignalBot:
         - 方案B 启用：advice.suggested_margin>0 时用建议保证金，否则回退 trading.margin
         - 方案B 关闭（整体回退）：恒用固定 trading.margin（V2.5 已知行为）
         """
+        if getattr(self, '_decision_store', None) is not None:
+            value = advice.suggested_margin if advice is not None else Decimal(0)
+            return value if value.is_finite() and value > 0 else Decimal(0)
         if not self.capital_constraint_enabled:
             return self.default_margin
         if advice is not None and advice.suggested_margin > 0:
@@ -646,6 +652,18 @@ class GridSignalBot:
             trend_strength=market_analysis.trend_strength
         )
         n_min, _ = self._state_grid_bounds(market_analysis.state)
+
+        if getattr(self, '_decision_store', None) is not None:
+            # Only structural/profit constraints belong to the producer. Actual
+            # capital, leverage and exchange filters belong to the executor.
+            count = min(params.grid_count, self._resolve_profit_cap(params, n_min))
+            valid = count >= n_min and margin is not None and margin.is_finite() and margin > 0
+            if count >= n_min:
+                params.grid_count = count
+                params.profit_rate, params.grid_spacing = self.grid_calculator._calculate_profit_rate(
+                    params.lower_boundary, params.upper_boundary, count, params.grid_mode,
+                    market_analysis.current_price)
+            return params, CapitalFeasibility(valid, params.grid_count, Decimal(0), 'EXECUTION')
 
         if not self.capital_constraint_enabled:
             return self._legacy_grid_params(
@@ -1141,6 +1159,7 @@ class GridSignalBot:
         if getattr(self, '_decision_store', None) is not None:
             # The executor's actual plan result replaces advisory feasibility.
             funding_text = PENDING_TEXT
+            grid_params_text = grid_params_text.replace('📐 建议网格参数', '📐 结构参数（实盘格数以执行回执为准）').replace('- 网格数量:', '- 结构格数上限:')
         elif self.capital_constraint_enabled:
             funding_text = self._build_funding_text(
                 market_analysis, grid_params, capital_feasibility, margin_used

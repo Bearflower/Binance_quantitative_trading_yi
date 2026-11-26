@@ -198,8 +198,17 @@ class ExecutorService:
             max_margin=str(self.settings.max_margin_usdt),
             min_notional=str(self.filters.min_notional), status='CHECKING')
         try:
-            plan = build_plan(params, feasibility, price, self.filters, limits,
-                              margin_budget_usdt=budget)
+            if decision.get('sizing_version') == 2:
+                if not feasibility.feasible:
+                    raise PlanLimitExceeded('structural or profit constraints failed')
+                from .sizing import size_grid
+                plan = size_grid(params, price, self.filters, limits,
+                    advisory_margin=signal_margin, available_margin=available,
+                    min_grid_count=decision['execution_constraints']['min_grid_count'])
+                self._plan_receipt.update(plan.sizing)
+            else:
+                plan = build_plan(params, feasibility, price, self.filters, limits,
+                                  margin_budget_usdt=budget)
         except ValueError as exc:
             self._plan_receipt.update(status='REJECTED', reason=str(exc))
             self._plan_receipt.update(getattr(exc, 'evidence', {}))
@@ -207,7 +216,7 @@ class ExecutorService:
         self._plan_receipt.update(status='PASSED', quantity=str(plan.orders[0].quantity),
                                   order_count=len(plan.orders))
         logger.info("grid execution sized: margin_budget=%s leverage=%s quantity=%s",
-                    budget, self.settings.expected_leverage, plan.orders[0].quantity)
+                    self._plan_receipt['budget'], self.settings.expected_leverage, plan.orders[0].quantity)
         return plan
 
     def _write_heartbeat(self, now_ms: int):

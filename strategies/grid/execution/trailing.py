@@ -25,6 +25,7 @@ class TrailingController:
         self.exchange = engine.exchange
         self.state = TrailingStore(self.store)
         self.submission_allowed = None
+        self._last_idle_audit = {}
 
     def can_submit(self, epoch):
         if (self.store.engine_state()['state'] != 'ACTIVE' or self.store.active_epoch_id() != epoch
@@ -102,6 +103,8 @@ class TrailingController:
             "stop_loss_low": Decimal(context["stop_loss_low"]), "stop_loss_high": Decimal(context["stop_loss_high"]),
             "stop_move_down_price": policy.move_down, "stop_move_up_price": policy.move_up,
         }
+        if decision.get('sizing_version') == 2 and proposed['grid_count'] >= policy.grid_count:
+            proposed['grid_count'] = policy.grid_count
         if not self._material_change(current, proposed, interval):
             return False
 
@@ -121,6 +124,9 @@ class TrailingController:
             if previous_close != close_ms - 3_600_000:
                 return False
             prior = self._candidate_geometry(previous.get("grid_params"))
+            if (prior is not None and previous.get('sizing_version') == 2
+                    and prior['grid_count'] >= policy.grid_count):
+                prior['grid_count'] = policy.grid_count
             return (prior is not None and self._material_change(current, prior, interval)
                     and not self._material_change(prior, proposed, interval))
         return False
@@ -259,11 +265,15 @@ class TrailingController:
             return False
         move = self.state.pending(epoch)
         if move is None:
-            if not await self.engine.reconcile():
-                return False
             window = self.state.window(epoch)
             try:
                 shift = next_shift(self.state.policy(epoch), window['lower_index'], window['upper_index'], price)
+                now = time.monotonic()
+                if shift is None and now - self._last_idle_audit.get(epoch, float('-inf')) < 30:
+                    return True
+                if not await self.engine.reconcile():
+                    return False
+                self._last_idle_audit[epoch] = time.monotonic()
                 if shift is None:
                     return True
                 active = [o for o in self.store.active_orders() if o['epoch_id'] == epoch]

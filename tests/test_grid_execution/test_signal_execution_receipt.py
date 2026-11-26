@@ -215,3 +215,17 @@ async def test_push_waits_for_completion_when_first_receipt_is_pending(monkeypat
     await bot._attach_execution_receipt(signal, 'd1')
     assert '本次决策已处理' in signal.message
     assert reader.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_live_joint_sizing_receipt_matches_actual_plan_not_legacy_quantity():
+    from strategies.grid.execution.signal_receipt import render_receipt
+    s=service();d=decision();d.update(sizing_version=2,execution_constraints={'min_grid_count':4})
+    p=await s._plan(d)
+    assert len(p.levels)==5 and p.orders[0].quantity==D('.013')
+    assert s._plan_receipt['budget']=='22.10' and s._plan_receipt['leverage']==5
+    r=dict(decision_id='d1',updated_at_ms=1000,state='ACTIVE',processed=True,
+           sizing=s._plan_receipt,active_sizing=p.sizing,risk='ALLOW')
+    text=render_receipt(r,'d1',now_ms=1001)
+    assert '4 格' in text and '22.10 USDT' in text and '0.013 ETH' in text
+    s.exchange.verify_account.assert_awaited_once_with(5)
