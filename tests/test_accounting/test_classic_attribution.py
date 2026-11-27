@@ -61,9 +61,22 @@ async def test_runtime_rechecks_inside_serializable_before_write(monkeypatch,fai
     p.exchange_uid_sha256='a'*64
     p.classic_flat_evidence_sha256='b'*64
     phases=[]
+    income_lock_held=False
+    @asynccontextmanager
+    async def locked(connection, account):
+        nonlocal income_lock_held
+        assert account=='default' and connection is db_connection
+        assert not income_lock_held
+        income_lock_held=True
+        phases.append('income_lock')
+        try:yield
+        finally:
+            income_lock_held=False
+            phases.append('income_unlock')
     class Connection:
         @asynccontextmanager
         async def transaction(self,**kw):
+            assert income_lock_held
             phases.append(kw['isolation']);yield
         async def fetch(self,sql,*args):
             phases.append('read:'+('orders' if 'order_strategy_evidence' in sql else 'source'))
@@ -73,6 +86,7 @@ async def test_runtime_rechecks_inside_serializable_before_write(monkeypatch,fai
             if sql==m._EXISTING_SQL:return []
             return []
     connection=Connection()
+    db_connection=connection
     class Pool:
         @asynccontextmanager
         async def acquire(self):yield connection
@@ -88,6 +102,7 @@ async def test_runtime_rechecks_inside_serializable_before_write(monkeypatch,fai
     async def read_policy(target,*args,**kwargs):
         return None if failure=='no_policy' or (failure=='revoked' and target is connection) else p
     monkeypatch.setattr(m,'read_history_acceptance',read_policy)
+    monkeypatch.setattr(m,'income_account_lock',locked)
     monkeypatch.setattr(m,'require_income_integrity',AsyncMock())
     counter=0
     async def facts_read(*args):
@@ -102,6 +117,7 @@ async def test_runtime_rechecks_inside_serializable_before_write(monkeypatch,fai
         return d
     monkeypatch.setattr(m,'_facts',facts_read)
     async def position(*args):
+        assert not income_lock_held
         phases.append('signed_position')
         return (None,'post_cutoff_fill',None) if failure=='position_gap' else (Decimal(1),None,{'cutoff':1})
     monkeypatch.setattr(m,'verified_position_at_cutoff',position)
@@ -125,6 +141,8 @@ async def test_runtime_rechecks_inside_serializable_before_write(monkeypatch,fai
             assert result['ready'] and result['pending']==[]
             assert result['write_result']['income_rows_seen']==1
             writer.assert_awaited_once()
+    assert not income_lock_held
+    assert phases.count('income_lock')==phases.count('income_unlock')
 
 
 def test_unproven_inventory_is_pending_even_without_income(monkeypatch):
