@@ -18,6 +18,8 @@ from ai_tuner.monitor.trial_risk_evidence import account_initial_margin
 from ai_tuner.allocation.capital_evidence import read_capital_evidence
 from ai_tuner.allocation.shadow_allocation import preview_monthly_allocation
 from ai_tuner.monitor.account_risk import classic_budget_block, collect_account_risk, observe_classic_equity
+from ai_tuner.monitor.classic_account_risk import collect_classic_risk, READY, risk_allows_allocation
+from shared.accounting.history_tolerance import read_history_acceptance
 from ai_tuner.monitor.reduced_trial import BEIJING, NotificationState
 from shared.accounting.pm_equity_bridge import observe_pm_equity
 from shared.accounting.account_cutover import account_cutover_ms
@@ -49,25 +51,28 @@ class EvidenceJobs:
         self.config = config
         self.state_dir = Path(state_dir) / 'classic' if self.classic else Path(state_dir)
         self.budget = dict(config['account_risk']['budget'])
+        self._classic_policy = None
         if self.budget.get('account_id') != 'default':
             raise ValueError('reviewed budget covers only default PM')
 
     def latest_risk(self):
-        if self.classic:
+        if self.classic and self._classic_policy is None:
             return classic_budget_block(self.budget['account_id'])
         risk = {}
         try:
             risk = json.loads((self.state_dir / 'account-risk-latest.json').read_text())
             if (not isinstance(risk, dict) or risk.get('account_id') != self.budget['account_id']
-                    or risk.get('budget_id') != self.budget['budget_id']):
+                    or risk.get('budget_id') != (f"{self.budget['account_id']}-classic-{self._classic_policy.revision}" if self.classic else self.budget['budget_id'])):
                 raise ValueError('risk identity mismatch')
             age = int(time.time()*1000) - risk['as_of_ms']
             if age < 0 or age > self.budget.get('max_snapshot_age_ms', 120000):
                 raise ValueError('risk snapshot stale')
+            if self.classic and (risk.get('acceptance_sha256') != self._classic_policy.receipt_sha256):
+                raise ValueError('classic acceptance changed')
             return risk
         except (OSError, ValueError, KeyError, TypeError):
             latched = (isinstance(risk, dict) and risk.get('account_id') == self.budget['account_id']
-                       and risk.get('budget_id') == self.budget['budget_id']
+                       and (self.classic or risk.get('budget_id') == self.budget['budget_id'])
                        and (risk.get('known_breach') or risk.get('status') == 'SAFETY_REVIEW'))
             return {'status': 'SAFETY_REVIEW' if latched else 'BLOCKED_DATA',
                     'known_breach': risk.get('known_breach') if latched else None, 'account_id': self.budget['account_id'],
@@ -87,9 +92,25 @@ class EvidenceJobs:
                     or pin.get('account_identity') != budget['account_identity']):
                 raise ValueError('persisted risk baseline account mismatch')
             budget['expected_baseline_time_ms'] = pin['exchange_time_ms']
-        result = (classic_budget_block(budget['account_id']) if self.classic else
-                  await collect_account_risk(self.db, self.pm, self.wallet, budget))
-        if pin is None and result.get('baseline'):
+        if self.classic:
+            previous = self.latest_risk()
+            try:
+                self._classic_policy = await read_history_acceptance(self.db, budget['account_id'])
+                attribution = None
+                if self._classic_policy is not None:
+                    from shared.accounting.classic_attribution import reconcile_classic_attribution
+                    attribution = await reconcile_classic_attribution(self.db, self.pm, acceptance=self._classic_policy)
+                result = await collect_classic_risk(self.db, self.pm, budget['account_id'], attribution=attribution)
+            except Exception as exc:
+                result = classic_budget_block(budget['account_id'])
+                result.update(status='SAFETY_REVIEW' if previous.get('known_breach') else 'BLOCKED_DATA',
+                    account_id=budget['account_id'], account_mode='classic', as_of_ms=None,
+                    known_breach=previous.get('known_breach'), limit_ratio='0.05',
+                    max_drawdown_ratio=previous.get('max_drawdown_ratio'),
+                    reasons=['classic_risk_collection_failed:'+type(exc).__name__])
+        else:
+            result = await collect_account_risk(self.db, self.pm, self.wallet, budget)
+        if not self.classic and pin is None and result.get('baseline'):
             self.state_dir.mkdir(parents=True, exist_ok=True)
             # Create once; daily jobs, failures and budget renewals never replace it.
             with pin_path.open('x', encoding='utf-8') as handle:
@@ -98,13 +119,14 @@ class EvidenceJobs:
                 os.fsync(handle.fileno())
         # Immutable detailed facts live in PostgreSQL; this pointer is a report cache.
         summary = {key: value for key, value in result.items() if key != 'evidence'}
-        summary['exchange_account_initial_margin_usd'] = account_initial_margin(
-            result.get('evidence'), result.get('as_of_ms'))
+        if not self.classic:
+            summary['exchange_account_initial_margin_usd'] = account_initial_margin(
+                result.get('evidence'), result.get('as_of_ms'))
         atomic_report(self.state_dir / 'account-risk-latest.json', summary)
         signature = json.dumps([summary['status'], sorted({str(r).split(':')[0]
                                  for r in summary.get('reasons', [])})], sort_keys=True)
         state = NotificationState(self.state_dir / 'account-risk-notified.json')
-        if summary['status'] != 'VERIFIED' and state.changed(signature):
+        if summary['status'] not in ('VERIFIED', READY) and state.changed(signature):
             delivered = await self.messenger.send_alert(
                 '【AI Tuner 主账户回撤预算】',
                 f"账户模式 {'经典合约' if self.classic else 'PM'}，网格另评\n结论: {summary['status']}\n"
@@ -113,7 +135,7 @@ class EvidenceJobs:
                 '只读考核；自动分配继续冻结，需复审处理。', level='error')
             if delivered:
                 state.mark_delivered(signature, datetime.now(BEIJING))
-        elif summary['status'] == 'VERIFIED' and state.changed(signature):
+        elif summary['status'] in ('VERIFIED', READY) and state.changed(signature):
             state.mark_delivered(signature, datetime.now(BEIJING))
         return summary
 
@@ -315,7 +337,8 @@ def register_evidence_jobs(scheduler, jobs):
     for name, callback in (('account_risk', jobs.sample_risk),
                            ('entry_activity', jobs.sample_activity)):
         scheduler.add_job(callback, 'interval', minutes=1, id=name, max_instances=1,
-                          replace_existing=True, coalesce=True, misfire_grace_time=30)
+                          replace_existing=True, coalesce=True, misfire_grace_time=30,
+                          next_run_time=datetime.now(BEIJING))
     scheduler.add_job(jobs.sample_equity_valuation, 'interval', minutes=5,
                       id=('classic_equity_valuation' if jobs.classic else 'pm_equity_valuation'), max_instances=1, replace_existing=True,
                       coalesce=True, misfire_grace_time=60, next_run_time=datetime.now(BEIJING))

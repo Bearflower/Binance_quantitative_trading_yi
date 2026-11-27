@@ -991,3 +991,137 @@ async def test_late_income_bound_latch_receipt_matches_persisted_final_gate(setu
 @pytest.mark.parametrize('case',['funding_gap','funding_exit_gap'])
 async def test_event_v2_recovers_exact_independent_income_and_full_exit_end_to_end(setup,case):
     await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage=case)
+
+
+async def _approve_history_for_existing_segment(setup, monkeypatch, *, latched=False):
+    """Real PG policy/repository; exchange GET replies remain fixture inputs."""
+    from shared.accounting.history_tolerance import acceptance_digest, CLASSIC_RISK_METHOD
+    from strategies.hrs.equity_evidence import canonical
+    service, account, pool, api, clock = setup
+    await service.refresh()
+    async with pool.acquire() as c:
+        if latched:
+            await c.execute("UPDATE trading.hrs_loss_gate_state SET gate_state=jsonb_set(jsonb_set(gate_state,'{rolling_latched}','true'),'{rolling_latch_scope}','\"inception_segment\"') WHERE account_id=$1", account)
+        old=dict(await c.fetchrow('SELECT * FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+        if not await c.fetchval("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='trading_user')"):
+            await c.execute('CREATE ROLE trading_user NOLOGIN')
+        await c.execute(Path('database/postgres/migrations/2026-11-09-derived-income-attribution.sql').read_text())
+        if not await c.fetchval("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='trading_migration_admin')"):
+            await c.execute('CREATE ROLE trading_migration_admin NOLOGIN')
+        await c.execute('GRANT USAGE,CREATE ON SCHEMA trading TO trading_migration_admin')
+        await c.execute('SET ROLE trading_migration_admin')
+        try:
+            await c.execute(Path('database/postgres/migrations/2026-11-27-historical-risk-acceptance.sql').read_text())
+        finally:
+            await c.execute('RESET ROLE')
+    cut=int((T+timedelta(milliseconds=500)).timestamp()*1000)
+    flat=T+timedelta(seconds=1); through=T+timedelta(hours=1)
+    clock[0]=through+timedelta(seconds=30)
+    monkeypatch.setenv('BINANCE_CLASSIC_CUTOVER_MS',str(cut))
+    api.use_unified_account=False;api._api_key='isolated-test-key'
+    monkeypatch.setattr('strategies.hrs.equity_service.signed_spot_uid_sha256',AsyncMock(return_value='b'*64))
+    ledger=json.loads(old['ledger_state']);gate=json.loads(old['gate_state'])
+    payload=dict(kind='historical_risk_acceptance_v1',account_id=account,revision=1,enabled=True,
+        approval_ref='isolated-test-acceptance',exchange_uid_sha256='b'*64,
+        accepted_from=T.replace(day=1,hour=0).isoformat(),accepted_through=through.isoformat(),
+        effective_at=clock[0].isoformat(),classic_cutover_ms=cut,classic_flat_at=flat.isoformat(),
+        classic_flat_evidence_sha256='c'*64,classic_open_equity='1000',risk_limit_ratio='.05',
+        hrs_daily_limit='.03',hrs_rolling_limit='.06',automatic_allocation=False,
+        classic_risk_method=CLASSIC_RISK_METHOD,
+        allocation_ceilings_usdt=dict(btc_eth='0',btc_eth_aggressive='0',hrs='1000',new_coin='0'),
+        allowed_gap_codes=['pm_native_income_coverage','pm_native_fill_coverage','historical_nav_sampling',
+                           'historical_cashflow_nav','pm_final_equity_missing','pm_classic_valuation_discontinuity'],
+        hrs_segment_id=old['segment_id'],hrs_baseline_state_version=old['version'],
+        hrs_baseline_ledger_sha256=canonical(ledger)[1],hrs_baseline_gate_sha256=canonical(gate)[1])
+    async with pool.acquire() as c:
+        await c.execute('INSERT INTO trading.historical_risk_acceptance(account_id,revision,payload,receipt_sha256) VALUES($1,1,$2::jsonb,$3)',account,json.dumps(payload),acceptance_digest(payload))
+    await service._collect(cut,int(flat.timestamp()*1000),{'inventory':[]})
+    return old,payload
+
+
+@pytest.mark.asyncio
+async def test_accepted_history_restarts_original_ledger_without_completing_history(setup, monkeypatch):
+    service, account, pool, api, clock=setup
+    old,payload=await _approve_history_for_existing_segment(setup,monkeypatch)
+    result=await service.refresh()
+    assert result['ready'] and result['allowed'],result
+    assert result['history_status']=='ACCEPTED_GAPS' and not result['qualified_30_day']
+    assert result['window_label']=='observed_history_accepted_gaps'
+    async with pool.acquire() as c:
+        current=await c.fetchrow('SELECT * FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)
+        ledger=json.loads(current['ledger_state']);before=json.loads(old['ledger_state'])
+        for field in ('segment_id','inception','cash_allocation','units','income_total','incomes','cash_flows'):
+            assert ledger[field]==before[field]
+        assert await c.fetchval('SELECT count(*) FROM trading.hrs_equity_segment WHERE account_id=$1',account)==1
+        evidence=json.loads(await c.fetchval('SELECT payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=$2',account,result['evidence_sha256']))
+        assert evidence['historical_income_report']['account_coverage_complete'] is False
+        assert evidence['current_income_report']['account_coverage_complete'] is True
+    restarted=HrsEquityService(service.db,api,service.capital_mgr,service.position_manager)
+    restarted.clock=service.clock;clock[0]+=timedelta(seconds=30)
+    again=await restarted.refresh()
+    assert again['allowed'] and again['history_acceptance_sha256']==result['history_acceptance_sha256'],again
+    await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_accepted_history_preserves_persisted_known_loss_latch(setup,monkeypatch):
+    service, account, pool, api, clock=setup
+    await _approve_history_for_existing_segment(setup,monkeypatch,latched=True)
+    result=await service.refresh()
+    assert result['ready'] and not result['allowed'],result
+    assert 'inception_segment_drawdown_latched' in result['reasons']
+    async with pool.acquire() as c:
+        gate=json.loads(await c.fetchval('SELECT gate_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+        assert gate['rolling_latched'] is True
+
+
+@pytest.mark.asyncio
+async def test_current_collection_failure_still_denies_after_accepted_history(setup,monkeypatch):
+    service, account, pool, api, clock=setup
+    await _approve_history_for_existing_segment(setup,monkeypatch)
+    assert (await service.refresh())['allowed']
+    clock[0]+=timedelta(seconds=30);api.get_income_history.side_effect=RuntimeError('current exchange unavailable')
+    result=await service.refresh()
+    assert not result['allowed'] and not result['ready']
+    async with pool.acquire() as c:
+        assert not await c.fetchval("SELECT allowed FROM trading.strategy_equity_gate WHERE account_id=$1",account)
+
+
+@pytest.mark.asyncio
+async def test_current_independent_inventory_conflict_is_not_historical_gap(setup,monkeypatch):
+    service, account, pool, api, clock=setup
+    await _approve_history_for_existing_segment(setup,monkeypatch)
+    api.get_um_account_positions.return_value=[dict(symbol='BTCUSDT',positionAmt='1',entryPrice='100',positionSide='BOTH')]
+    result=await service.refresh()
+    assert not result['allowed']
+    assert any('inventory' in reason for reason in result['reasons']),result
+
+
+@pytest.mark.asyncio
+async def test_accepted_history_accounts_new_classic_fees_without_reseeding(setup,monkeypatch):
+    service, account, pool, api, clock=setup
+    await _approve_history_for_existing_segment(setup,monkeypatch)
+    first=await service.refresh();assert first['allowed'],first
+    start=clock[0];clock[0]+=timedelta(seconds=60)
+    records=[dict(symbol='BTCUSDT',id=801,orderId=801,side='BUY',qty='1',price='100',quoteQty='100',commission='.5',commissionAsset='USDT',realizedPnl='0',time=int((start+timedelta(seconds=10)).timestamp()*1000)),
+             dict(symbol='BTCUSDT',id=802,orderId=802,side='SELL',qty='1',price='100',quoteQty='100',commission='.5',commissionAsset='USDT',realizedPnl='0',time=int((start+timedelta(seconds=20)).timestamp()*1000))]
+    async with pool.acquire() as c:
+        for row in records:
+            when=datetime.fromtimestamp(row['time']/1000,timezone.utc).astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+            await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",account,str(row['orderId']),row['side'],when)
+        schedule_id=uuid.uuid4();service._test_schedule_ids.append(schedule_id)
+        await c.execute("INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,8,'test','{}')",schedule_id,start,start+timedelta(hours=8))
+    api.get_user_trades.return_value=records
+    api.get_income_history.side_effect=lambda **kw: ([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-.5',asset='USDT',tranId=r['id'],tradeId=str(r['id']),time=r['time'],info='') for r in records if kw['start_time']<=r['time']<=kw['end_time']] if kw['income_type']=='COMMISSION' else [])
+    result=await service.refresh()
+    assert result['ready'] and result['allowed'],result
+    async with pool.acquire() as c:
+        ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+        assert D(ledger['cash_allocation'])==1000 and D(ledger['units'])==1000
+        assert D(ledger['income_total'])==-1 and len(ledger['incomes'])==2
+        assert D(ledger['nav'])==D('.999')
+    clock[0]+=timedelta(seconds=30)
+    repeat=await service.refresh();assert repeat['allowed'],repeat
+    async with pool.acquire() as c:
+        ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+        assert D(ledger['income_total'])==-1 and len(ledger['incomes'])==2

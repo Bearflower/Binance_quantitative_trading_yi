@@ -15,6 +15,7 @@ and checkpoint atomically with LossGateRepository; preserve event IDs on restart
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
+import re
 from typing import Tuple
 
 ZERO = Decimal("0")
@@ -71,6 +72,28 @@ class PositionMark:
 
 
 @dataclass(frozen=True)
+class HistoricalIncomeAcceptance:
+    """Explicitly accepted unknown prefix, separate from complete current facts.
+
+    The service verifies the immutable policy and the live coverage before
+    constructing this value. It never turns an incomplete source report complete.
+    """
+    receipt_sha256: str
+    accepted_from: datetime
+    accepted_through: datetime
+    current_complete_from: datetime
+
+    def validate(self, as_of: datetime) -> None:
+        if not re.fullmatch(r'[0-9a-f]{64}', self.receipt_sha256 or ''):
+            raise LedgerNotReady('historical_acceptance_receipt_invalid')
+        start = aware(self.accepted_from, 'acceptance_start')
+        end = aware(self.accepted_through, 'acceptance_end')
+        current = aware(self.current_complete_from, 'current_coverage_start')
+        if not start <= current <= end <= as_of:
+            raise LedgerNotReady('historical_acceptance_window_invalid')
+
+
+@dataclass(frozen=True)
 class LedgerObservation:
     as_of: datetime
     segment_id: str
@@ -81,6 +104,7 @@ class LedgerObservation:
     inventory_verified_at: datetime
     income_complete: bool
     positions_complete: bool
+    accepted_history: HistoricalIncomeAcceptance | None = None
 
 
 @dataclass(frozen=True)
@@ -117,7 +141,9 @@ def _validate_observation(obs: LedgerObservation, segment: str, max_age: timedel
     if max_age <= timedelta(0):
         raise LedgerNotReady("invalid_max_age")
     if obs.income_complete is not True:
-        raise LedgerNotReady("income_incomplete")
+        if obs.accepted_history is None:
+            raise LedgerNotReady("income_incomplete")
+        obs.accepted_history.validate(obs.as_of)
     if obs.positions_complete is not True:
         raise LedgerNotReady("position_inventory_incomplete")
     if aware(obs.income_complete_through, "income_watermark") < obs.as_of:

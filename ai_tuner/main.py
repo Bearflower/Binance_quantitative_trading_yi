@@ -374,6 +374,7 @@ class StratTuneAI:
                 self.evidence_jobs = EvidenceJobs(
                     self.db_manager, self.reduced_trial_exchange, self.evidence_wallet,
                     self.messenger, self.config, Path("/app/logs/trial_evidence"))
+                self.monthly_job.account_risk_provider = self.evidence_jobs.sample_risk
             else:
                 logger.error("主账户考核缺少生产只读凭据，自动分配仍冻结")
 
@@ -1113,13 +1114,32 @@ class StratTuneAI:
                 if backup_file:
                     return web.json_response({"status": "error", "message": "覆盖层回滚请指定 version"}, status=409)
                 previous = data["expected_version"]
+                target = data.get("version", "")
+                if not isinstance(previous, str) or not isinstance(target, str):
+                    return web.json_response({"status": "error", "message": "版本参数必须是字符串"}, status=400)
                 try:
-                    version = self.config_operator.rollback_overlay(config_path, data.get("version", ""), expected_current=previous)
+                    version = self.config_operator.rollback_overlay(config_path, target, expected_current=previous)
                 except (ValueError, FileNotFoundError):
                     return web.json_response({"status": "error", "message": "覆盖层版本已变化或目标不可用"}, status=409)
-                await self.db_handler.record_overlay_rollback(strategy_id, previous, version)
-                await self.messenger.send_rollback_notification(strategy_cfg.get("name", strategy_id), strategy_id, version)
-                return web.json_response({"status": "ok", "active_version": version})
+                # 活动指针已经切换；记忆或通知失败不能被误报成配置回滚失败。
+                metadata_updated = False
+                notification_sent = False
+                try:
+                    await self.db_handler.record_overlay_rollback(strategy_id, previous, version)
+                    metadata_updated = True
+                except Exception:
+                    logger.exception("覆盖层已回退，但记忆状态更新失败", strategy_id=strategy_id)
+                try:
+                    result = await self.messenger.send_rollback_notification(
+                        strategy_cfg.get("name", strategy_id), strategy_id, version
+                    )
+                    notification_sent = result is not False
+                except Exception:
+                    logger.exception("覆盖层已回退，但通知发送失败", strategy_id=strategy_id)
+                return web.json_response({
+                    "status": "ok", "active_version": version,
+                    "metadata_updated": metadata_updated, "notification_sent": notification_sent,
+                })
             if data.get("version") or data.get("expected_version"):
                 return web.json_response({"status": "error", "message": "没有生效覆盖层"}, status=409)
             if not backup_file:

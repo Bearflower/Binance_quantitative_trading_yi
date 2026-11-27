@@ -1,0 +1,89 @@
+{
+  "groups": [
+    {
+      "name": "btc-eth",
+      "base": "ghcr.io/bearflower/trading-btc-eth@sha256:cbfbbbf83019da10e83f946071a8b3cac845cc0c0df831d9cb1650635aa55ac6",
+      "repository": "ghcr.io/bearflower/trading-btc-eth",
+      "containers": [
+        "trading_system-btc_eth"
+      ]
+    },
+    {
+      "name": "btc-eth-aggr",
+      "base": "ghcr.io/bearflower/trading-btc-eth-aggr@sha256:8a1a6ac7364b222ab7ec671e447cc53cd51f06b8b95b6c8ea565b584e4074189",
+      "repository": "ghcr.io/bearflower/trading-btc-eth-aggr",
+      "containers": [
+        "trading_system-btc_eth_aggressive"
+      ]
+    },
+    {
+      "name": "new-coin",
+      "base": "ghcr.io/bearflower/trading-new-coin@sha256:6e9597b40d3edf93cf772c9eed665c709e7bbd17d37846d14a6382276160d709",
+      "repository": "ghcr.io/bearflower/trading-new-coin",
+      "containers": [
+        "trading_system-new_coin"
+      ]
+    },
+    {
+      "name": "hrs",
+      "base": "ghcr.io/bearflower/trading-hrs@sha256:0ef26ab9352581286d6fe53e786068ac26d4f0bd1ca23f012bb189f9c9215be1",
+      "repository": "ghcr.io/bearflower/trading-hrs",
+      "containers": [
+        "trading_system-hrs",
+        "trading_system-hrs-acceptance"
+      ]
+    },
+    {
+      "name": "grid",
+      "base": "ghcr.io/bearflower/trading-grid@sha256:ff3f9b88a15b5ee8566e63d9a8c61d1f93832a267b22cf06b44e3bb03c2275c6",
+      "repository": "ghcr.io/bearflower/trading-grid",
+      "containers": [
+        "trading_system-grid",
+        "trading_system-grid-realtime",
+        "trading_system-grid-notifier"
+      ]
+    },
+    {
+      "name": "grid-executor",
+      "base": "ghcr.io/bearflower/trading-grid@sha256:5d585f51321179c36b30e712769513f5bf6f2f186a2fb02e238eed90c50dafe7",
+      "repository": "ghcr.io/bearflower/trading-grid",
+      "containers": [
+        "trading_system-grid-executor"
+      ]
+    },
+    {
+      "name": "ai-tuner",
+      "base": "ghcr.io/bearflower/trading-ai-tuner@sha256:8df706ff497e3dd65d9fce7e6cfad229ebd6cb5c3ad724094b93a60b256d29e7",
+      "repository": "ghcr.io/bearflower/trading-ai-tuner",
+      "containers": [
+        "ai-tuner",
+        "ai-tuner-snapshot",
+        "ai-tuner-funding-schedule"
+      ]
+    }
+  ],
+  "files": [
+    "ai_tuner/allocation/allocation_calculator.py",
+    "ai_tuner/allocation/classic_publication.py",
+    "ai_tuner/allocation/config_updater.py",
+    "ai_tuner/allocation/history_acceptance.py",
+    "ai_tuner/allocation/monthly_job.py",
+    "ai_tuner/main.py",
+    "ai_tuner/monitor/classic_account_risk.py",
+    "ai_tuner/monitor/evidence_jobs.py",
+    "ai_tuner/notifier/messenger.py",
+    "scripts/activate_history_acceptance.py",
+    "scripts/audit_algo_attribution.py",
+    "scripts/export_execution_facts.py",
+    "scripts/reconcile_income_attribution.py",
+    "scripts/report_economic_ledger.py",
+    "shared/accounting/allocation_provenance.py",
+    "shared/accounting/classic_attribution.py",
+    "shared/accounting/history_tolerance.py",
+    "shared/capital_manager.py",
+    "strategies/hrs/equity_service.py",
+    "strategies/hrs/history_tolerance.py",
+    "strategies/hrs/loss_gate.py",
+    "strategies/hrs/risk_ledger.py"
+  ]
+}

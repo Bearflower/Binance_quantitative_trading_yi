@@ -12,11 +12,12 @@ data never clears a latch. The explicit reset API preserves daily protection and
 records evidence; it does not erase historical high-watermarks.
 """
 from dataclasses import asdict, dataclass, replace
+from collections import deque
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from .risk_ledger import EquityCheckpoint, LedgerNotReady, aware, decimal_value
+from .risk_ledger import EquityCheckpoint, HistoricalIncomeAcceptance, LedgerNotReady, aware, decimal_value
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DAILY_LIMIT = Decimal("0.03")
@@ -30,6 +31,7 @@ class GateHistory:
     complete_through: datetime
     complete: bool
     daily_complete: bool | None = None
+    accepted_history: HistoricalIncomeAcceptance | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,8 @@ class LossGateState:
     reset_reason: str | None = None
     reset_evidence: str | None = None
     reset_at: datetime | None = None
+    history_acceptance_ref: str | None = None
+    history_acceptance_revision: int = 0
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -136,6 +140,8 @@ def evaluate_loss_gate(previous: LossGateState | None, current: EquityCheckpoint
     try:
         _validate_checkpoint(current, current.segment_id)
         samples = _validated_history(history, current)
+        if history.accepted_history is not None:
+            history.accepted_history.validate(current.as_of)
     except (LedgerNotReady, TypeError, AttributeError, ValueError):
         return invalid("invalid_nav_history")
     origin_at = datetime.combine(day, time.min, SHANGHAI)
@@ -147,6 +153,8 @@ def evaluate_loss_gate(previous: LossGateState | None, current: EquityCheckpoint
             return invalid("conflicting_daily_origin")
         origin_nav = state.day_origin_nav
     coverage_valid = (history.complete is True and history.complete_through == current.as_of)
+    accepted_valid = (history.accepted_history is not None
+                      and history.complete_through == current.as_of)
     daily_coverage = history.complete if history.daily_complete is None else history.daily_complete
     daily_valid = (origin_nav is not None and daily_coverage is True and history.complete_through == current.as_of
                    and history.complete_from <= origin_at)
@@ -169,6 +177,10 @@ def evaluate_loss_gate(previous: LossGateState | None, current: EquityCheckpoint
     elif allow_inception_segment is True and coverage_valid and samples and samples[0].as_of == history.complete_from:
         label = "inception_segment"
         window_samples = samples
+    elif accepted_valid:
+        # A finite accepted prefix is never relabelled as complete 30-day data.
+        label = 'observed_history_accepted_gaps'
+        window_samples = tuple(sample for sample in samples if sample.as_of >= window_start)
     else:
         reasons.append("rolling_30_day_history_incomplete")
     drawdown = None
@@ -180,6 +192,25 @@ def evaluate_loss_gate(previous: LossGateState | None, current: EquityCheckpoint
         if drawdown >= ROLLING_LIMIT:
             rolling_latched = True
             latch_scope = latch_scope or label
+    if accepted_valid:
+        # Newly supplied historical lows must protect even if NAV subsequently
+        # recovered. Unknown intervals remain unknown; only real checkpoints
+        # can establish a known breach.
+        peaks = deque()
+        for point in samples:
+            while peaks and peaks[0].as_of < point.as_of - timedelta(days=30):
+                peaks.popleft()
+            while peaks and peaks[-1].nav <= point.nav:
+                peaks.pop()
+            peaks.append(point)
+            if Decimal('1') - point.nav / peaks[0].nav >= ROLLING_LIMIT:
+                rolling_latched = True
+                latch_scope = latch_scope or label
+            point_day = point.as_of.astimezone(SHANGHAI).date()
+            day_start = datetime.combine(point_day, time.min, SHANGHAI)
+            day_origin = by_time.get(day_start)
+            if point_day == day and day_origin is not None and point.nav / day_origin.nav - Decimal('1') <= -DAILY_LIMIT:
+                daily_latched = True
     if daily_latched:
         reasons.append("daily_loss_latched")
     if rolling_latched:

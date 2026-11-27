@@ -19,7 +19,10 @@
 """
 
 from datetime import datetime, timezone, timedelta
+from dataclasses import replace
 import math
+import time
+import inspect
 from typing import Any, Dict, List, Optional, Tuple
 
 from shared.entry_risk_policy import allocation_frozen
@@ -32,7 +35,11 @@ from ai_tuner.allocation.allocation_calculator import (
 )
 from ai_tuner.allocation.balance_provider import get_actual_balance
 from ai_tuner.allocation.config_updater import AllocationConfigUpdater
-from ai_tuner.allocation.pnl_collector import PnLCollector
+from ai_tuner.allocation.pnl_collector import PnLCollector, AllocationInputUnavailable
+from ai_tuner.allocation.history_acceptance import retained_allocation, cap_result
+from ai_tuner.allocation.classic_publication import publish_classic_allocation
+from ai_tuner.monitor.classic_account_risk import risk_allows_allocation
+from shared.accounting.history_tolerance import read_history_acceptance
 
 logger = structlog.get_logger()
 
@@ -116,6 +123,7 @@ class MonthlyAllocationJob:
         config_operator,
         rollback_manager,
         binance_client=None,
+        account_risk_provider=None,
     ):
         """
         初始化月度分配任务
@@ -136,6 +144,7 @@ class MonthlyAllocationJob:
         self.config_operator = config_operator
         self.rollback_manager = rollback_manager
         self.binance_client = binance_client
+        self.account_risk_provider = account_risk_provider
 
         # 从配置中读取资金分配参数
         self.allocation_cfg = config.get("capital_allocation", {})
@@ -188,6 +197,19 @@ class MonthlyAllocationJob:
         """
         return await get_actual_balance(self.binance_client)
 
+    async def _classic_guard(self):
+        if getattr(self.binance_client, 'use_unified_account', True) is not False:
+            return None, None
+        policy = await read_history_acceptance(self.db_manager, 'default')
+        if policy is None or not policy.automatic_allocation or self.account_risk_provider is None:
+            raise AllocationInputUnavailable('classic_allocation_approval_or_risk_missing')
+        risk = self.account_risk_provider()
+        if inspect.isawaitable(risk):
+            risk = await risk
+        if not risk_allows_allocation(risk, policy, int(time.time()*1000)):
+            raise AllocationInputUnavailable('classic_account_risk_not_ready')
+        return policy, risk
+
     async def run_monthly_allocation(
         self,
         pnl_month: Optional[str] = None,
@@ -217,15 +239,17 @@ class MonthlyAllocationJob:
         logger.info("月度资金分配开始")
 
         try:
-            if self.allocation_cfg.get("mode") == "shadow_only":
+            policy, initial_risk = await self._classic_guard()
+            if self.allocation_cfg.get("mode") == "shadow_only" and policy is None:
                 logger.info("资金分配只生成影子结果；实盘恢复须另行审阅批准")
                 return None
-            if await allocation_frozen(self.db_manager):
+            if policy is None and await allocation_frozen(self.db_manager):
                 logger.warning("整改期间资金分配冻结，保留现有额度及配置")
                 return None
 
             # 0. 确保表存在（幂等）
-            await self._ensure_table()
+            if policy is None:
+                await self._ensure_table()
 
             # 检查是否启用
             if not self.allocation_cfg.get("enabled", False):
@@ -254,12 +278,15 @@ class MonthlyAllocationJob:
             is_first_month = await self._check_is_first_month()
 
             # 5. 盈亏采集
-            pnl_data = await self.pnl_collector.collect_all_realized_pnl(
-                month_start=month_start,
-                month_end=month_end,
-            )
-
-            if not pnl_data:
+            retain_history = False
+            try:
+                pnl_data = await self.pnl_collector.collect_all_realized_pnl(
+                    month_start=month_start, month_end=month_end)
+            except AllocationInputUnavailable:
+                if policy is None or not policy.accepted_from <= month_start < policy.accepted_through:
+                    raise
+                retain_history, pnl_data = True, None
+            if not pnl_data and not retain_history:
                 logger.warning("没有采集到任何策略盈亏数据，跳过分配")
                 return None
 
@@ -280,26 +307,39 @@ class MonthlyAllocationJob:
                 for s in self._strategy_configs
             }
 
-            result = self.calculator.calculate(
-                total_capital=total_capital,
-                pnl_data=pnl_data,
-                is_first_month=is_first_month,
-                fallback_ratios=fallback_ratios,
-                fallback_capitals=fallback_capitals,
-                rank_ratios=rank_ratios,
-                reserve_ratio=reserve_ratio,
-                strategy_names=strategy_names,
-                month=effective_month,
-            )
-
-            # 7. 写入存储
-            update_success = await self.config_updater.update_all(
-                result=result,
-                config=self.config,
-                db_manager=self.db_manager,
-                config_operator=self.config_operator,
-                rollback_manager=self.rollback_manager,
-            )
+            if retain_history:
+                result = await retained_allocation(self.db_manager, policy, month_start, month_end,
+                    total_capital, reserve_ratio, effective_month, strategy_names)
+            else:
+                result = self.calculator.calculate(
+                    total_capital=total_capital, pnl_data=pnl_data, is_first_month=is_first_month,
+                    fallback_ratios=fallback_ratios, fallback_capitals=fallback_capitals,
+                    rank_ratios=rank_ratios, reserve_ratio=reserve_ratio,
+                    strategy_names=strategy_names, month=effective_month)
+                if policy is not None:
+                    result = cap_result(result, policy, reserve_ratio)
+            if policy is not None:
+                final_policy, final_risk = await self._classic_guard()
+                if final_policy.receipt_sha256 != policy.receipt_sha256:
+                    raise AllocationInputUnavailable('classic_allocation_policy_changed')
+                # A newer lower signed equity narrows this proposal; never enlarge it.
+                result = cap_result(replace(result,total_capital=min(result.total_capital,
+                    float(final_risk['current_equity_usd']))),policy,reserve_ratio)
+                total_capital = result.total_capital
+                update_success = await publish_classic_allocation(self.db_manager,result,
+                    final_policy,final_risk,reserve_ratio,pnl_month)
+                if not update_success:
+                    logger.info('生效月已由另一任务完成分配，保留已有结果',month=effective_month)
+                    return None
+            else:
+                # Legacy publication retains its existing global freeze and writer.
+                update_success = await self.config_updater.update_all(
+                    result=result,
+                    config=self.config,
+                    db_manager=self.db_manager,
+                    config_operator=self.config_operator,
+                    rollback_manager=self.rollback_manager,
+                )
 
             if not update_success:
                 logger.error("配置更新失败，但分配结果已计算")
@@ -331,6 +371,8 @@ class MonthlyAllocationJob:
                     for e in result.entries
                 ],
                 "is_first_month": is_first_month,
+                "caliber": result.caliber,
+                "history_acceptance_sha256": result.history_acceptance_sha256,
             }
 
         except Exception as e:

@@ -32,7 +32,7 @@ projection always expires by source as_of+120s, regardless of collection duratio
 """
 import asyncio
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from contextlib import asynccontextmanager
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -49,6 +49,8 @@ from scripts.collect_execution_facts import collect_window
 from scripts.export_execution_facts import ExecutionFactExporter
 from shared.accounting.account_cutover import account_cutover_ms, order_epoch
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
+from shared.accounting.history_tolerance import HistoryAcceptanceError, read_history_acceptance
+from shared.accounting.equity_bridge import signed_spot_uid_sha256
 from shared.accounting.report_reader import read_monthly_economic_report,_OWNER_SQL
 from shared.execution_facts_sink import PostgresExecutionFactsSink
 
@@ -63,6 +65,7 @@ from .funding_reference import read_forecasts_prefix,load_forecasts_ref,evidence
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
 from .loss_gate_repository import LossGateSession, RepositoryConflict, ledger_from_dict, ledger_to_dict
 from .risk_ledger import CashFlow, LedgerNotReady, LedgerObservation, PositionMark, initialize_ledger, reconcile_ledger
+from .history_tolerance import accepted_history, verify_resume_state, observed_historical_incomes, retained_income_events, observed_gate
 
 log = structlog.get_logger()
 
@@ -113,6 +116,22 @@ class HrsEquityService:
         self._anchor_inventory=()
         self._order_source_cache={}
         self._mark_bar_cache={}
+        self._history_uid_cache = None
+
+    async def _history_acceptance(self):
+        if getattr(self.api, 'use_unified_account', True) is not False:
+            return None
+        policy = await read_history_acceptance(self.db, self.account, now=self._now())
+        if policy is None:
+            return None
+        # A cached UID belongs to this exact credential and immutable receipt.
+        fingerprint = hashlib.sha256(self.api._api_key.encode()).hexdigest()
+        key = (fingerprint, policy.receipt_sha256)
+        if self._history_uid_cache is None or self._history_uid_cache[0] != key:
+            uid = await signed_spot_uid_sha256(self.api, require_classic_trading=True)
+            self._history_uid_cache = (key, uid)
+        return await read_history_acceptance(self.db, self.account, now=self._now(),
+                                             expected_uid=self._history_uid_cache[1])
 
     def _now(self):
         value = self.clock()
@@ -207,7 +226,10 @@ class HrsEquityService:
         """
         symbols=set(snapshot['local'])
         symbols.update(row['symbol'] for row in snapshot.get('authenticated_order_owners',()) if row['strategy']=='hrs')
-        rows=await self.db.fetch_all("SELECT DISTINCT symbol FROM trading.trade_records WHERE account_id=$1 AND strategy='hrs' AND symbol IS NOT NULL",self.account)
+        if snapshot.get('current_path_from'):
+            rows=await self.db.fetch_all("SELECT DISTINCT symbol FROM trading.trade_records WHERE account_id=$1 AND strategy='hrs' AND symbol IS NOT NULL AND executed_at >= $2",self.account,snapshot['current_path_from'].astimezone(SHANGHAI).replace(tzinfo=None))
+        else:
+            rows=await self.db.fetch_all("SELECT DISTINCT symbol FROM trading.trade_records WHERE account_id=$1 AND strategy='hrs' AND symbol IS NOT NULL",self.account)
         symbols.update(row['symbol'] for row in rows)
         forecasts=[]
         for symbol,mark in snapshot['marks'].items():
@@ -686,8 +708,11 @@ class HrsEquityService:
         if rolling>=bootstrap['inception']:
             points.append(rolling)
         opening=json.loads(bootstrap['opening_evidence']) if isinstance(bootstrap['opening_evidence'],str) else bootstrap['opening_evidence']
-        symbols={row['symbol'] for row in opening.get('opening_inventory',()) if row['strategy']=='hrs'}|set(snapshot['local'])
-        rows=await self.db.fetch_all("SELECT DISTINCT symbol FROM trading.trade_records WHERE account_id=$1 AND strategy='hrs' AND executed_at>=$2",self.account,bootstrap['inception'].astimezone(SHANGHAI).replace(tzinfo=None))
+        current_from = snapshot.get('current_path_from', bootstrap['inception'])
+        symbols=set(snapshot['local'])
+        if not snapshot.get('current_path_from'):
+            symbols.update(row['symbol'] for row in opening.get('opening_inventory',()) if row['strategy']=='hrs')
+        rows=await self.db.fetch_all("SELECT DISTINCT symbol FROM trading.trade_records WHERE account_id=$1 AND strategy='hrs' AND executed_at>=$2",self.account,current_from.astimezone(SHANGHAI).replace(tzinfo=None))
         symbols.update(row['symbol'] for row in rows if row.get('symbol'))
         for point in points:
             for symbol in sorted(symbols):
@@ -703,6 +728,8 @@ class HrsEquityService:
                     self._mark_bar_cache[key]=dict(bar=bars[0],available_at=self._now(),source='/fapi/v1/markPriceKlines')
                 snapshot['historical_mark_bars'][key]=self._mark_bar_cache[key]
 
+        if snapshot.get('current_path_from'):
+            return  # Accepted historical holes are retained, not reconstructed as complete.
         try:
             await asyncio.wait_for(self._prepare_automatic_history(bootstrap,snapshot),timeout=30)
         except (EvidenceBlocked,asyncio.TimeoutError) as exc:
@@ -1149,6 +1176,169 @@ class HrsEquityService:
         evidence['capture']['historical_mark_bars'].update(bars)
         return RebuiltHistory(state,gate,full,receipt)
 
+    async def _commit_accepted_history(self, connection, bootstrap, snapshot, collection,
+                                       start_ms, end_ms, policy):
+        """Continue the existing ledger with an accepted prefix and strict live path."""
+        as_of = snapshot['captured_at']
+        if bootstrap is None or not timedelta(0) <= self._now()-as_of < timedelta(seconds=120):
+            raise EvidenceBlocked('accepted_history_existing_fresh_segment_required')
+        actual_policy = await read_history_acceptance(connection, self.account, now=self._now(),
+                                                       expected_uid=self._history_uid_cache[1])
+        if actual_policy is None or actual_policy.receipt_sha256 != policy.receipt_sha256:
+            raise EvidenceBlocked('history_acceptance_changed_during_capture')
+        if as_of < policy.accepted_through:
+            raise EvidenceBlocked('history_acceptance_after_observation')
+        actual = await connection.fetchrow('SELECT * FROM trading.hrs_equity_segment WHERE account_id=$1 FOR UPDATE', self.account)
+        if actual is None or actual['segment_id'] != bootstrap['segment_id']:
+            raise EvidenceBlocked('bootstrap_changed_retry_collection')
+        segment = actual['segment_id']
+        session = LossGateSession(connection, self.account, segment)
+        stored = await session.load()
+        verify_resume_state(policy, stored)
+        state = stored.ledger
+        if as_of <= state.as_of:
+            raise EvidenceBlocked('observation_not_advanced')
+        original_report, fills, orders, pending = await self._read_source(connection,start_ms,end_ms,snapshot)
+        flat = policy.classic_flat_at
+        if any(row['trade_time_utc'] == flat for row in fills):
+            raise EvidenceBlocked('classic_flat_anchor_fill_collision')
+        fills = [row for row in fills if flat < row['trade_time_utc'] <= as_of]
+        reader = _SnapshotDB(connection,snapshot.get('authenticated_order_owners',()))
+        current_report = await read_monthly_economic_report(reader,self.account,int(flat.timestamp()*1000),end_ms+1,
+            include_reviewed_overrides=False,include_derived_attribution=True)
+        complete = (current_report.get('account_coverage_complete') is True
+                    and not current_report.get('coverage_gaps') and not current_report.get('missing_income_fills'))
+        physical={row['symbol']:number(row['positionAmt'],'owner_path_inventory') for row in snapshot['inventory'] if number(row['positionAmt'],'owner_path_inventory')!=0}
+        path_proofs=certify_owned_inventory_paths(self.account,physical,fills,orders,coverage_complete=complete)
+        self._anchor_inventory=()
+        self._entries_clear(snapshot,orders,pending,bootstrap=False,fills=fills)
+        marks=prove_positions(self.account,segment,as_of,snapshot['inventory'],snapshot['independent'],snapshot['local'],
+            fills,orders,snapshot['marks'],bootstrap=False,inception=flat,opening_inventory=())
+        current=owned_fill_positions(self.account,fills,orders,through=as_of,after=flat)
+        inventory=tuple(dict(strategy=owner,symbol=symbol,quantity=str(qty),entry_price=str(basis))
+            for (owner,symbol),(qty,basis) in current.items() if qty!=0)
+        current_report=attribute_funding_from_inventory(current_report,self.account,as_of,fills,orders,inventory,
+            coverage_complete=complete,available_at=self._now())
+        publication=snapshot.get('funding_publication',{})
+        funding_proofs=require_funding_publication(self.account,flat,as_of,fills,orders,inventory,
+            publication.get('forecasts',()),publication.get('published_rates',{}),current_report,
+            live_start=policy.accepted_through,published_coverage=publication.get('published_coverage'),
+            funding_info=publication.get('funding_info'),available_at=self._now())
+        current_events=attributed_incomes(current_report,self.account,segment)
+        historical_report=await read_monthly_economic_report(reader,self.account,
+            int(policy.accepted_from.timestamp()*1000),int(flat.timestamp()*1000),
+            include_reviewed_overrides=True,include_derived_attribution=True)
+        historical=observed_historical_incomes(historical_report,self.account,segment,policy)
+        anchor=json.loads(actual['opening_evidence']) if isinstance(actual['opening_evidence'],str) else actual['opening_evidence']
+        prior_revision=await connection.fetchrow("SELECT receipt FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND segment_id=$2 AND receipt ? 'opening_anchor_revision' ORDER BY after_state_version DESC LIMIT 1",self.account,segment)
+        if prior_revision:
+            revised=json.loads(prior_revision['receipt']) if isinstance(prior_revision['receipt'],str) else prior_revision['receipt']
+            credits=list(revised['opening_anchor_revision']['new_credits'].values())
+        else:
+            credits=anchor.get('credited_opening_income',())
+        events=retained_income_events(state,historical,current_events,opening_credits=credits)
+        audit=await self._allocation_audit(connection,actual,as_of)
+        flows=self._allocation_flows(state,audit['changes'],events,fills,orders,as_of)
+        # Existing unitized flows stay intact; any newly accepted funding must
+        # still have the ordinary journal and event-time NAV proof.
+        expected_allocation=number(anchor['allocation']['allocated_amount'],'opening_allocation')+sum((change.delta for change in audit['changes']),Decimal(0))
+        actual_allocation=allocation_evidence(await connection.fetchrow('''SELECT id,month,entries,created_at FROM public.capital_allocation
+            WHERE left(month::text,7)=$1 AND status='active' ORDER BY created_at DESC LIMIT 1''',as_of.astimezone(SHANGHAI).strftime('%Y-%m')),as_of)
+        if expected_allocation != actual_allocation.amount:
+            raise EvidenceBlocked('allocation_event_history_amount_mismatch')
+        checkpoints=list(await effective_checkpoints(connection,self.account,segment))
+        evidence=dict(account_id=self.account,segment_id=segment,as_of=as_of,available_at=self._now(),
+            capture=snapshot,source_collection=collection,income_report=original_report,
+            historical_income_report=historical_report,current_income_report=current_report,
+            history_status='ACCEPTED_GAPS',history_acceptance_sha256=policy.receipt_sha256,
+            history_acceptance_revision=policy.revision,accepted_through=policy.accepted_through,
+            current_path_from=flat,inventory_owner_path_proofs=path_proofs,
+            funding_publication_proofs=funding_proofs,fills=fills,order_owners=orders,
+            allocation_audit=dict(version=audit['version'],through_event_id=audit['event_id'],journal=audit['journal']),
+            reconstructed_boundaries=[])
+        midnight=datetime.combine(state.as_of.astimezone(SHANGHAI).date()+timedelta(days=1),time.min,SHANGHAI)
+        while midnight < as_of:
+            if midnight < flat:
+                # No exact historical day origin is invented for accepted PM gaps.
+                midnight += timedelta(days=1)
+                continue
+            boundary=historical_boundary_observation(state,midnight,self._now(),fills,orders,events,
+                coverage_complete=complete,opening_inventory=(),historical_bars=snapshot.get('historical_mark_bars'),account=self.account)
+            boundary=replace(boundary,cash_flows=tuple(flow for flow in flows if flow.occurred_at<=midnight),
+                income_complete=False,accepted_history=accepted_history(policy,midnight,current_complete_from=flat))
+            state=reconcile_ledger(state,boundary)
+            samples=checkpoints+[state.checkpoint]
+            daily=self._history_complete(samples,fills,orders,flat,since=midnight)
+            live=self._history_complete(samples,fills,orders,flat,since=min(policy.accepted_through,midnight))
+            gate=observed_gate(stored.gate,state.checkpoint,samples,policy=policy,
+                current_complete=live,daily_complete=daily,complete_from=state.inception)
+            stored=await session.commit(state,gate.state,expected_version=stored.version,
+                checkpoint_id=f'{segment}:{int(midnight.timestamp()*1000)}')
+            checkpoints.append(state.checkpoint)
+            evidence['reconstructed_boundaries'].append(dict(effective_at=midnight,available_at=self._now(),
+                source='verified_classic_inventory_and_observed_income',historical_income_complete=False))
+            midnight += timedelta(days=1)
+        obs=LedgerObservation(as_of,segment,events,flows,marks,as_of,snapshot['captured_at'],False,True,
+            accepted_history=accepted_history(policy,as_of,current_complete_from=flat))
+        state=reconcile_ledger(state,obs)
+        samples=checkpoints+[state.checkpoint]
+        today=datetime.combine(as_of.astimezone(SHANGHAI).date(),time.min,SHANGHAI)
+        daily=self._history_complete(samples,fills,orders,flat,since=today)
+        live=self._history_complete(samples,fills,orders,flat,since=policy.accepted_through)
+        prior=await self._accepted_saved_gap_latches(connection,stored.gate,state,samples,evidence,anchor)
+        gate=observed_gate(prior,state.checkpoint,samples,policy=policy,
+            current_complete=live,daily_complete=daily,complete_from=state.inception)
+        stored=await session.commit(state,gate.state,expected_version=stored.version,checkpoint_id=f'{segment}:{end_ms}')
+        result=dict(ready=gate.ready,allowed=gate.allow_new_risk,reasons=list(gate.reasons),
+            window_label=gate.window_label,qualified_30_day=False,ledger_version=stored.version,
+            history_status='ACCEPTED_GAPS',history_acceptance_revision=policy.revision,
+            history_acceptance_sha256=policy.receipt_sha256,
+            current_status='READY' if gate.allow_new_risk else ('EXCEEDED' if gate.ready else 'BLOCKED_CURRENT_DATA'),
+            daily_return=str(gate.daily_return) if gate.daily_return is not None else None,
+            observed_rolling_drawdown=str(gate.rolling_drawdown) if gate.rolling_drawdown is not None else None)
+        evidence['result']=result
+        evidence['available_at']=self._now()
+        return await self._projection(connection,await self._policy_revision(connection),result,evidence)
+
+    async def _accepted_saved_gap_latches(self, connection, prior, state, samples, evidence, anchor):
+        """Retain old conservative marks with their original authenticated PM path."""
+        exists=await connection.fetchval("""SELECT EXISTS(SELECT 1 FROM trading.hrs_equity_reconciliation
+            WHERE account_id=$1 AND segment_id=$2 AND receipt->>'kind'
+            IN ('automatic_constant_mark_gap_v1','automatic_event_mark_gap_v2'))""",self.account,state.segment_id)
+        if not exists:
+            return prior
+        cutoff=datetime.fromtimestamp(account_cutover_ms(self.account)/1000,timezone.utc)
+        archived=await connection.fetchrow("""SELECT evidence_sha256,payload FROM trading.hrs_equity_evidence
+            WHERE account_id=$1 AND segment_id=$2 AND as_of<$3 AND available_at<$3
+            AND payload->'result' ? 'ledger_version' ORDER BY as_of DESC,available_at DESC LIMIT 1""",
+            self.account,state.segment_id,cutoff)
+        if archived is None:
+            raise EvidenceBlocked('accepted_history_bound_source_missing')
+        doc=json.loads(archived['payload']) if isinstance(archived['payload'],str) else archived['payload']
+        if (canonical(doc)[1]!=archived['evidence_sha256'] or doc.get('account_id')!=self.account
+                or doc.get('segment_id')!=state.segment_id
+                or doc.get('source_collection',{}).get('complete') is not True
+                or doc.get('source_collection',{}).get('gaps')):
+            raise EvidenceBlocked('accepted_history_bound_source_invalid')
+        historical=copy.deepcopy(doc['fills'])
+        for fill in historical:
+            if isinstance(fill['trade_time_utc'],str):
+                fill['trade_time_utc']=datetime.fromisoformat(fill['trade_time_utc'])
+        # Persist both sources with their original identity. No old fill is
+        # projected into a classic order or fabricated into a missing PM cursor.
+        complete_evidence=dict(evidence,fills=historical+evidence['fills'],
+            order_owners=list(doc['order_owners'])+evidence['order_owners'])
+        original=self._anchor_inventory
+        self._anchor_inventory=tuple(anchor.get('opening_inventory',()))
+        try:
+            result=await self._saved_gap_latches(connection,prior,state,samples,complete_evidence)
+        finally:
+            self._anchor_inventory=original
+        evidence['historical_bound_source_sha256']=archived['evidence_sha256']
+        if 'history_gap_bounds' in complete_evidence:
+            evidence['history_gap_bounds']=complete_evidence['history_gap_bounds']
+        return result
+
     async def _commit(self, connection, bootstrap, snapshot, collection, start_ms, end_ms):
         as_of = snapshot['captured_at']
         if not timedelta(0) <= self._now()-as_of < timedelta(seconds=120):
@@ -1389,6 +1579,7 @@ class HrsEquityService:
                 if self.db.pool is None:
                     await self.db.connect()
                 bootstrap=await self.db.fetch_one('SELECT * FROM trading.hrs_equity_segment WHERE account_id=$1',self.account)
+                acceptance=await self._history_acceptance()
                 snapshot=await self._capture()
                 end_ms=int(snapshot['captured_at'].timestamp()*1000)
                 if bootstrap:
@@ -1409,20 +1600,26 @@ class HrsEquityService:
                 origin=bootstrap['inception'] if bootstrap else snapshot['captured_at']
                 credit_period=datetime.combine(origin.astimezone(SHANGHAI).date().replace(day=1),time.min,SHANGHAI)
                 snapshot['income_start_ms']=int(credit_period.timestamp()*1000)
+                if acceptance is not None:
+                    start_ms=int(acceptance.classic_flat_at.timestamp()*1000)
+                    snapshot['current_path_from']=acceptance.classic_flat_at
                 collection=await self._collect(start_ms,end_ms,snapshot)
                 await self._opening_fill_prefixes(snapshot,start_ms,end_ms)
                 await self._authenticate_order_owners(snapshot,start_ms,end_ms)
-                await self._funding_publication_evidence(snapshot,snapshot['income_start_ms'],end_ms)
+                await self._funding_publication_evidence(snapshot,start_ms if acceptance is not None else snapshot['income_start_ms'],end_ms)
                 await self._historical_marks(bootstrap,snapshot)
                 async with self._locked() as connection:
-                    result=await self._commit(connection,bootstrap,snapshot,collection,start_ms,end_ms)
+                    if acceptance is None:
+                        result=await self._commit(connection,bootstrap,snapshot,collection,start_ms,end_ms)
+                    else:
+                        result=await self._commit_accepted_history(connection,bootstrap,snapshot,collection,start_ms,end_ms,acceptance)
                 if self.recorder is not None:
                     await self.recorder.record(self.recorder.run_id,'equity_gate',result,as_of=result['as_of'],available_at=self._now())
                 return result
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                reason=str(exc) if isinstance(exc,(LedgerNotReady,RepositoryConflict)) else type(exc).__name__
+                reason=str(exc) if isinstance(exc,(LedgerNotReady,RepositoryConflict,HistoryAcceptanceError)) else type(exc).__name__
                 log.warning('hrs_equity_not_ready',reason=reason)
                 try:
                     return await self._deny(reason)
