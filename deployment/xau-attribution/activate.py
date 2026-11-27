@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot XAU funding/shadow release; no trading service may be recreated.
+"""XAU 版本追踪受限发布；仅更新两个影子容器。
 
 Private resolved Compose snapshots contain environment values and are kept 0600.
 Public evidence contains only identities, health, hashes, and code provenance.
@@ -20,21 +20,18 @@ import time
 
 ROOT = Path('/root/trading_system')
 MAIN_TARGET = '/app/strategies/btc_eth/shadow/main.py'
-CALIBRATED_MAIN = '/root/trading_system/.releases/xau-attribution/03774607ef47cb5e25f9afd5b4b49f2970bd8ee3/main.py'
+CALIBRATED_MAIN = '/root/trading_system/.releases/xau-attribution/603a2a4e2cceac83ceee1328dfc14f78ddd33ad5/main.py'
 BASES = {
-    'shadow': 'ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:ff80ae9d956017c52ebcf04199bdaef288e99c835c80e4963e6c35aae6362ead',
-    'funding': 'ghcr.io/bearflower/trading-xau-attribution-funding@sha256:8d315174782e0de9390153ab25240353064b842dbff71f1d799185aed9696aa9',
+    'shadow': 'ghcr.io/bearflower/trading-btc-eth@sha256:80a5d2fc78f768f659f9ba5855013704ea3628f691d2afe9c48ed6550488962c',
 }
 TARGETS = {
     'mtcps-xau-shadow': ('trading_system-mtcps-xau-shadow', 'shadow'),
     'mtcps-xau-calibrated-shadow': ('trading_system-mtcps-xau-calibrated-shadow', 'shadow'),
-    'ai-tuner-funding-schedule': ('ai-tuner-funding-schedule', 'funding'),
 }
 FILES = {
-    'shadow': ['strategies/btc_eth/strategy.py', 'strategies/btc_eth_aggressive/strategy.py',
-               'strategies/btc_eth/shadow/collector.py', 'strategies/btc_eth/shadow/main.py', 'VERSION'],
-    'funding': ['ai_tuner/funding_schedule/collector.py', 'ai_tuner/funding_schedule/cli.py', 'VERSION'],
+    'shadow': ['strategies/btc_eth/shadow/collector.py', 'strategies/btc_eth/shadow/main.py', 'VERSION'],
 }
+AUDIT_FILES = ('scripts/database_permissions.py', 'database/postgres/permissions.json')
 
 
 def require(condition, message):
@@ -124,12 +121,7 @@ def changed_service(before, service, image, main_source):
     if TARGETS[service][1] == 'shadow':
         after.setdefault('environment', {})['SHADOW_SKIP_INITIAL_COLLECTION'] = '1'
     mounts = [v for v in after.get('volumes', []) if v.get('target') == MAIN_TARGET]
-    if service == 'mtcps-xau-calibrated-shadow':
-        require(len(mounts) == 1 and mounts[0].get('type') == 'bind'
-                and mounts[0].get('source') == CALIBRATED_MAIN, 'unexpected calibrated main bind')
-        mounts[0]['source'] = main_source
-    else:
-        require(not mounts, 'unexpected main bind')
+    require(not mounts, 'unexpected main bind')
     return after
 
 
@@ -141,6 +133,9 @@ def validate_manifests(hashes, digests):
     require(re.fullmatch(r'[0-9a-f]{40}', hashes.get('git_sha', '')), 'invalid git SHA')
     require(re.fullmatch(r'[0-9A-F]{8,}', hashes.get('deploy_id', '')), 'invalid deploy ID')
     require(set(digests) == set(FILES) and set(hashes.get('files', {})) == set(FILES), 'invalid artifact scope')
+    require(set(hashes.get('audit_files', {})) == set(AUDIT_FILES), 'invalid audit resource scope')
+    require(all(re.fullmatch(r'[0-9a-f]{64}', value) for value in hashes['audit_files'].values()),
+            'invalid audit resource hash')
     for group, paths in FILES.items():
         require(re.fullmatch(r'ghcr.io/bearflower/trading-xau-attribution-' + group + r'@sha256:[0-9a-f]{64}', digests[group]), 'image must be digest pinned')
         expected = hashes['files'][group]
@@ -173,6 +168,13 @@ def pin_live_environment(config, info):
     """
     pinned = copy.deepcopy(config)
     pinned['environment'] = dict(value.split('=', 1) for value in info['Config'].get('Env', []))
+    # 后续完整镜像发布已移除此精确来源的 main 挂载，旧 Compose 标签仍指向旧快照。
+    # 仅当实际容器也没有该挂载时修正基线，禁止重新引入旧代码或移除未知挂载。
+    if not any(m.get('Destination') == MAIN_TARGET for m in info.get('Mounts', [])):
+        if 'volumes' in pinned:
+            pinned['volumes'] = [m for m in pinned['volumes'] if not (
+                m.get('type') == 'bind' and m.get('target') == MAIN_TARGET
+                and m.get('source') == CALIBRATED_MAIN and m.get('read_only') is True)]
     return pinned
 
 
@@ -228,12 +230,6 @@ def validate_runtime(before, after, service, main_source, rollback=False):
     if not rollback:
         if TARGETS[service][1] == 'shadow':
             expected['config']['Env']['SHADOW_SKIP_INITIAL_COLLECTION'] = '1'
-        if service == 'mtcps-xau-calibrated-shadow':
-            for mount in expected['mounts']:
-                if mount['Destination'] == MAIN_TARGET:
-                    mount['Source'] = main_source
-            expected['host']['Binds'] = [value.replace(CALIBRATED_MAIN + ':', main_source + ':', 1)
-                                        for value in expected['host'].get('Binds', [])]
     require(expected == runtime_config(after), 'runtime configuration changed beyond release scope')
 
 
@@ -255,6 +251,16 @@ def verify_version(name, hashes):
     version = run('docker', 'exec', name, 'cat', '/app/VERSION')
     values = dict(line.split('=', 1) for line in version.splitlines() if '=' in line)
     require(values.get('GIT_COMMIT') == hashes['git_sha'] and values.get('GIT_SHA') == hashes['git_sha'] and values.get('DEPLOY_ID') == hashes['deploy_id'], 'VERSION provenance mismatch')
+
+
+def audit_permissions(release, expected):
+    """只运行本次发布包中通过哈希校验的权威审计，不修改持久权限。"""
+    require(set(expected) == set(AUDIT_FILES), 'invalid audit resource scope')
+    for path, digest in expected.items():
+        require(hashlib.sha256((release / Path(path).name).read_bytes()).hexdigest() == digest,
+                'audit resource hash mismatch')
+    return run('python3', str(release / 'database_permissions.py'), 'audit',
+               '--manifest', str(release / 'permissions.json'), timeout=300)
 
 
 def compose_command(path):
@@ -307,7 +313,8 @@ def activate(package):
     require(not release.exists(), 'release SHA already attempted; inspect prior evidence before retry')
     release.mkdir(parents=True, mode=0o700)
     os.chmod(release, 0o700)
-    for filename in ['hashes.json', 'digests.json', 'main.py', 'activate.py']:
+    for filename in ['hashes.json', 'digests.json', 'main.py', 'activate.py',
+                     'database_permissions.py', 'permissions.json']:
         (release / filename).write_bytes((package / filename).read_bytes())
         (release / filename).chmod(0o600)
     main = release / 'main.py'
@@ -364,13 +371,10 @@ def activate(package):
         finally:
             run('docker', 'rm', '-f', temp)
         after = changed_service(baseline, service, digests[group], str(main))
-        # Append an image/one-shot env/main bind overlay to the original stack and
-        # inspect its fully resolved output before producing a private frozen config.
+        # 只叠加镜像和跳过首轮采集标记，运行时挂载必须原样保留。
         overlay = {'services': {service: {'image': digests[group]}}}
         if group == 'shadow':
             overlay['services'][service]['environment'] = {'SHADOW_SKIP_INITIAL_COLLECTION': '1'}
-        if service == 'mtcps-xau-calibrated-shadow':
-            overlay['services'][service]['volumes'] = [v for v in after['volumes'] if v['target'] == MAIN_TARGET]
         overlay_path = release / f'{service}.overlay.json'
         save(overlay_path, overlay)
         resolved = json.loads(run(*command, '-f', str(overlay_path), 'config', '--format', 'json'))
@@ -385,7 +389,7 @@ def activate(package):
     save(release / 'original-hashes.json', original_hashes)
     verify_excluded(before, snapshot())
     # Mandatory read-only authoritative permissions gate, immediately before activation.
-    audit = run('python3', str(ROOT / 'scripts/database_permissions.py'), 'audit', '--manifest', str(ROOT / 'database/postgres/permissions.json'), timeout=300)
+    audit = audit_permissions(release, hashes['audit_files'])
     (release / 'database-audit.txt').write_text(audit)
     (release / 'database-audit.txt').chmod(0o600)
     execute_plans(plans, release, hashes, main, before, originals, original_hashes)

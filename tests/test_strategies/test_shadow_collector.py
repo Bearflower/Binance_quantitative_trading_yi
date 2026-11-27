@@ -995,5 +995,5 @@ class TestReadGitInfo:
         monkeypatch.chdir(tmp_path)
         from strategies.btc_eth.shadow.collector import _read_git_info
         git_commit, git_sha = _read_git_info()
-        assert git_commit == ""
+        assert git_commit == "sha-only"
         assert git_sha == "sha-only"
