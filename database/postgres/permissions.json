@@ -1,0 +1,2194 @@
+{
+  "version": 1,
+  "description": "Reviewed production ACL contract, 2026-11-19. Explicit objects include deployed release-only tables. Optional runtime tables are checked whenever present. New tables must be registered; no wildcard schema grants.",
+  "schemas": [
+    "public",
+    "trading",
+    "hrs",
+    "research",
+    "btc_eth",
+    "btc_eth_aggressive",
+    "grid",
+    "new_coin"
+  ],
+  "roles": {
+    "trading_user": {
+      "required": true,
+      "allowed_flags": [
+        "rolbypassrls"
+      ],
+      "note": "Legacy BYPASSRLS observed 2026-11-19; not granted or changed by this tool. Owner capabilities of legacy tables are retained.",
+      "schemas": {
+        "public": [
+          "USAGE",
+          "CREATE"
+        ],
+        "trading": [
+          "USAGE",
+          "CREATE"
+        ],
+        "hrs": [
+          "USAGE",
+          "CREATE"
+        ],
+        "research": [
+          "USAGE",
+          "CREATE"
+        ],
+        "btc_eth": [
+          "USAGE",
+          "CREATE"
+        ],
+        "btc_eth_aggressive": [
+          "USAGE",
+          "CREATE"
+        ],
+        "grid": [
+          "USAGE",
+          "CREATE"
+        ],
+        "new_coin": [
+          "USAGE",
+          "CREATE"
+        ]
+      },
+      "database": {
+        "required": [
+          "CONNECT",
+          "TEMPORARY"
+        ],
+        "allowed": [
+          "CONNECT",
+          "TEMPORARY"
+        ]
+      }
+    },
+    "ai_tuner_snapshot_writer": {
+      "schemas": {
+        "public": [
+          "USAGE"
+        ],
+        "hrs": [
+          "USAGE"
+        ]
+      }
+    },
+    "ai_tuner_funding_writer": {
+      "schemas": {
+        "public": [
+          "USAGE"
+        ]
+      }
+    },
+    "ai_tuner_replay_reader": {
+      "schemas": {
+        "public": [
+          "USAGE"
+        ],
+        "hrs": [
+          "USAGE"
+        ],
+        "btc_eth": [
+          "USAGE"
+        ],
+        "btc_eth_aggressive": [
+          "USAGE"
+        ]
+      }
+    },
+    "hrs_acceptance_reader": {
+      "schemas": {
+        "public": [
+          "USAGE"
+        ],
+        "hrs": [
+          "USAGE"
+        ],
+        "trading": [
+          "USAGE"
+        ]
+      }
+    }
+  },
+  "profiles": {
+    "none": [],
+    "read": [
+      "SELECT"
+    ],
+    "append": [
+      "SELECT",
+      "INSERT"
+    ],
+    "mutable": [
+      "SELECT",
+      "INSERT",
+      "UPDATE"
+    ],
+    "legacy_table": {
+      "required": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "allowed": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "TRUNCATE",
+        "REFERENCES",
+        "TRIGGER"
+      ]
+    },
+    "legacy_sequence": {
+      "required": [
+        "SELECT",
+        "USAGE"
+      ],
+      "allowed": [
+        "SELECT",
+        "USAGE",
+        "UPDATE"
+      ]
+    },
+    "sequence": [
+      "SELECT",
+      "USAGE"
+    ]
+  },
+  "objects": [
+    {
+      "schema": "btc_eth",
+      "name": "condition_orders",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "shared/condition_orders.py 根据搜索路径按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "condition_orders_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "shared/condition_orders.py 根据搜索路径按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "frequency_control_state",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/btc_eth/strategy.py 启动时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "frequency_control_state_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "strategies/btc_eth/strategy.py 启动时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "positions",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth",
+      "name": "positions_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth",
+      "name": "registered_symbols",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth",
+      "name": "registered_symbols_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth",
+      "name": "strategy_global_state",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "已登记的生产发布专属对象 btc_eth.strategy_global_state；当前本地版本没有建表迁移和运行消费者，存在时仍完整检查权限。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "system_state",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "ai_tuner/allocation/profit_extraction_job.py 按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "trade_signals",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth",
+      "name": "trade_signals_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth",
+      "name": "trades",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth",
+      "name": "trades_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth_aggressive",
+      "name": "positions",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth_aggressive",
+      "name": "positions_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth_aggressive",
+      "name": "trade_signals",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table",
+        "ai_tuner_replay_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth_aggressive",
+      "name": "trade_signals_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth_aggressive",
+      "name": "trades",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "btc_eth_aggressive",
+      "name": "trades_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "grid",
+      "name": "grid_config",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "grid",
+      "name": "grid_config_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "grid",
+      "name": "grid_orders",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "grid",
+      "name": "grid_orders_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "grid",
+      "name": "grid_trades",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "grid",
+      "name": "grid_trades_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_active_symbols",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_blacklist",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_decision_evidence",
+      "kind": "table",
+      "owner": "ai_tuner_snapshot_owner",
+      "grants": {
+        "trading_user": "read",
+        "ai_tuner_snapshot_writer": "append",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-decision-evidence.sql"
+      ]
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_klines_1h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_klines_4h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_meta",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_orders",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_positions",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_signals",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table",
+        "ai_tuner_replay_reader": "read"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_signals_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "hrs",
+      "name": "hrs_state",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "strategies/hrs/strategy.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "new_coin",
+      "name": "coin_monitor",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "new_coin",
+      "name": "coin_monitor_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "new_coin",
+      "name": "orders",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "new_coin",
+      "name": "orders_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "new_coin",
+      "name": "short_positions",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "new_coin",
+      "name": "short_positions_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "new_coin",
+      "name": "short_signals",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "new_coin",
+      "name": "short_signals_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "ai_tuner_funding_schedule_observations",
+      "kind": "table",
+      "owner": "ai_tuner_funding_owner",
+      "grants": {
+        "trading_user": "read",
+        "ai_tuner_funding_writer": "append"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "ai_tuner_funding_schedule_runs",
+      "kind": "table",
+      "owner": "ai_tuner_funding_owner",
+      "grants": {
+        "trading_user": "read",
+        "ai_tuner_funding_writer": "append"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "ai_tuner_market_snapshots",
+      "kind": "table",
+      "owner": "ai_tuner_snapshot_owner",
+      "grants": {
+        "trading_user": "read",
+        "ai_tuner_snapshot_writer": "mutable",
+        "ai_tuner_replay_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "ai_tuner_runs",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "ai_tuner_runs_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "ai_tuner_universe_scan_runs",
+      "kind": "table",
+      "owner": "ai_tuner_snapshot_owner",
+      "grants": {
+        "trading_user": "read",
+        "ai_tuner_snapshot_writer": "append",
+        "ai_tuner_funding_writer": "read",
+        "ai_tuner_replay_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "ai_tuner_universe_snapshots",
+      "kind": "table",
+      "owner": "ai_tuner_snapshot_owner",
+      "grants": {
+        "trading_user": "read",
+        "ai_tuner_snapshot_writer": "append",
+        "ai_tuner_funding_writer": "read",
+        "ai_tuner_replay_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "capital_allocation",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "ai_tuner/allocation/monthly_job.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "public",
+      "name": "capital_allocation_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "ai_tuner/allocation/monthly_job.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "public",
+      "name": "condition_orders",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "shared/condition_orders.py 根据搜索路径按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "public",
+      "name": "condition_orders_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "shared/condition_orders.py 根据搜索路径按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "public",
+      "name": "equity_snapshot",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "equity_snapshot_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "market_circuit_breaker_index",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "market_circuit_breaker_index_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "metric_snapshot",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "metric_snapshot_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "performance_metric_snapshot",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "performance_metric_snapshot_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "pnl_reconcile_state",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "ai_tuner/reconciler/income_reconciler.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "public",
+      "name": "pnl_reconcile_state_by_account",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "已登记的生产发布专属对象 public.pnl_reconcile_state_by_account；当前本地版本没有建表迁移和运行消费者，存在时仍完整检查权限。"
+    },
+    {
+      "schema": "public",
+      "name": "pnl_reconcile_state_by_account_gaps",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "已登记的生产发布专属对象 public.pnl_reconcile_state_by_account_gaps；当前本地版本没有建表迁移和运行消费者，存在时仍完整检查权限。"
+    },
+    {
+      "schema": "public",
+      "name": "strategy_position_snapshot",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "strategy_position_snapshot_history",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "strategy_states",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "strategy_states_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "strategy_status",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "strategy_status_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "system_config",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "public",
+      "name": "system_config_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "research",
+      "name": "shadow_decision_events",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "research",
+      "name": "shadow_decision_events_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "research",
+      "name": "shadow_replay_trades",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "research",
+      "name": "shadow_replay_trades_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "research",
+      "name": "shadow_runs",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "account_mode_equity",
+      "kind": "table",
+      "required": true,
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-25-account-mode-equity.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "account_risk_baseline",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-account-risk-facts.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "account_risk_breach",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-account-risk-facts.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "account_risk_coverage",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-account-risk-facts.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "account_risk_equity_point",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-account-risk-facts.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "account_risk_transfer",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-account-risk-facts.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "aggressive_stop_bindings",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "mutable"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "aggressive_stop_exit_trades",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "aggressive_stop_exits",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "capital_allocation_history",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "read"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-capital-history.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "capital_allocation_history_id_seq",
+      "kind": "sequence",
+      "owner": "trading_migration_admin",
+      "grants": {},
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-capital-history.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "decision_evidence",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "decision_feature_evidence",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "decision_feature_evidence_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "derived_income_attribution",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/init-scripts/19-derived-income-attribution.sql",
+        "database/postgres/migrations/2026-11-09-derived-income-attribution.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "entry_activity_source_fact",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-entry-activity.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "entry_activity_source_fact_id_seq",
+      "kind": "sequence",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "sequence"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-entry-activity.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "entry_order_observation",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-entry-activity.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "entry_order_observation_id_seq",
+      "kind": "sequence",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "sequence"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-entry-activity.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "entry_risk_reservation",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "mutable"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "execution_fact_cursor",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "execution_fact_cursor_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "execution_fact_fill",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "execution_fact_income",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "execution_fact_raw",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "grid_shadow_audit",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "已登记的生产发布专属对象 trading.grid_shadow_audit；当前本地版本没有建表迁移和运行消费者，存在时仍完整检查权限。"
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_allocation_audit_control",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "read"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-allocation-event-audit.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_allocation_event",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "read"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-allocation-event-audit.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_allocation_event_event_id_seq",
+      "kind": "sequence",
+      "owner": "trading_migration_admin",
+      "grants": {},
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-allocation-event-audit.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_equity_evidence",
+      "note": "Immutable evidence. The concurrent hrs_equity_pm_lookup_idx access-path migration changes no owner or ACL and requires no application DDL privileges.",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-equity-service.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_equity_reconciliation",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-equity-reconciliation.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_equity_segment",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append",
+        "hrs_acceptance_reader": "read"
+      },
+      "columns": {
+        "trading_user": {
+          "account_id": [
+            "UPDATE"
+          ]
+        }
+      },
+      "lock": {
+        "role": "trading_user",
+        "column": "account_id",
+        "trigger": "hrs_equity_segment_immutable",
+        "function": "trading.hrs_reject_equity_segment_mutation"
+      },
+      "note": "Immutable opening anchor. Column UPDATE exists solely for SELECT FOR UPDATE; immutable trigger must remain enabled.",
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-equity-service.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_funding_observation",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-funding-publication.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_income_attribution",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_loss_gate_reset_audit",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_loss_gate_state",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "mutable",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_risk_equity_checkpoints",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "hrs_risk_ledger_events",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "income_ingestion_attempt",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append",
+        "hrs_acceptance_reader": "read"
+      },
+      "columns": {
+        "trading_user": {
+          "state": [
+            "UPDATE"
+          ],
+          "finished_at": [
+            "UPDATE"
+          ]
+        }
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "income_ingestion_attempt_event",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "income_ingestion_attempt_event_event_id_seq",
+      "kind": "sequence",
+      "owner": "trading_migration_admin",
+      "grants": {},
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "income_ingestion_conflict",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "ledger_report_active",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "mutable"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "ledger_report_run",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "order_strategy_evidence",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/init-scripts/19-derived-income-attribution.sql",
+        "database/postgres/migrations/2026-11-09-derived-income-attribution.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "position_claims",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "position_claims_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "position_flat_baseline",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "append"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/init-scripts/19-derived-income-attribution.sql",
+        "database/postgres/migrations/2026-11-09-derived-income-attribution.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "reviewed_income_attribution",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "strategy_equity_gate",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "mutable"
+      },
+      "required": true,
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-17-hrs-equity-service.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "strategy_memory",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "ai_tuner/memory/db_handler.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "trading",
+      "name": "strategy_memory_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "ai_tuner/memory/db_handler.py 初始化时按需建表；对象存在时仍完整检查权限。"
+    },
+    {
+      "schema": "trading",
+      "name": "strategy_open_positions",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "strategy_risk_active",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "strategy_risk_audit",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "strategy_risk_audit_id_seq",
+      "kind": "sequence",
+      "owner": "trading_migration_admin",
+      "grants": {},
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "strategy_risk_policy",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "grants": {
+        "trading_user": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "trade_records",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table",
+        "hrs_acceptance_reader": "read"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "trade_records_hrs_dedup_backup_20261009",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "2026-10-09 去重修复的历史备份表，不属于运行依赖。"
+    },
+    {
+      "schema": "trading",
+      "name": "trade_records_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": true
+    },
+    {
+      "schema": "trading",
+      "name": "weekly_run_claims",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "已登记的生产发布专属对象 trading.weekly_run_claims；当前本地版本没有建表迁移和运行消费者，存在时仍完整检查权限。"
+    },
+    {
+      "schema": "btc_eth",
+      "pattern": "^kline_[a-z0-9_]+$",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "pattern": "^kline_[a-z0-9_]+$",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth_aggressive",
+      "pattern": "^kline_[a-z0-9_]+$",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth_aggressive",
+      "pattern": "^kline_[a-z0-9_]+$",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "grid",
+      "pattern": "^kline_[a-z0-9_]+$",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "grid",
+      "pattern": "^kline_[a-z0-9_]+$",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "new_coin",
+      "pattern": "^kline_[a-z0-9_]+$",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "new_coin",
+      "pattern": "^kline_[a-z0-9_]+$",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_btcusdt_1h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table",
+        "ai_tuner_replay_reader": "read"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_哈基米usdt_1h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_哈基米usdt_1h_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_我踏马来了usdt_1h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_我踏马来了usdt_1h_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_牛来usdt_15m",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_牛来usdt_15m_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_牛来usdt_1d",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_牛来usdt_1d_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_牛来usdt_1h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_牛来usdt_1h_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_牛来usdt_4h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_牛来usdt_4h_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_龙虾usdt_15m",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_龙虾usdt_15m_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_龙虾usdt_1d",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_龙虾usdt_1d_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_龙虾usdt_1h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_龙虾usdt_1h_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_龙虾usdt_4h",
+      "kind": "table",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_table"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "btc_eth",
+      "name": "kline_龙虾usdt_4h_id_seq",
+      "kind": "sequence",
+      "owner": "trading_user",
+      "grants": {
+        "trading_user": "legacy_sequence"
+      },
+      "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule.",
+      "required": false,
+      "optional_reason": "K线服务 services/kline_service 按注册标的和周期动态建表及序列，不要求所有规则预先匹配。"
+    },
+    {
+      "schema": "trading",
+      "name": "bootstrap_autovacuum_probe",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "required": false,
+      "grants": {},
+      "note": "Optional short-lived native-autovacuum proof table. Admin-only synthetic rows; never business data. Created and removed only by the controlled bootstrap repair runbook.",
+      "optional_reason": "受控 bootstrap 维护窗口临时创建的管理员探针表，验证原生 autovacuum 后由配套迁移清理，不是业务运行依赖。",
+      "migration_sources": [
+        "database/postgres/migrations/2026-11-25-bootstrap-autovacuum-probe.sql",
+        "database/postgres/migrations/2026-11-25-bootstrap-autovacuum-probe-cleanup.sql"
+      ]
+    },
+    {
+      "schema": "trading",
+      "name": "historical_risk_acceptance",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "required": true,
+      "grants": {
+        "trading_user": "read",
+        "hrs_acceptance_reader": "read"
+      },
+      "note": "Historical tolerance receipt is admin-only; risk observations append-only. UPDATE/DELETE/TRUNCATE triggers reject changes; no row-lock UPDATE privilege."
+    },
+    {
+      "schema": "trading",
+      "name": "classic_account_risk_point",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "required": true,
+      "grants": {
+        "trading_user": "append",
+        "hrs_acceptance_reader": "read"
+      },
+      "note": "Historical tolerance receipt is admin-only; risk observations append-only. UPDATE/DELETE/TRUNCATE triggers reject changes; no row-lock UPDATE privilege."
+    }
+  ],
+  "bootstrap_identity": {
+    "bootstrap_role": "trading_bootstrap_admin",
+    "application_role": "trading_user",
+    "oid": 10,
+    "allow_legacy_demoted": false,
+    "database": "trading_platform",
+    "owned_schemas": [
+      "btc_eth",
+      "btc_eth_aggressive",
+      "grid",
+      "hrs",
+      "new_coin",
+      "research",
+      "trading"
+    ],
+    "owned_routines": [],
+    "owned_types": [],
+    "default_privileges": [
+      {
+        "creator": "trading_user",
+        "schema": "research",
+        "kind": "TABLES",
+        "grantee": "trading_user",
+        "privileges": [
+          "DELETE",
+          "INSERT",
+          "SELECT",
+          "UPDATE"
+        ]
+      },
+      {
+        "creator": "trading_user",
+        "schema": "research",
+        "kind": "SEQUENCES",
+        "grantee": "trading_user",
+        "privileges": [
+          "SELECT",
+          "USAGE"
+        ]
+      },
+      {
+        "creator": "trading_migration_admin",
+        "schema": "research",
+        "kind": "TABLES",
+        "grantee": "trading_user",
+        "privileges": [
+          "DELETE",
+          "INSERT",
+          "SELECT",
+          "UPDATE"
+        ]
+      },
+      {
+        "creator": "trading_migration_admin",
+        "schema": "research",
+        "kind": "SEQUENCES",
+        "grantee": "trading_user",
+        "privileges": [
+          "SELECT",
+          "USAGE"
+        ]
+      },
+      {
+        "creator": "trading_migration_admin",
+        "schema": "hrs",
+        "kind": "TABLES",
+        "grantee": "trading_user",
+        "privileges": [
+          "DELETE",
+          "INSERT",
+          "SELECT",
+          "UPDATE"
+        ]
+      },
+      {
+        "creator": "trading_migration_admin",
+        "schema": "hrs",
+        "kind": "SEQUENCES",
+        "grantee": "trading_user",
+        "privileges": [
+          "SELECT",
+          "USAGE"
+        ]
+      }
+    ],
+    "note": "Production split accepted 2026-11-25 after native autovacuum/autoanalyze proof. Legacy demoted bootstrap is rejected. Explicit rollback requires the archived transitional contract; the separated bootstrap is SUPERUSER NOLOGIN with no password/memberships and the application remains subject to the runtime contract."
+  }
+}

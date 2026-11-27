@@ -183,6 +183,7 @@ async def _prepare_shadow_run(
     config_hashes: Dict[str, str],
 ) -> str:
     """选择可复用的 active run，或按运行时前缀创建新 run。"""
+    git_commit = git_commit or git_sha
     active_run = await repo.find_active_run(instance_id=shadow_cfg.instance_id)
 
     if active_run:
@@ -199,7 +200,9 @@ async def _prepare_shadow_run(
                 existing_hashes = {}
         if (
             existing_hashes == config_hashes
+            and bool(git_commit)
             and (active_run.get("git_commit") or "") == git_commit
+            and (active_run.get("git_sha") or "") == git_sha
         ):
             run_id = active_run["run_id"]
             logger.info("继续使用已存在的 active run", run_id=run_id)

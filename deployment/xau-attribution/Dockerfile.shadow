@@ -1,7 +1,5 @@
 # Only the XAU shadow consumers use this immutable, minimal attribution layer.
-FROM ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:ff80ae9d956017c52ebcf04199bdaef288e99c835c80e4963e6c35aae6362ead
-COPY strategies/btc_eth/strategy.py /app/strategies/btc_eth/strategy.py
-COPY strategies/btc_eth_aggressive/strategy.py /app/strategies/btc_eth_aggressive/strategy.py
+FROM ghcr.io/bearflower/trading-btc-eth@sha256:80a5d2fc78f768f659f9ba5855013704ea3628f691d2afe9c48ed6550488962c
 COPY strategies/btc_eth/shadow/collector.py /app/strategies/btc_eth/shadow/collector.py
 COPY strategies/btc_eth/shadow/main.py /app/strategies/btc_eth/shadow/main.py
 COPY VERSION /app/VERSION

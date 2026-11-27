@@ -24,7 +24,7 @@ import asyncpg
 import pytest
 import yaml
 
-from strategies.btc_eth.shadow.collector import ShadowCollector
+from strategies.btc_eth.shadow.collector import ShadowCollector, _read_git_info
 from strategies.btc_eth.shadow.export import export_run
 from strategies.btc_eth.shadow.repository import ShadowRepository
 
@@ -35,6 +35,7 @@ ACK_ENV = "XAU_ATTRIBUTION_TEST_DB_ACK"
 PROFILES = ("xau_original", "xau_aggressive", "xau_calibrated")
 CASES = (("trend", False), ("mean_reversion", False), ("trend", True), ("unknown", None))
 START = datetime(2026, 11, 25, tzinfo=timezone.utc)
+PROVENANCE_SHA = "a" * 40
 
 
 def _safe_dsn():
@@ -85,7 +86,7 @@ def _events(run_id, repo):
             run_id=run_id, instance_id=configs[profile]["instance"]["id"],
             symbol="XAUUSDT", profiles=[profile], profile_configs={profile: configs[profile]},
             repository=repo, kline_service=None, binance_client=_NoExchangeAccess(),
-            git_commit="attribution-persistence-test",
+            git_commit=_read_git_info()[0], git_sha=_read_git_info()[1],
         )
         for index, (intent, fallback) in enumerate(CASES):
             signal = {
@@ -123,7 +124,7 @@ async def _child(mode, run_id, output_dir):
             assert await repo.upsert_shadow_run(
                 run_id=run_id, instance_id="xau-attribution-test", symbol="XAUUSDT",
                 started_at=START, initial_virtual_equity_usdt=300,
-                git_commit="attribution-persistence-test", git_sha="a" * 40,
+                git_commit=_read_git_info()[0], git_sha=_read_git_info()[1],
                 config_hashes={event["profile_id"]: event["config_hash"] for event in events},
             )
             assert await repo.insert_decision_events_batch(events) == 15
@@ -168,12 +169,13 @@ def test_xau_jsonb_attribution_survives_writer_exit_and_export(tmp_path):
             rows = await ShadowRepository(_Database(connection)).find_events_by_run(run_id=run_id)
             assert len(rows) == 15
             for row in rows:
+                assert row["git_commit"] == PROVENANCE_SHA
                 index = int((row["scheduled_at"] - START).total_seconds() // 3600)
                 if index == 4:
                     assert row["decision"] == "no_signal"
                     assert json.loads(row["feature_snapshot"]) == {"entry_attribution": {
                         "schema_version": 1, "status": "no_candidate", "intent": None,
-                        "producer_git_commit": "attribution-persistence-test",
+                        "producer_git_commit": PROVENANCE_SHA,
                     }}
                     continue
                 intent, fallback = CASES[index]
@@ -181,7 +183,7 @@ def test_xau_jsonb_attribution_survives_writer_exit_and_export(tmp_path):
                 assert snapshot == {
                     "entry_attribution": {"schema_version": 1,
                         "status": "unknown" if intent == "unknown" else "recorded",
-                        "intent": intent, "producer_git_commit": "attribution-persistence-test"},
+                        "intent": intent, "producer_git_commit": PROVENANCE_SHA},
                     "entry_intent": intent, "entry_route_fallback": fallback,
                     "market_state": "RANGING", "atr": 10.0, "price_change_1h": 0.01,
                     "atr_filter": {"history_count": 40, "effective_atr_pct": 0.25},
@@ -199,11 +201,13 @@ def test_xau_jsonb_attribution_survives_writer_exit_and_export(tmp_path):
 
     asyncio.run(create_schema())
     try:
-        env = {**os.environ, "PYTHONPATH": str(ROOT)}
+        # SHA-only 构建：真实解析、写库、退出进程、独立读取与导出贯通。
+        (tmp_path / "VERSION").write_text(f"GIT_SHA={PROVENANCE_SHA}\n")
+        env = {**os.environ, "PYTHONPATH": str(ROOT), "GIT_COMMIT": "", "GIT_SHA": PROVENANCE_SHA}
         for mode in ("write", "export"):
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()), mode, run_id, str(tmp_path)],
-                cwd=ROOT, env=env, capture_output=True, text=True, timeout=60,
+                cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
             )
             assert result.returncode == 0, result.stdout + result.stderr
             # The writer has exited before any independent reader starts.
@@ -216,6 +220,7 @@ def test_xau_jsonb_attribution_survives_writer_exit_and_export(tmp_path):
         assert manifest["run_id"] == run_id
         assert manifest["initial_virtual_equity_usdt"] == 300
         assert manifest["git_sha"] == "a" * 40
+        assert manifest["git_commit"] == PROVENANCE_SHA
         for event, row in zip(exported, rows):
             for field in ("run_id", "profile_id", "symbol", "decision", "direction", "grade", "config_hash", "git_commit"):
                 assert event[field] == row[field]
