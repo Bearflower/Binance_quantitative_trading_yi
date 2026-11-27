@@ -54,6 +54,24 @@ async def test_expected_unready_scan_is_reported_with_real_source_reason(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_inventory_coverage_denial_remains_blocked_but_is_expected(monkeypatch):
+    from types import SimpleNamespace
+    from strategies.hrs import decision_context
+    service = SimpleNamespace(refresh=AsyncMock(return_value={
+        'ready': False, 'allowed': False, 'policy_revision': 0,
+        'reasons': ['inventory_owner_path_coverage_missing']}))
+    with pytest.raises(decision_context.ScanContextUnavailable) as denied:
+        await decision_context.capture_scan_financial_context(SimpleNamespace(equity_service=service))
+    item, logger = loop_with_exception(monkeypatch, denied.value)
+    await item.run()
+    logger.error.assert_not_called()
+    assert logger.warning.call_args.kwargs['reason_codes'] == ['inventory_owner_path_coverage_missing']
+    mixed = decision_context.ScanContextUnavailable('scan_boundary_source_denied', phase='equity_refresh',
+        reason_codes=['inventory_owner_path_coverage_missing', 'unrecognized_owner_conflict'])
+    assert not mixed.expected_source_failure
+
+
+@pytest.mark.asyncio
 async def test_cycle_cancellation_still_propagates_without_error_or_retry(monkeypatch):
     item, logger = loop_with_exception(monkeypatch, asyncio.CancelledError())
     with pytest.raises(asyncio.CancelledError):

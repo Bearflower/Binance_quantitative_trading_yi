@@ -47,6 +47,36 @@ class FakeRepository:
         self.attempts.append((attempt, observations))
 
 
+@pytest.mark.parametrize('recovers', [True, False])
+def test_boundary_refresh_warns_only_if_retries_are_exhausted(monkeypatch, caplog, recovers):
+    import logging
+    from unittest.mock import AsyncMock
+    from ai_tuner.funding_schedule import collector
+    monkeypatch.setattr(collector.asyncio, 'sleep', AsyncMock())
+    now = SLOT + timedelta(seconds=1)
+    stale = [dict(row(s, now), nextFundingTime=int(SLOT.timestamp() * 1000))
+             for s in ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XAUUSDT')]
+    fresh = [row(s, now) for s in ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XAUUSDT')]
+    class BoundaryClient(FakeClient):
+        async def _request(self, method, endpoint, params=None, signed=True):
+            self.calls.append(endpoint)
+            if endpoint.endswith('fundingInfo'):
+                return []
+            return fresh if recovers and len(self.calls) >= 5 else stale
+    repo = FakeRepository()
+    with caplog.at_level(logging.INFO, logger=collector.__name__):
+        result = asyncio.run(FundingScheduleCollector(repo, BoundaryClient(), clock=lambda: now)
+                             .collect_once(SLOT, uuid4()))
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    if recovers:
+        assert result.status == 'success' and not warnings
+        assert len(repo.attempts[0][1]) == 4
+    else:
+        assert result.status == 'failed' and result.failure_code == 'INVALID_NEXT_FUNDING_TIME'
+        assert not repo.attempts[0][1]
+        assert len(warnings) == 1
+
+
 def row(symbol, now):
     return {
         "symbol": symbol,

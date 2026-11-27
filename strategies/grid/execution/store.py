@@ -424,6 +424,27 @@ class DecisionStore:
         if row.rowcount != 1:
             raise ValueError("unknown order intent")
 
+    def record_maker_rejection(self, client_id):
+        """Retain the prepared intent and the explicit -5022 venue denial."""
+        import json
+        self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            row = self.get_order(client_id)
+            if (not row or row['role'] != 'ENTRY' or row['status'] != 'PREPARED'
+                    or row['exchange_order_id'] or Decimal(row['executed_qty']) != 0
+                    or self.fills(client_id)):
+                raise ValueError('maker rejection conflicts with journal')
+            self.conn.execute("UPDATE order_intent SET status='REJECTED' WHERE client_order_id=?", (client_id,))
+            self.conn.execute('INSERT INTO schema_meta(key,value) VALUES(?,?)',
+                ('order_rejection:'+client_id, json.dumps(dict(api_code=-5022,
+                 reason='GTX_ORDER_REJECT', observed_at_ms=int(time.time()*1000),
+                 intent={key: row[key] for key in ('client_order_id', 'epoch_id',
+                         'role', 'side', 'price', 'quantity')}))))
+            self.conn.execute('COMMIT')
+        except Exception:
+            self.conn.execute('ROLLBACK')
+            raise
+
     def record_fill(self, client_order_id: str, exchange_order_id: str,
                     trade_id: str, quantity, price) -> bool:
         if Decimal(str(quantity)) <= 0 or Decimal(str(price)) <= 0:

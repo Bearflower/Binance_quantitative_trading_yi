@@ -184,6 +184,7 @@ SCAN_CONTEXT_TIMEOUT_SECONDS = 120
 EXPECTED_SOURCE_DENIALS = frozenset({
     'local_position_inventory_conflict', 'source_collection_incomplete', 'source_observation_stale',
     'funding_settlement_pending', 'funding_schedule_coverage_gap',
+    'inventory_owner_path_coverage_missing',
 })
 
 

@@ -1,14 +1,16 @@
 {
-  "generated_at_utc": "2026-11-26T15:22:48.010801+00:00",
+  "generated_at_utc": "2026-11-27T02:33:50.593035+00:00",
   "root": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
   "discovery_command": "rg --files --hidden -g test_*.py -g *_test.py",
   "discovery_uses_repository_ignore_rules": true,
+  "regression_round": "final4",
+  "evidence_status": "complete_current_frozen_source_regression_passed",
   "summary": {
-    "discovered_files": 537,
-    "unique_test_files": 537,
-    "covered_files": 537,
+    "discovered_files": 541,
+    "unique_test_files": 541,
+    "covered_files": 541,
     "coverage_rate": 1.0,
-    "tests": 9186,
+    "tests": 9326,
     "failures": 0,
     "errors": 0,
     "skipped": 0,
@@ -17,136 +19,197 @@
     "extra_files": [],
     "artifact_errors": [],
     "nonpassing_files": [],
-    "passed": 9186
+    "passed": 9326
   },
-  "groups_before_deduplication": [
+  "groups": [
     {
-      "group": "final2-pure",
-      "files": 431,
-      "tests": 7438,
+      "group": "final4-pure",
+      "files": 430,
+      "tests": 7343,
       "failures": 0,
       "errors": 0,
-      "skipped": 0
+      "skipped": 0,
+      "manifest": "/tmp/binance-production-readiness/final4-pure-tests.json",
+      "manifest_sha256": "c01b2e8a9c5360a4f61fa382a99119a61fa87a23007e070fed7fd3a6b8641059",
+      "results": "/tmp/binance-production-readiness/final4-pure/results.json",
+      "results_sha256": "347049e3fdbc3bc270389c37bd70922cfa49d994734f0213a4410e75e8013fec"
     },
     {
-      "group": "final2-pg",
+      "group": "final4-pg",
       "files": 33,
       "tests": 671,
       "failures": 0,
       "errors": 0,
-      "skipped": 0
+      "skipped": 0,
+      "manifest": "/tmp/binance-production-readiness/final4-pg-tests.json",
+      "manifest_sha256": "83237287de25ad46cbae6966ac3dbcab4534b7f32bfbabe288a33b544a92a393",
+      "results": "/tmp/binance-production-readiness/final4-pg/results.json",
+      "results_sha256": "cb8d5aaddd8f8ed8f37c4bd571598ed64d236dee860bf7fdaf7a44052b3b57f3"
     },
     {
-      "group": "final-grid",
-      "files": 70,
-      "tests": 972,
-      "failures": 0,
-      "errors": 0,
-      "skipped": 0
-    },
-    {
-      "group": "final-release",
-      "files": 4,
-      "tests": 127,
-      "failures": 0,
-      "errors": 0,
-      "skipped": 0
-    }
-  ],
-  "duplicates": [
-    {
-      "path": "tests/test_scripts/test_grid_release_guard.py",
-      "groups": [
-        "final-grid",
-        "final-release"
-      ],
-      "selected_group": "final-release",
-      "selection": "latest final-release row supersedes final-grid row"
-    }
-  ],
-  "refreshed_files": [
-    "tests/test_scripts/test_full_regression_build.py",
-    "tests/test_scripts/test_full_regression_deploy.py",
-    "tests/test_scripts/test_full_regression_live_gate.py",
-    "tests/test_scripts/test_grid_release_guard.py"
-  ],
-  "refresh_command": "final-release-metadata: four release modules via original runner with final-env and localguard",
-  "runtime_environment": {
-    "python": "/tmp/binance-candidate-venv/bin/python",
-    "variables_file": "/tmp/binance-production-readiness/final-env.json",
-    "network_guard": "docs/reviews/2026-11-26-production-regression/localguard/sitecustomize.py",
-    "postgres": "local disposable test databases; serial PG suite",
-    "kline": "authorized read-only local SSH tunnel; no exchange trading"
-  },
-  "deployment_status": "release_adaptation_pending_new_commit_and_ci",
-  "production_readiness_claimed": false,
-  "previous_full_regression": {
-    "source_commit": "9243f52cbc665a33144fbaa53c3a9ab85a4677b6",
-    "summary": {
-      "discovered_files": 537,
-      "unique_test_files": 537,
-      "covered_files": 537,
-      "coverage_rate": 1.0,
-      "tests": 9165,
+      "group": "final4-grid",
+      "files": 72,
+      "tests": 1091,
       "failures": 0,
       "errors": 0,
       "skipped": 0,
-      "sha256_mismatches": [],
-      "missing_files": [],
-      "extra_files": [],
-      "artifact_errors": [],
-      "nonpassing_files": [],
-      "passed": 9165
-    },
-    "ci_run_id": 45843458488,
-    "ci_build_and_import_images_passed": 11,
-    "result": "full regression and CI passed; real stage exposed Docker runtime normalization mismatch"
-  },
-  "release_adaptation": {
-    "reason": "Explicit verified OCI revision and HRS image revision defaults",
-    "scope": "OCI label on all reviewed targets; HRS_IMAGE_REVISION only four HRS-family targets; HRS_RELEASE_SHA only main HRS; strict validator unchanged",
-    "runner_sha256": "4c43c5e7b8b4f59a16590b183ba9c66a7748e13160b99ddb913c58879f05b508",
-    "changed_test_sha256": "104c732d12ae5d836c13efe5b81f9e28bea4902bcdb3472121fea41dc3f9e311",
-    "release_files_rerun": 4,
-    "release_tests_passed": 127,
-    "added_HRS_regression_cases": 11,
-    "production_activation_attempts": 0,
-    "all_image_defaults_inspected": {
-      "images": 11,
-      "containers": 23,
-      "unhandled_differences": 0
-    },
-    "candidate_commit": "pending new commit and fresh CI build",
-    "unchanged_business_tests": "reuse prior passing evidence; business source unchanged"
-  },
-  "prior_release_adaptations": [
-    {
-      "reason": "Docker 29.6 / API 1.44 canonicalizes HostConfig.OomKillDisable null to false",
-      "scope": "normalize explicit null to False in container request; strict validator unchanged",
-      "runner_sha256": "b037cce05eef31948fb01d7bea0f585582574a622c97e468d3d38aad68373e6b",
-      "changed_test": "tests/test_scripts/test_full_regression_deploy.py",
-      "changed_test_sha256": "2dc6eb4bc9bedd3d4af176708c4354072ba5523f1612dd4e91a4dd67ab97ac6b",
-      "added_regression_cases": 7,
-      "release_files_rerun": 4,
-      "release_tests_passed": 113,
-      "unchanged_business_tests": "reuse prior passing per-file evidence; no business code change in this adaptation",
-      "candidate_commit": "pending parent commit and fresh CI build"
+      "manifest": "/tmp/binance-production-readiness/final4-grid-tests.json",
+      "manifest_sha256": "057c52c2dcbce01455dd6d741b528268ba2f3e05eda2541fe46d5f9d4cd1036a",
+      "results": "/tmp/binance-production-readiness/final4-grid/results.json",
+      "results_sha256": "99ef706244ad5f84e71afd66265ebe08fbf42b12113b9403b11c14e7e0344bce"
     },
     {
-      "reason": "Docker merges missing OCI revision labels from the new image",
-      "scope": "explicit verified candidate OCI revision; preserve all other labels and strict validator",
-      "runner_sha256": "839e8f0b717b43314eeb45ccd688e3e514eee66907b4d6f5e98e8460b491bf48",
-      "changed_test": "tests/test_scripts/test_full_regression_deploy.py",
-      "changed_test_sha256": "04e58beff8cc80dfe33cff08940b31d14a1a4f47182919c0af48f672ae8e836f",
-      "added_regression_cases": 3,
-      "release_files_rerun": 4,
-      "release_tests_passed": 116,
-      "previous_candidate": "8042ba7106a5b7635034811607804a46efd545b0",
-      "previous_ci_run": 45845820340,
-      "production_activation_attempts": 0,
-      "candidate_commit": "pending new commit and fresh CI build",
-      "unchanged_business_tests": "prior evidence retained; this adaptation changes deployment provenance metadata only"
+      "group": "final4-release",
+      "files": 5,
+      "tests": 173,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "manifest": "/tmp/binance-production-readiness/final4-release-tests.json",
+      "manifest_sha256": "c491e16ee0b9e3b3ae3d54cd07e229d67472ce67c1ce6d761bb2bca40e86072b",
+      "results": "/tmp/binance-production-readiness/final4-release/results.json",
+      "results_sha256": "e0a76c57c07b7b9b542a61b9cacd6e9f4d4e8dd787636a9e42a5b96e690d13d4"
+    },
+    {
+      "group": "final4-performance",
+      "files": 1,
+      "tests": 48,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "manifest": "/tmp/binance-production-readiness/final4-performance-tests.json",
+      "manifest_sha256": "ca441376d879db72f86b8a204654d97b915646e3e62601b394b0b985612dc599",
+      "results": "/tmp/binance-production-readiness/final4-performance/results.json",
+      "results_sha256": "458158ff5d7750431c9c4df88ca550f6b1ebea904afb1f44f8dc1b0c2a1d9140"
     }
   ],
+  "duplicates": [],
+  "source_stability": {
+    "protected_files": 1371,
+    "before": "/tmp/binance-production-readiness/final4-source-before.json",
+    "before_sha256": "14f6f12a90c93b69018130e4d184459c01bc10f4710bd9221a0bec67449ef3c8",
+    "after": "/tmp/binance-production-readiness/final4-source-after.json",
+    "after_sha256": "14f6f12a90c93b69018130e4d184459c01bc10f4710bd9221a0bec67449ef3c8",
+    "changes_during_tests": [],
+    "changes_after_tests": [],
+    "current_inventory_matches": true,
+    "protected_prefixes": [
+      "ai_tuner/",
+      "backtest/",
+      "dashboard/",
+      "strategies/",
+      "shared/",
+      "services/",
+      "scripts/",
+      "database/",
+      "deployment/",
+      "tools/",
+      "tests/"
+    ],
+    "other_protected_files": [
+      "pytest.ini",
+      "requirements.txt",
+      "setup.cfg",
+      "pyproject.toml"
+    ],
+    "all_test_files_separately_hashed": true,
+    "run_summary": "/tmp/binance-production-readiness/final4-run-summary.json",
+    "run_summary_sha256": "2ffc1f3df8c6d1979c762e7ad1e7946417f01743ece1ccc20c34964193471bd6"
+  },
+  "runtime_environment": {
+    "python": "/tmp/binance-candidate-venv/bin/python",
+    "python_version": "3.11.13",
+    "variables_file": "/tmp/binance-production-readiness/final-env.json",
+    "network_guard": "docs/reviews/2026-11-26-production-regression/localguard/sitecustomize.py",
+    "postgres": "local disposable test databases; PG group serial",
+    "kline": "authorized read-only local SSH tunnel; no exchange trading",
+    "performance": "whole 48-case performance-containing module runs serially only after all four concurrent groups finish"
+  },
+  "execution_command": "/tmp/binance-candidate-venv/bin/python /tmp/binance-production-readiness/run-final4.py",
+  "execution_script_sha256": "a7351ba5fd21206978fc505bce815faacc8a44f4f406b41202b9c39ed0b01541",
+  "historical_evidence_not_counted": [
+    {
+      "round": "final3",
+      "detailed_report": "/tmp/binance-production-readiness/final-consolidated-final3-history.json",
+      "report_sha256": "5c24362b3bd6cc1028afaf9c65ee2841c70d5690f5bb27395c9ddc998ca024df",
+      "snapshot_tests": 9256,
+      "snapshot_manifest_files": 538,
+      "initial_performance_failure_and_single_serial_verification": {
+        "initial_parallel_result": {
+          "path": "strategies/btc_eth/test_v23_functional.py",
+          "sha256": "5492cadcdc86d07bc8317f9aa30f74f34396d5c30cf05dd67d5e1b602042f5c9",
+          "exit_code": 1,
+          "elapsed": 5.69,
+          "log": "/tmp/binance-production-readiness/final3-pure/strategies__btc_eth__test_v23_functional.py.log",
+          "junit": "/tmp/binance-production-readiness/final3-pure/strategies__btc_eth__test_v23_functional.py.xml",
+          "tests": 48,
+          "failures": 1,
+          "errors": 0,
+          "skipped": 0,
+          "validation_group": "final3-pure"
+        },
+        "initial_parallel_average_ms": 0.9612604580179323,
+        "threshold_ms": 0.5,
+        "serial_full_file": {
+          "path": "strategies/btc_eth/test_v23_functional.py",
+          "sha256": "5492cadcdc86d07bc8317f9aa30f74f34396d5c30cf05dd67d5e1b602042f5c9",
+          "exit_code": 0,
+          "elapsed": 1.36,
+          "log": "/tmp/binance-production-readiness/final3-serial-performance/strategies__btc_eth__test_v23_functional.py.log",
+          "junit": "/tmp/binance-production-readiness/final3-serial-performance/strategies__btc_eth__test_v23_functional.py.xml",
+          "tests": 48,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "validation_group": "final3-pure",
+          "evidence_run": "final3-serial-performance",
+          "current_sha256": "5492cadcdc86d07bc8317f9aa30f74f34396d5c30cf05dd67d5e1b602042f5c9",
+          "sha256_matches_current": true,
+          "log_sha256": "415a0bb8f54b939e7d1a98bfdbd33e1cc1beccecc3df8996fb584b64d5f222fb",
+          "junit_sha256": "c1d2ddc3315a50b2fb0a0a81a409bbb8596875b00fae44a93054e6b4762b799c"
+        },
+        "additional_single_node": {
+          "path": "strategies/btc_eth/test_v23_functional.py::TestPerformanceBenchmark::test_economic_calendar_performance",
+          "tests": 1,
+          "passed": 1,
+          "average_ms": 0.1766,
+          "log": "/tmp/binance-production-readiness/final3-serial-performance/node.log",
+          "log_sha256": "52b54acdb488828d6ceeee727229ae991e43abf0392878c633a129135ae5bd1e",
+          "junit": "/tmp/binance-production-readiness/final3-serial-performance/node.xml",
+          "junit_sha256": "e96eee12aca3a53cc7d08608cca6042e293a8323e0cbea5e65f7cbcf43c2b57d",
+          "counted_in_full_regression_total": false
+        },
+        "policy": "One full-file serial rerun and one explicit single-node timing run after the concurrent suite finished; identical test SHA and environment, no test or threshold changes, no automatic repeated retries.",
+        "interpretation": "Serial evidence passed. Initial concurrent wall-clock failure is retained; scheduling contention is a possible explanation, not established proof."
+      },
+      "counted_in_final4_total": false
+    }
+  ],
+  "deployment_status": "regression_complete_pending_parent_commit_ci_and_reviewed_rollout",
+  "production_activation_attempts_by_this_rollout": 0,
+  "production_readiness_claimed": false,
+  "supplemental_validation": {
+    "frontend_node": {
+      "tests": 2,
+      "passed": 2,
+      "failures": 0,
+      "skipped": 0,
+      "log": "/tmp/binance-production-readiness/final4-frontend-tests.log",
+      "log_sha256": "fbdda0814e3eda2400ab35757ed6104e50b4c50909fe2dbf4188bc875ef58eb6",
+      "counted_in_python_total": false
+    },
+    "production_permissions_readonly": {
+      "mode": "audit",
+      "objects_checked": 1353,
+      "issues": 0,
+      "ok": true,
+      "manifest_sha256": "f84887ee07b6e5e0c27f7bde1c689fc449d1edf4047a676abf59df956be602a1",
+      "manifest_matches_current": true,
+      "report": "/tmp/binance-production-readiness/candidate-permissions-final4.json",
+      "report_sha256": "2b07990c68d8bebe48bf360720eae3fc76f18015964d662da58c665a1fe33589",
+      "counted_in_python_total": false,
+      "note": "Only the successful audit artifact is validation evidence; an earlier SSH transport failure did not execute the audit."
+    }
+  },
   "detailed_report": "/tmp/binance-production-readiness/final-consolidated.json"
 }

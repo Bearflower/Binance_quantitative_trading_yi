@@ -13,6 +13,7 @@ import logging
 from shared.binance_api import BinanceAPIError
 
 from .exposure import projected_exposure, validate_exposure
+from .exchange import MakerOrderRejected
 from .planner import PlanLimitExceeded
 
 from .policy import Action, decide, grid_candles_current
@@ -139,7 +140,7 @@ class GridEngine:
         try:
             raw_event = await self.normalize_order_event(raw_event)
             update = TradeUpdate.parse(raw_event)
-            FillCoordinator(self.store).record(raw_event)
+            inserted_fill = FillCoordinator(self.store).record(raw_event)
             source = self.store.get_order(update.client_order_id)
             if source["role"] == "STOP" and source["epoch_id"] == epoch_id:
                 self.store.settle_stop(epoch_id)
@@ -147,10 +148,17 @@ class GridEngine:
             if (source["epoch_id"] != epoch_id or source["role"] not in ("ENTRY", "REVERSE")
                     or self.store.epoch(source["epoch_id"])["status"] != "ACTIVE"):
                 return True
-            if self.store.engine_state()["state"] == "LOCKED":
-                return await self._secure_locked_epoch(epoch_id, stop_loss_low, stop_loss_high)
-            if self.store.engine_state()["state"] == "EXITING":
-                await self.exit_all(epoch_id)
+            state = self.store.engine_state()["state"]
+            if state in ("LOCKED", "EXITING"):
+                # Only terminal orders can ignore stale/duplicate receipts.
+                # A NEW ACK for a still-live order, including a previously
+                # unknown submission, must not leave a risk-adding order behind.
+                if (source["status"] not in ("FILLED", "CANCELED", "EXPIRED")
+                        or inserted_fill
+                        or (update.execution_type != "TRADE" and update.cumulative_quantity > 0)):
+                    if state == "LOCKED":
+                        return await self._secure_locked_epoch(epoch_id, stop_loss_low, stop_loss_high)
+                    await self.exit_all(epoch_id)
                 return False
             # 本地身份已核验的 NEW/零成交回执只更新日志，不产生仓位变化。
             # 终态、成交、迟到状态和风险锁仍走完整保护及全账户对账。
@@ -528,6 +536,15 @@ class GridEngine:
                 if len(positions) != 1 or Decimal(str(positions[0]["positionAmt"])) != 0:
                     self._lock("position changed during grid start")
                     return await self._secure_locked_epoch(epoch_id, stop_low, stop_high)
+            except MakerOrderRejected:
+                self.store.record_maker_rejection(client_id)
+                logger.info('grid startup maker order rejected: epoch=%s client_order_id=%s', epoch_id, client_id)
+                # Market moved across a planned level while the batch was
+                # opening. Retire the partial grid through normal cancellation
+                # and position reconciliation; never change it to a taker.
+                if await self.exit_all(epoch_id, trigger='startup maker rejection'):
+                    self.store.acknowledge_after_action(decision['decision_id'], epoch_id)
+                return False
             except PlanLimitExceeded as exc:
                 logging.getLogger(__name__).warning("grid start paused: %s", exc)
                 if await self.exit_all(epoch_id):
@@ -909,21 +926,49 @@ class GridEngine:
                 continue
             try:
                 resolved_by = "cancel_response"
-                response = await self.exchange.cancel_order(client_id)
+                unknown_cancel = False
+                try:
+                    response = await self.exchange.cancel_order(client_id)
+                except BinanceAPIError as exc:
+                    if exc.code != -2011:
+                        raise
+                    # A fill may remove the order from DELETE before its stream
+                    # event arrives. Only the exact terminal order can resolve
+                    # this error; reconciliation below still requires its trades.
+                    unknown_cancel = True
+                    response = None
                 # The cancellation response can race with a fill. It is a fact,
                 # never proof of an empty position.
-                status = response.get("status")
-                if status not in ("CANCELED", "EXPIRED", "FILLED"):
+                terminal = ("CANCELED", "EXPIRED", "FILLED")
+                if not response or response.get("status") not in terminal:
                     resolved_by = "status_query"
                     response = await self.exchange.query_order(client_id)
-                if not response or response.get("status") not in ("CANCELED", "EXPIRED", "FILLED"):
-                    unresolved = True
-                    continue
-                self.store.record_order(client_id, str(response["orderId"]),
-                                        response["status"],
-                                        Decimal(str(response.get("executedQty", "0"))))
+                if not response or response.get("status") not in terminal:
+                    raise ValueError("exit cancellation is not terminal")
+                venue_id = str(response["orderId"])
+                executed = Decimal(str(response["executedQty"]))
+                quantity = Decimal(intent["quantity"])
+                if (response.get("clientOrderId") != client_id
+                        or response.get("symbol", "ETHUSDT") != "ETHUSDT"
+                        or response.get("side", intent["side"]) != intent["side"]
+                        or not venue_id.isdecimal() or int(venue_id) <= 0
+                        or (intent["exchange_order_id"] and venue_id != intent["exchange_order_id"])
+                        or not executed.is_finite()
+                        or not Decimal(intent["executed_qty"]) <= executed <= quantity
+                        or (response["status"] == "FILLED" and executed != quantity)):
+                    raise ValueError("exit cancellation differs from order intent")
+                if unknown_cancel and (response.get("symbol") != "ETHUSDT"
+                        or response.get("side") != intent["side"]
+                        or Decimal(str(response["origQty"])) != quantity
+                        or Decimal(str(response["price"])) != Decimal(intent["price"])):
+                    raise ValueError("unknown cancellation lacks exact original order")
+                self.store.record_order(client_id, venue_id, response["status"], executed)
                 log_cancel_result(intent, response, trigger=trigger, resolved_by=resolved_by)
-            except Exception:
+            except Exception as exc:
+                logger.warning("grid exit cancel unconfirmed: epoch=%s trigger=%s client_order_id=%s "
+                               "exchange_order_id=%s resolved_by=%s type=%s api_code=%s",
+                               epoch_id, trigger, client_id, intent["exchange_order_id"], resolved_by,
+                               type(exc).__name__, exc.code if isinstance(exc, BinanceAPIError) else None)
                 unresolved = True
         previous_closes = sum(1 for row in self.store.all_orders()
                               if row["epoch_id"] == epoch_id and row["role"] == "EXIT")

@@ -5,8 +5,8 @@
   "scope": "Final production candidate delta against latest authorized production grid/classic baseline 8dd906c9, not a new full-history audit",
   "snapshot": {
     "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
-    "snapshot": "88d95204b4d1ffc91ea8471f3741fe070df2e02f",
-    "tree": "143c326908f83c5a0df3cb464e6f62222e854d30",
+    "snapshot": "00f4ae69d9526c5f5231b42348fbd305c63760b8",
+    "tree": "b575df0f594b56971ed9cf0b6d02d1f3eaf46dfc",
     "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
     "output_exclusions": [
       "docs/reviews/2026-11-26-production-regression/ocr-review.json",
@@ -14,10 +14,10 @@
     ]
   },
   "ocr": {
-    "preview": "/tmp/binance-final-ocr/stage-hrs-metadata-fix/full-preview.json",
-    "preview_sha256": "23693250e436f0e32e923f112e539ea8d105e9983944ea204d178561bdeeca12",
-    "rules": "/tmp/binance-final-ocr/stage-hrs-metadata-fix/full-rules.json",
-    "rules_sha256": "6e871049c5d490ceefe71db316873cdd99ea912e54eabba6826693119cfb4a09",
+    "preview": "/tmp/binance-final-ocr/final4/full-preview.json",
+    "preview_sha256": "cd5eee534398029c21e095944e081fcfb433b5eee44251aa574e0d3a8122ef8d",
+    "rules": "/tmp/binance-final-ocr/final4/full-rules.json",
+    "rules_sha256": "69c0d03c6e7877718d5c79e5a1074e146937e7efa4d3ca6360c0e1ca1027a87d",
     "rule_groups": [
       {
         "group_id": 1,
@@ -53,6 +53,7 @@
           "ai_tuner/funding_schedule/cli.py",
           "ai_tuner/funding_schedule/collector.py",
           "ai_tuner/main.py",
+          "ai_tuner/reconciler/income_reconciler.py",
           "backtest/btc_eth/replay/__init__.py",
           "backtest/btc_eth/replay/engine.py",
           "backtest/btc_eth/replay/entry_intent.py",
@@ -92,10 +93,14 @@
           "strategies/btc_eth_aggressive/strategy.py",
           "strategies/conftest.py",
           "strategies/grid/execution/engine.py",
+          "strategies/grid/execution/exchange.py",
           "strategies/grid/execution/main.py",
+          "strategies/grid/execution/startup_recovery.py",
+          "strategies/grid/execution/store.py",
           "strategies/grid/execution/trailing.py",
           "strategies/grid/signal_bot.py",
           "strategies/hrs/acceptance_report.py",
+          "strategies/hrs/decision_context.py",
           "strategies/hrs/position_manager.py",
           "strategies/hrs/risk_manager.py",
           "strategies/hrs/strategy.py",
@@ -135,20 +140,20 @@
     ]
   },
   "summary": {
-    "total_changed_entries": 169,
-    "reviewable_entries": 73,
-    "reviewed_entries": 73,
+    "total_changed_entries": 184,
+    "reviewable_entries": 78,
+    "reviewed_entries": 78,
     "skipped_reviewable_entries": 0,
     "coverage_rate": 1.0,
-    "excluded_entries": 96,
+    "excluded_entries": 106,
     "exclusions_by_reason": {
-      "default_path": 84,
+      "default_path": 94,
       "unsupported_ext": 9,
       "binary": 3
     },
-    "current_hash_verified_entries": 73,
-    "carried_forward_hash_matched": 70,
-    "supplementally_reviewed": 3,
+    "current_hash_verified_entries": 78,
+    "carried_forward_hash_matched": 67,
+    "supplementally_reviewed": 11,
     "open_findings": 0
   },
   "coverage": [
@@ -287,7 +292,7 @@
     {
       "path": "ai_tuner/funding_schedule/collector.py",
       "status": "modified",
-      "sha256": "960b9eee986df0adff018cc2d38f5dbc0655cc8a1fa9a1e1084027b64903ef9a",
+      "sha256": "2e1c6ae00b1b6868b4b1ab784a20f3bd2e49899a1cdabcccfa7d6b13a9aa8ecb",
       "review_status": "reviewed",
       "rule_group": 3,
       "evidence": [
@@ -296,6 +301,16 @@
           "sha256": "960b9eee986df0adff018cc2d38f5dbc0655cc8a1fa9a1e1084027b64903ef9a",
           "depth": "diff and relevant context; OCR rule group; regression evidence",
           "checks": null
+        },
+        {
+          "report": "external-ops-review",
+          "sha256": "2e1c6ae00b1b6868b4b1ab784a20f3bd2e49899a1cdabcccfa7d6b13a9aa8ecb",
+          "depth": "delta and full calling context",
+          "checks": [
+            "Only logging severity/context changes against already reviewed bounded refresh logic. INVALID_NEXT_FUNDING_TIME retries stay bounded and exhaustion remains warning.",
+            "Unexpected network/data failures remain warning with safe code/type; no raw exception URLs/keys logged.",
+            "Existing request deadlines, required-symbol validation and complete-batch evidence preserved."
+          ]
         }
       ]
     },
@@ -313,6 +328,25 @@
           "checks": null
         }
       ]
+    },
+    {
+      "path": "ai_tuner/reconciler/income_reconciler.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "evidence": [
+        {
+          "report": "external-ops-review",
+          "sha256": "2a492d4ee4003d52e69e52a117197d1b99411b9f3202b5cd519f398102a4eae9",
+          "depth": "delta and full calling context",
+          "checks": [
+            "Exact missing-anchor ValueError alone maps to visible BLOCKED_DATA warning before table/cursor/income writes.",
+            "Signed identity and inconsistent evidence failures remain errors; accounting gate still denies missing anchors.",
+            "PM and normal successful paths remain unchanged; does not invent equity/PnL or move progress cursor."
+          ]
+        }
+      ],
+      "sha256": "2a492d4ee4003d52e69e52a117197d1b99411b9f3202b5cd519f398102a4eae9",
+      "rule_group": 3
     },
     {
       "path": "backtest/btc_eth/replay/__init__.py",
@@ -686,7 +720,7 @@
     {
       "path": "docs/reviews/2026-11-26-production-regression/all-tests.json",
       "status": "added",
-      "sha256": "ed889e508ef115d8bc4febaf6747488e6d50f06b63b0e0971c2c6414046720b6",
+      "sha256": "94a8b6c5ed4eff7974341ba8a07081447d842f29a1522c14f00f79bb3c6d2aa5",
       "review_status": "reviewed",
       "rule_group": 5,
       "evidence": [
@@ -699,6 +733,18 @@
             "537 unique discovered paths equal manifest and per-file result paths.",
             "All 537 recorded SHA256 values match current test files; totals reconcile to 9172 passed with zero failures/errors/skips.",
             "Release adaptation records exact current runner/test hashes and remains pending fresh commit/CI, without claiming production readiness."
+          ]
+        },
+        {
+          "report": "final4-generated-evidence",
+          "sha256": "94a8b6c5ed4eff7974341ba8a07081447d842f29a1522c14f00f79bb3c6d2aa5",
+          "depth": "schema plus complete cross-file/current-source verification",
+          "checks": [
+            "541 unique discovered tests match manifest and per-file result identities.",
+            "Every current test SHA matches and log/JUnit counters were independently checked.",
+            "Final4 reran all five nonoverlapping groups after source freeze; 1371 source/test inputs unchanged from before to after.",
+            "Performance file was run after other workers stopped, with unchanged original thresholds.",
+            "No result from the intermediate final3 snapshot or targeted reruns is mixed into final4 totals."
           ]
         }
       ]
@@ -721,7 +767,7 @@
     {
       "path": "docs/reviews/2026-11-26-production-regression/per-file-results.json",
       "status": "added",
-      "sha256": "62fa072ef44e66932c369e4c2cab3df46d2c873ebc974c534b90062f84f52441",
+      "sha256": "7adccff81c5b2761ae881a29df44dcdd3520e4036aaa2f23ff74411a9a4f4420",
       "review_status": "reviewed",
       "rule_group": 5,
       "evidence": [
@@ -757,6 +803,18 @@
             "All 537 recorded test SHA256 values match current files; 9186 tests pass with zero failures/errors/skips.",
             "Current runner/test hashes and release adaptation remain pending a new committed-source build and activation."
           ]
+        },
+        {
+          "report": "final4-generated-evidence",
+          "sha256": "7adccff81c5b2761ae881a29df44dcdd3520e4036aaa2f23ff74411a9a4f4420",
+          "depth": "schema plus complete cross-file/current-source verification",
+          "checks": [
+            "541 unique discovered tests match manifest and per-file result identities.",
+            "Every current test SHA matches and log/JUnit counters were independently checked.",
+            "Final4 reran all five nonoverlapping groups after source freeze; 1371 source/test inputs unchanged from before to after.",
+            "Performance file was run after other workers stopped, with unchanged original thresholds.",
+            "No result from the intermediate final3 snapshot or targeted reruns is mixed into final4 totals."
+          ]
         }
       ]
     },
@@ -778,7 +836,7 @@
     {
       "path": "docs/reviews/2026-11-26-production-regression/validation-results.json",
       "status": "added",
-      "sha256": "36f4e08d351f74889a35c9fbc08e8472e177b95cb064670cc0eda9ae9baefe36",
+      "sha256": "7595aa893c908197aa6f14296583f5f8bd1ab6bf2bd229d1a503e6825655bfbd",
       "review_status": "reviewed",
       "rule_group": 5,
       "evidence": [
@@ -813,6 +871,18 @@
             "537 unique discovered paths match manifest and per-file rows.",
             "All 537 recorded test SHA256 values match current files; 9186 tests pass with zero failures/errors/skips.",
             "Current runner/test hashes and release adaptation remain pending a new committed-source build and activation."
+          ]
+        },
+        {
+          "report": "final4-generated-evidence",
+          "sha256": "7595aa893c908197aa6f14296583f5f8bd1ab6bf2bd229d1a503e6825655bfbd",
+          "depth": "schema plus complete cross-file/current-source verification",
+          "checks": [
+            "541 unique discovered tests match manifest and per-file result identities.",
+            "Every current test SHA matches and log/JUnit counters were independently checked.",
+            "Final4 reran all five nonoverlapping groups after source freeze; 1371 source/test inputs unchanged from before to after.",
+            "Performance file was run after other workers stopped, with unchanged original thresholds.",
+            "No result from the intermediate final3 snapshot or targeted reruns is mixed into final4 totals."
           ]
         }
       ]
@@ -976,7 +1046,7 @@
     {
       "path": "scripts/grid_release_guard.py",
       "status": "added",
-      "sha256": "a2fc2b24d4579a8977eec13bdbb6752c9c2a0c550d02b86bfab94074594f32e9",
+      "sha256": "e37304a2845b0578ba3fff01a1b6af31ecce8f7d8ce9a348d8136c90d77b110f",
       "review_status": "reviewed",
       "rule_group": 3,
       "evidence": [
@@ -991,6 +1061,12 @@
             "Authoritative cancel receipts and complete trade facts; residual exposure stays protected; nonflat or uncertain evidence never ready",
             "Two flat/order-free/journal-net-zero samples at least5s apart; unchanged risk history; actual lock release and acquisition-time evidence"
           ]
+        },
+        {
+          "report": "grid-maker-absence",
+          "sha256": "e37304a2845b0578ba3fff01a1b6af31ecce8f7d8ce9a348d8136c90d77b110f",
+          "depth": "deep",
+          "checks": "深审 156 行增量及 complete_history/verify_uncreated_orders/maintain_grid 调用上下文。仅 closed epoch、ENTRY、无 venue ID/成交/fill 可进入特殊证明；REJECTED 必须原 POST -5022 审计；ABSENT 必须原双采样身份/时间/历史/取消 peers/cutoff。再次签名身份和精确 CID -2013、全历史已知 ID/逐 fill/每单累计量、真实与 journal flat 均检查；新增 EXIT/STOP 总量检查不允许缺成交。维护仍持 ExecutionLock，原风险/continuity 门与写白名单未扩大。"
         }
       ]
     },
@@ -1305,7 +1381,7 @@
     {
       "path": "strategies/grid/execution/engine.py",
       "status": "modified",
-      "sha256": "7d0a5f636ca6efb36e73b47e9ff4baba17541abd7499ec1bcad015d5088962b3",
+      "sha256": "3612e9773bd19efe5ff831aa8d68154398d5b2eb48cf241b7d0cb38dde619c8a",
       "review_status": "reviewed",
       "rule_group": 3,
       "evidence": [
@@ -1318,8 +1394,29 @@
             "LOCKED迟到成交继续撤单/保护，未知启动结果即时清理",
             "确认非NEW启动保护误用未量化signal止损价；修成plan stop_low/high，新增LONG/SHORT真实ProtectionCoordinator断言先红后绿"
           ]
+        },
+        {
+          "report": "grid-maker-absence",
+          "sha256": "3612e9773bd19efe5ff831aa8d68154398d5b2eb48cf241b7d0cb38dde619c8a",
+          "depth": "deep",
+          "checks": "深审全部差异及 start_grid/on_order_update/exit_all/reconcile 上下文。-2011 仅以精确原单身份/数量/价格终态解决；其他成功 cancel 仍验证 CID/venue ID/有限且不回退的 executed。真实 live NEW 与重复 partial 在 LOCKED/EXITING 必须 cleanup；终态重复无新执行才免额外 REST。Maker 拒单走原撤单/剩余平仓/对账后消费信号，不改 taker、不重新 POST、不清已有操作锁。"
         }
       ]
+    },
+    {
+      "path": "strategies/grid/execution/exchange.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "evidence": [
+        {
+          "report": "grid-maker-absence",
+          "sha256": "b89a9dab506eb48964aab880a8d522611b14d6f3065dfbc7913a2bd9b21e8d9f",
+          "depth": "deep",
+          "checks": "深审 typed exception 分类及实际 place_limit/_post_once 路径，确认固定 LIMIT GTX、同 CID、单次 POST。只有 BinanceAPIError(-5022) 且非 algo 才确定拒单；MARKET/algo/网络不明/查询错误仍 UnknownOrderResult，不反复写单。补读 classic 全账户 position/open-orders 与完整 history 分页失败关闭契约。"
+        }
+      ],
+      "sha256": "b89a9dab506eb48964aab880a8d522611b14d6f3065dfbc7913a2bd9b21e8d9f",
+      "rule_group": 3
     },
     {
       "path": "strategies/grid/execution/main.py",
@@ -1345,6 +1442,36 @@
           ]
         }
       ]
+    },
+    {
+      "path": "strategies/grid/execution/startup_recovery.py",
+      "status": "added",
+      "review_status": "reviewed",
+      "evidence": [
+        {
+          "report": "grid-maker-absence",
+          "sha256": "a084b918d11dc10912d3a55a0184f53685e33a11f40ece1a26509799070133bc",
+          "depth": "deep",
+          "checks": "完整深审 127 行新增 operator-only 模块：限定 aged startup/cancel-result-unknown、唯一 PREPARED ENTRY、同轮全部 canceled 零成交 peers；signed account+exact GET -2013+私有 SQLite 克隆完整核对；双样本 5–60 秒、提交 30 秒新鲜窗、snapshot CAS、ABSENT/epoch/FLAT/audit/cutoff 原子提交。确认无交易循环/部署调用，guard 仅导入 fingerprint。ExecutionLock/停止 writer/risk/continuity 为人工调用前置条件，此审查不授权执行恢复。"
+        }
+      ],
+      "sha256": "a084b918d11dc10912d3a55a0184f53685e33a11f40ece1a26509799070133bc",
+      "rule_group": 3
+    },
+    {
+      "path": "strategies/grid/execution/store.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "evidence": [
+        {
+          "report": "grid-maker-absence",
+          "sha256": "81127fdc1f4dff924c9ac547b77a794b5fe518756cd0cb6366da3db9994eb16a",
+          "depth": "deep",
+          "checks": "深审 record_maker_rejection 原子事务；仅无成交无 venue 的 PREPARED ENTRY 变 REJECTED；保留原 intent 字段与明确 -5022 审计，同事务失败回滚。active_orders 已明确仅选择非终态；未添加任意 unknown→rejected 转换。"
+        }
+      ],
+      "sha256": "81127fdc1f4dff924c9ac547b77a794b5fe518756cd0cb6366da3db9994eb16a",
+      "rule_group": 3
     },
     {
       "path": "strategies/grid/execution/trailing.py",
@@ -1410,6 +1537,25 @@
           "checks": null
         }
       ]
+    },
+    {
+      "path": "strategies/hrs/decision_context.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "evidence": [
+        {
+          "report": "external-ops-review",
+          "sha256": "abe256b37eddd3584930579a9911c8a2fb7e16769ba825ab8c9af94e3e2c508c",
+          "depth": "delta and full calling context",
+          "checks": [
+            "Adds one known expected denial code to observability classification only; source insufficiency still prevents scoring/new entries.",
+            "Mixed unknown codes remain unexpected because all reason codes must be allowlisted.",
+            "Existing exit maintenance and source timeout handling remain intact."
+          ]
+        }
+      ],
+      "sha256": "abe256b37eddd3584930579a9911c8a2fb7e16769ba825ab8c9af94e3e2c508c",
+      "rule_group": 3
     },
     {
       "path": "strategies/hrs/position_manager.py",
@@ -1613,7 +1759,7 @@
     {
       "path": "docs/reviews/2026-11-26-production-regression/README.md",
       "status": "added",
-      "insertions": 48,
+      "insertions": 46,
       "deletions": 0,
       "exclude_reason": "unsupported_ext"
     },
@@ -1821,6 +1967,20 @@
       "exclude_reason": "default_path"
     },
     {
+      "path": "tests/test_ai_tuner_mvp/test_funding_schedule_collector.py",
+      "status": "modified",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_ai_tuner_mvp/test_income_cutover_pending.py",
+      "status": "added",
+      "insertions": 34,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
       "path": "tests/test_ai_tuner_mvp/test_snapshot_repository_postgres.py",
       "status": "modified",
       "insertions": 6,
@@ -1863,9 +2023,37 @@
       "exclude_reason": "default_path"
     },
     {
+      "path": "tests/test_grid_execution/test_exchange.py",
+      "status": "modified",
+      "insertions": 13,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_grid_execution/test_exit.py",
+      "status": "modified",
+      "insertions": 66,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_grid_execution/test_exit_cancel_race.py",
+      "status": "added",
+      "insertions": 220,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
       "path": "tests/test_grid_execution/test_new_receipt_budget.py",
       "status": "added",
-      "insertions": 83,
+      "insertions": 156,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_grid_execution/test_pg_projection.py",
+      "status": "modified",
+      "insertions": 26,
       "deletions": 0,
       "exclude_reason": "default_path"
     },
@@ -1873,6 +2061,20 @@
       "path": "tests/test_grid_execution/test_review_safety.py",
       "status": "modified",
       "insertions": 43,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_grid_execution/test_start.py",
+      "status": "modified",
+      "insertions": 36,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_grid_execution/test_startup_recovery.py",
+      "status": "added",
+      "insertions": 89,
       "deletions": 0,
       "exclude_reason": "default_path"
     },
@@ -1985,6 +2187,13 @@
       "path": "tests/test_scripts/test_full_regression_live_gate.py",
       "status": "added",
       "insertions": 65,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_scripts/test_grid_absent_order_evidence.py",
+      "status": "added",
+      "insertions": 217,
       "deletions": 0,
       "exclude_reason": "default_path"
     },
@@ -2119,6 +2328,13 @@
       "status": "modified",
       "insertions": 43,
       "deletions": 4,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_cycle_failures.py",
+      "status": "modified",
+      "insertions": 18,
+      "deletions": 0,
       "exclude_reason": "default_path"
     },
     {
@@ -2475,6 +2691,18 @@
         "owner_red_failed": 6,
         "owner_red_passed": 5
       }
+    },
+    {
+      "name": "external-ops-review",
+      "path": "/tmp/binance-final-ocr/external-ops-review.json",
+      "sha256": "b5ddbe9868079003608255ae97e2696ff3772dc5bacad880cc9a2070333bf7ea",
+      "summary": "Current-SHA-bound independent review of the frozen production incident integration; no open confirmed findings."
+    },
+    {
+      "name": "grid-maker-absence",
+      "path": "/tmp/binance-final-ocr/grid-maker-absence/review.json",
+      "sha256": "74442b089bdf9a9d369768801c6ef3addd0cd2128655e829ee1505b9105543f1",
+      "summary": "Current-SHA-bound independent review of the frozen production incident integration; no open confirmed findings."
     }
   ],
   "resolved_findings": [
@@ -2624,6 +2852,33 @@
         "owner_red_passed": 5
       },
       "production_activation_performed": false
+    },
+    {
+      "path": "strategies/grid/execution/engine.py",
+      "category": "bug",
+      "severity": "high",
+      "status": "fixed",
+      "source_report": "grid-maker-absence",
+      "content": "An ordinary cancellation racing a fill now resolves only exact -2011 through the original terminal order and complete fill/net reconciliation. Live NEW and partial-remainder orders still trigger cleanup while locked/exiting; only verified terminal stale/duplicate receipts are suppressed.",
+      "production_activation_performed": false
+    },
+    {
+      "path": "strategies/grid/execution/exchange.py",
+      "category": "bug",
+      "severity": "medium",
+      "status": "fixed",
+      "source_report": "grid-maker-absence",
+      "content": "Explicit single-POST -5022 for a LIMIT GTX order is retained as a maker rejection. It is never inferred from GET -2013, never retried as a POST or converted to a taker order. Other ambiguous outcomes preserve fail-closed handling and safe error category/code diagnostics.",
+      "production_activation_performed": false
+    },
+    {
+      "path": "scripts/grid_release_guard.py",
+      "category": "bug",
+      "severity": "medium",
+      "status": "fixed",
+      "source_report": "grid-maker-absence",
+      "content": "Release maintenance now supports separately audited REJECTED and operator-verified ABSENT intents through exact identity, audit timing, fresh signed absence, complete order/trade history and flat account/journal proof. Ordinary unknown intents remain blockers; no recovery operation or broader write permission was added.",
+      "production_activation_performed": false
     }
   ],
   "findings": [],
@@ -2667,17 +2922,39 @@
         "errors": 0,
         "skipped": 0
       }
+    },
+    {
+      "name": "final4 full frozen-source regression",
+      "summary": {
+        "discovered_files": 541,
+        "unique_test_files": 541,
+        "covered_files": 541,
+        "coverage_rate": 1.0,
+        "tests": 9326,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "sha256_mismatches": [],
+        "missing_files": [],
+        "extra_files": [],
+        "artifact_errors": [],
+        "nonpassing_files": [],
+        "passed": 9326
+      },
+      "run_summary": "/tmp/binance-production-readiness/final4-run-summary.json",
+      "unchanged_source_files": 1371,
+      "frontend_tests": {
+        "passed": 2,
+        "log": "/tmp/binance-production-readiness/final4-frontend-tests.log"
+      }
     }
   ],
   "limitations": [
-    "Review outputs ocr-review.json and ocr-review.md are excluded from the synthetic snapshot to avoid self-reference; no business/test source is excluded by this exception.",
-    "OCR default_path excludes test paths from source review; tests are separately exercised and retained in the parent regression evidence. unsupported_ext entries retain their exact exclusion reason.",
-    "Coverage describes changed source against 8dd906c9; inherited code is not represented as newly reviewed line by line.",
-    "Local offline tests and exact COPY-tree imports do not replace successful real CI builds, immutable digest verification, fresh account gates or production acceptance.",
-    "No deployment success is claimed by this report.",
-    "The Docker create default correction was reviewed and verified against a stopped created candidate without activation. Refreshed snapshot includes final generated regression JSON; new source commit, CI and postdeployment acceptance remain separate requirements.",
-    "Second-stage OCI metadata correction was verified against recorded stopped candidates. The recorded stage had zero activations and 23 healthy predecessors; these historical observations do not replace fresh future account or activation gates.",
-    "Completed default scan covers the previously built 8042 images, not future image artifacts. Current metadata fixes require a fresh committed-source build, strict staging and live activation gates; no remote mutation was performed by this independent reviewer."
+    "This report reviews the final delta against 8dd906c914c5c07e4ba63bd81b778ff1e213ed25; unchanged reviewed hashes carry prior evidence forward. It is not a new line-by-line audit of all inherited code.",
+    "Both OCR output documents are excluded from their own synthetic snapshot to avoid circular hashes.",
+    "The full regression and source review do not establish production deployment; newly committed-source CI images, fresh account gates and postdeployment acceptance are separate requirements.",
+    "The old 10:05 startup request did not retain its original POST error code; the new maker rejection fix does not assert that the historical request was -5022.",
+    "Historical PM/classic equity and ownership evidence remains an explicit data dependency; no synthetic accounting facts or risk unlock were introduced by this release."
   ],
   "snapshot_history": [
     {
@@ -2704,6 +2981,16 @@
       "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
       "snapshot": "c2f0a55b9a45e3a59efeaa024ba61b08475d7b96",
       "tree": "a34faaa870e77bdf0d83a7a28b7499e9659d1658",
+      "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
+      "output_exclusions": [
+        "docs/reviews/2026-11-26-production-regression/ocr-review.json",
+        "docs/reviews/2026-11-26-production-regression/ocr-review.md"
+      ]
+    },
+    {
+      "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
+      "snapshot": "88d95204b4d1ffc91ea8471f3741fe070df2e02f",
+      "tree": "143c326908f83c5a0df3cb464e6f62222e854d30",
       "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
       "output_exclusions": [
         "docs/reviews/2026-11-26-production-regression/ocr-review.json",

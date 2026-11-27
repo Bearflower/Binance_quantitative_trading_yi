@@ -55,6 +55,10 @@ class ExecutionFactsPending(ValueError):
     """Exchange evidence has not arrived within the collection interval yet."""
 
 
+class CutoverEvidencePending(ValueError):
+    """The verified account still lacks its historical equity anchors."""
+
+
 class IncomeReconciler:
     """统一 PnL 校准器：从 Binance 拉取权威盈亏，补齐 trade_records 缺失的 realized_pnl"""
 
@@ -104,7 +108,15 @@ class IncomeReconciler:
             return
         try:
             if not self.pm:
-                await verify_cutover_ledger(self.binance, self.db)
+                try:
+                    await verify_cutover_ledger(self.binance, self.db)
+                except ValueError as exc:
+                    # Identity, signature and inconsistent evidence failures
+                    # remain errors. Only this known missing-anchor denial is
+                    # a pending-data state, before any cursor or PnL write.
+                    if str(exc) != "缺少有效的 PM 期末或经典期初权益":
+                        raise
+                    raise CutoverEvidencePending(str(exc)) from exc
             await self._ensure_state_table()
             last_ts = await self._get_last_reconciled_ts()
             now_ms = _utc_now_ms()
@@ -139,6 +151,8 @@ class IncomeReconciler:
                 updated=updated,
                 total_pnl=str(total_pnl),
             )
+        except CutoverEvidencePending as e:
+            logger.warning("PnL 校准等待切换权益凭据，保留游标", status="BLOCKED_DATA", reason=str(e))
         except ExecutionFactsPending as e:
             logger.warning("PnL 校准等待事实采集，保留游标", reason=str(e))
         except Exception as e:

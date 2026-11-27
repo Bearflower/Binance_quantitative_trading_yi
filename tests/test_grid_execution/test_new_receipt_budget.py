@@ -75,6 +75,79 @@ async def test_locked_receipt_cannot_skip_cleanup(engine):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['LOCKED','EXITING'])
+@pytest.mark.parametrize('status', ['CANCELED','EXPIRED'])
+async def test_owned_zero_fill_receipts_do_not_repeat_locked_or_exiting_cleanup(engine,state,status):
+    e,epoch = engine
+    e.store.set_engine_state(state,'cleanup pending')
+    for i in range(11):
+        assert not await apply(e,epoch,event(i,status=status,kind=status))
+    e._secure_locked_epoch.assert_not_awaited()
+    e.exit_all.assert_not_awaited()
+    e.exchange.position.assert_not_awaited()
+    assert e.store.engine_state()['state'] == state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['LOCKED','EXITING'])
+async def test_new_fill_cleans_up_once_but_exact_duplicate_does_not_repeat(engine,state):
+    e,epoch = engine
+    e.store.set_engine_state(state,'cleanup pending')
+    trade = event(status='FILLED',kind='TRADE',qty='.02',total='.02')
+    assert not await apply(e,epoch,trade)
+    assert not await apply(e,epoch,trade)
+    cleanup = e._secure_locked_epoch if state == 'LOCKED' else e.exit_all
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['LOCKED','EXITING'])
+@pytest.mark.parametrize('previous', ['PREPARED','SENT','NEW','PARTIALLY_FILLED'])
+async def test_new_ack_leaving_an_active_owned_order_still_requires_cleanup(engine,state,previous):
+    e,epoch = engine
+    e.store.set_engine_state(state,'cleanup pending')
+    e.store.record_order('eg-0','100',previous,D('.01') if previous=='PARTIALLY_FILLED' else D(0))
+    assert not await apply(e,epoch,event())
+    cleanup = e._secure_locked_epoch if state == 'LOCKED' else e.exit_all
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['LOCKED','EXITING'])
+@pytest.mark.parametrize('terminal', ['CANCELED','EXPIRED','FILLED'])
+async def test_late_new_ack_after_confirmed_terminal_order_does_not_repeat_cleanup(engine,state,terminal):
+    e,epoch = engine
+    e.store.set_engine_state(state,'cleanup pending')
+    e.store.record_order('eg-0','100',terminal,D('.02') if terminal=='FILLED' else D(0))
+    assert not await apply(e,epoch,event())
+    e._secure_locked_epoch.assert_not_awaited()
+    e.exit_all.assert_not_awaited()
+    assert e.store.get_order('eg-0')['status'] == terminal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['LOCKED','EXITING'])
+async def test_duplicate_partial_fill_cannot_leave_the_remainder_live(engine,state):
+    e,epoch = engine
+    e.store.set_engine_state(state,'cleanup pending')
+    trade = event(status='PARTIALLY_FILLED',kind='TRADE',qty='.01',total='.01')
+    assert not await apply(e,epoch,trade)
+    assert not await apply(e,epoch,trade)
+    cleanup = e._secure_locked_epoch if state == 'LOCKED' else e.exit_all
+    assert cleanup.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['LOCKED','EXITING'])
+async def test_terminal_receipt_with_unseen_execution_still_cleans_up(engine,state):
+    e,epoch = engine
+    e.store.set_engine_state(state,'cleanup pending')
+    assert not await apply(e,epoch,event(status='CANCELED',kind='CANCELED',total='.01'))
+    cleanup = e._secure_locked_epoch if state == 'LOCKED' else e.exit_all
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_new_receipt_wrong_exchange_identity_locks(engine):
     e, epoch = engine
     row = event(); row['o']['i']=999

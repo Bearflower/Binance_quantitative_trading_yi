@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 import time
 
+from shared.binance_api import BinanceAPIError
 from strategies.grid.execution.contracts import ExecutionSettings
 from strategies.grid.execution.engine import GridEngine
 from strategies.grid.execution.exchange import GridExchange
@@ -220,13 +221,23 @@ async def owned_view(store, exchange):
 
 async def complete_history(store, exchange):
     """Verify every submitted durable ordinary intent before maintenance writes."""
+    uncreated = []
+    verified_orders, verified_trades = {}, {}
     for intent in store.all_orders():
+        if intent['status'] in ('REJECTED', 'ABSENT'):
+            require(intent['role'] == 'ENTRY' and not intent['exchange_order_id']
+                    and number(intent['executed_qty']) == 0 and not store.fills(intent['client_order_id'])
+                    and store.epoch(intent['epoch_id'])['status'] == 'CLOSED',
+                    'uncreated order has execution or an open epoch')
+            uncreated.append(intent)
+            continue
         if intent['role'] not in ('ENTRY', 'REVERSE'):
             continue
         if not intent['exchange_order_id'] and store.unsubmitted_move_draft(intent['client_order_id']):
             continue
         row = await exchange.query_order(intent['client_order_id'])
         validate_order(row, intent)
+        verified_orders[str(row['orderId'])] = row
         # Local fills may lag a new fill, but may never exceed the verified record.
         fills = store.fills(intent['client_order_id'])
         require(sum((number(f['quantity']) for f in fills), Decimal(0)) <= number(row['executedQty']),
@@ -240,6 +251,8 @@ async def complete_history(store, exchange):
                         and str(trade['id']) not in ids and number(trade['qty']) > 0 and number(trade['price']) > 0,
                         'historical trade ownership mismatch')
                 ids.add(str(trade['id']))
+                verified_trades[(str(row['orderId']), str(trade['id']))] = (
+                    trade['side'], number(trade['qty']), number(trade['price']))
             require(sum((number(t['qty']) for t in trades), Decimal(0)) == number(row['executedQty']),
                     'historical trade quantity incomplete')
             actual = {str(t['id']): t for t in trades}
@@ -247,6 +260,149 @@ async def complete_history(store, exchange):
                 trade = actual.get(fill['trade_id'])
                 require(trade and number(trade['qty']) == number(fill['quantity'])
                         and number(trade['price']) == number(fill['price']), 'historical fill differs from journal')
+    if uncreated:
+        await verify_uncreated_orders(store, exchange, uncreated, verified_orders, verified_trades)
+
+
+def _audit(store, key):
+    row = store.conn.execute('SELECT value FROM schema_meta WHERE key=?', (key,)).fetchone()
+    require(row is not None, 'uncreated order audit missing')
+    value = json.loads(row[0])
+    require(isinstance(value, dict), 'invalid uncreated order audit')
+    return value
+
+
+def _timestamp(value):
+    require(type(value) is int and value > 0, 'invalid audit timestamp')
+    return value
+
+
+def _history_order(actual, intent, verified=None):
+    expected = verified or intent
+    quantity = expected['origQty'] if verified else intent['quantity']
+    executed = expected['executedQty'] if verified else intent['executed_qty']
+    require(actual.get('symbol') == 'ETHUSDT' and actual.get('side') == intent['side']
+            and (intent['role'] == 'STOP' or actual.get('clientOrderId') == intent['client_order_id'])
+            and actual.get('status') == expected['status']
+            and number(actual['origQty']) == number(quantity)
+            and number(actual['executedQty']) == number(executed), 'account order history differs from journal')
+
+
+def _absence_audit(store, intent, identity, now_ms, known, fills):
+    from strategies.grid.execution.startup_recovery import fingerprint
+    evidence = _audit(store, 'startup_absence_recovery:' + str(intent['epoch_id']))
+    first, second = evidence['first'], evidence['second']
+    epoch = store.epoch(intent['epoch_id'])
+    fields = ('identity', 'journal_sha256', 'epoch_id', 'client_order_id', 'query_code', 'history_sha256')
+    require(all(first[key] == second[key] for key in fields)
+            and first['identity'] == identity and first['epoch_id'] == intent['epoch_id']
+            and first['client_order_id'] == intent['client_order_id'] and first['query_code'] == -2013,
+            'absence audit identity differs')
+    require(isinstance(first['journal_sha256'], str) and len(first['journal_sha256']) == 64
+            and all(char in '0123456789abcdef' for char in first['journal_sha256']), 'invalid journal audit hash')
+    t1, t2 = _timestamp(first['checked_at_ms']), _timestamp(second['checked_at_ms'])
+    recovered = _timestamp(evidence['recovered_at_ms'])
+    cutoff = store.conn.execute("SELECT value FROM schema_meta WHERE key='position_recovery_cutoff_ms'").fetchone()
+    require(t1 - epoch['created_at_ms'] >= 300_000 and intent['created_at_ms'] <= t1
+            and 5000 <= t2-t1 <= 60_000 and 0 <= recovered-t2 <= 30_000
+            and cutoff is not None and recovered <= int(cutoff[0]) <= now_ms,
+            'absence audit timing or signal cutoff invalid')
+    peers = [row for row in store.all_orders()
+             if row['epoch_id'] == intent['epoch_id'] and row['client_order_id'] != intent['client_order_id']]
+    require(peers and all(row['role'] == 'ENTRY' and row['status'] == 'CANCELED'
+            and row['exchange_order_id'] and number(row['executed_qty']) == 0
+            and not store.fills(row['client_order_id']) for row in peers), 'absence startup peers differ')
+    required = {row['exchange_order_id'] for row in peers}
+    for sample in (first, second):
+        history = sample['history']
+        require(fingerprint(history) == sample['history_sha256'], 'absence history audit hash differs')
+        confirmed = set()
+        for actual in history['orders']:
+            venue = str(actual['orderId'])
+            require(venue in known and venue not in confirmed
+                    and actual.get('status') in ('CANCELED', 'EXPIRED', 'FILLED'), 'absence order audit unowned')
+            _history_order(actual, known[venue])
+            confirmed.add(venue)
+        require(required <= confirmed, 'absence startup order history incomplete')
+        seen = set()
+        for trade in history['trades']:
+            key = (str(trade['orderId']), str(trade['id']))
+            require(key not in seen and trade.get('symbol') == 'ETHUSDT'
+                    and epoch['created_at_ms']-5000 <= trade['time'] <= sample['checked_at_ms']
+                    and fills.get(key) == (trade['side'], number(trade['qty']), number(trade['price'])),
+                    'absence trade audit differs')
+            seen.add(key)
+
+
+async def verify_uncreated_orders(store, exchange, intents, verified_orders, verified_trades):
+    """An audited non-order is still checked against fresh whole-account facts.
+
+    Legacy -5022 records retain their original minimal schema. Their trusted
+    typed-POST contract is supplemented by the same signed absence/history
+    proof; a GET -2013 alone never invents a rejection or retires an intent.
+    """
+    now_ms = int(time.time() * 1000)
+    bound = store.conn.execute("SELECT value FROM schema_meta WHERE key='account_identity'").fetchone()
+    identity = await exchange.journal_identity()
+    require(bound and bound[0] == identity and identity.startswith('classic:'), 'uncreated order account differs')
+    require(position_amount(await exchange.position()) == 0, 'uncreated order proof requires flat position')
+    orders = store.all_orders()
+    known = {row['exchange_order_id']: row for row in orders if row['exchange_order_id']}
+    require(len(known) == sum(bool(row['exchange_order_id']) for row in orders), 'duplicate journal venue identity')
+    by_client = {row['client_order_id']: row for row in orders}
+    fills = {}
+    net = Decimal(0)
+    for fill in store.all_fills():
+        source = by_client[fill['client_order_id']]
+        key = (fill['exchange_order_id'], fill['trade_id'])
+        require(source['exchange_order_id'] == key[0] and key not in fills, 'journal fill identity differs')
+        fills[key] = (source['side'], number(fill['quantity']), number(fill['price']))
+        net += number(fill['quantity']) * (1 if source['side'] == 'BUY' else -1)
+    require(net == 0, 'uncreated order proof requires flat journal')
+    for intent in intents:
+        client_id = intent['client_order_id']
+        if intent['status'] == 'REJECTED':
+            evidence = _audit(store, 'order_rejection:' + client_id)
+            require(evidence.get('api_code') == -5022 and evidence.get('reason') == 'GTX_ORDER_REJECT'
+                    and intent['created_at_ms'] <= _timestamp(evidence['observed_at_ms']) <= now_ms,
+                    'maker rejection audit is not an explicit POST denial')
+            if 'intent' in evidence:
+                require(evidence['intent'] == {key: intent[key] for key in (
+                    'client_order_id', 'epoch_id', 'role', 'side', 'price', 'quantity')}, 'maker rejection intent differs')
+        else:
+            _absence_audit(store, intent, identity, now_ms, known, fills)
+        try:
+            await exchange.query_order(client_id)
+        except BinanceAPIError as exc:
+            require(exc.code == -2013, 'signed absence query failed')
+        else:
+            raise GuardError('audited uncreated order now exists')
+    start = max(1, min(store.epoch(row['epoch_id'])['created_at_ms'] for row in intents) - 5000)
+    confirmed = set()
+    for actual in await exchange.order_history(start, now_ms):
+        venue = str(actual['orderId'])
+        require(venue in known and venue not in confirmed, 'fresh account order history unowned or duplicated')
+        _history_order(actual, known[venue], verified_orders.get(venue))
+        confirmed.add(venue)
+    required = {venue for venue, row in known.items() if row['created_at_ms'] >= start}
+    require(required <= confirmed, 'fresh account order history incomplete')
+    facts = dict(fills)
+    for key, fact in verified_trades.items():
+        require(key not in facts or facts[key] == fact, 'fresh trade differs from journal')
+        facts[key] = fact
+    for venue in required:
+        expected = (verified_orders[venue]['executedQty'] if venue in verified_orders
+                    else known[venue]['executed_qty'])
+        require(sum((fact[1] for key, fact in facts.items() if key[0] == venue), Decimal(0))
+                == number(expected), 'journal execution history incomplete')
+    seen = set()
+    for trade in await exchange.trade_history(start, now_ms):
+        key = (str(trade['orderId']), str(trade['id']))
+        require(key not in seen and trade.get('symbol') == 'ETHUSDT' and start <= trade['time'] <= now_ms
+                and facts.get(key) == (trade['side'], number(trade['qty']), number(trade['price'])),
+                'fresh account trade history unowned or inconsistent')
+        seen.add(key)
+    require({key for key in facts if key[0] in required} <= seen, 'fresh account trade history incomplete')
 
 
 async def safety_view(store, exchange):
