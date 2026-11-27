@@ -280,6 +280,22 @@ def validate_scan_boundary(context, *, requested_at, checked_at):
         ledger = context['ledger_state']
         state = obj(ledger['ledger_state'])
         policy, gate = context['entry_policy'], context['equity_gate']
+        original = raw['income_report']
+        strict_history = (original.get('id_match_and_coverage_complete') is True
+                          and original.get('coverage_gaps') == [])
+        current = raw.get('current_income_report')
+        accepted_history = (raw.get('history_status') == 'ACCEPTED_GAPS'
+            and isinstance(raw.get('history_acceptance_sha256'), str)
+            and len(raw['history_acceptance_sha256']) == 64
+            and all(c in '0123456789abcdef' for c in raw['history_acceptance_sha256'])
+            and raw.get('history_acceptance_revision', 0) > 0
+            and raw.get('result', {}).get('history_acceptance_sha256') == raw['history_acceptance_sha256']
+            and isinstance(current, dict)
+            and current.get('id_match_and_coverage_complete') is True
+            and current.get('coverage_gaps') == []
+            and current.get('attribution_conflicts') == []
+            and current.get('missing_income_fills') == []
+            and current.get('unattributed_count') == 0)
         if (canonical(raw)[1] != marker['evidence_sha256']
                 or parent['account_id'] != raw['account_id'] or raw['account_id'] != policy['account_id']
                 or policy['strategy_id'] != 'hrs'
@@ -295,8 +311,7 @@ def validate_scan_boundary(context, *, requested_at, checked_at):
                 or not aware(policy['effective_at']) <= boundary <= available < aware(policy['expires_at'])
                 or raw['source_collection'].get('complete') is not True
                 or raw['source_collection'].get('gaps') != []
-                or raw['income_report'].get('id_match_and_coverage_complete') is not True
-                or raw['income_report'].get('coverage_gaps') != []):
+                or not (strict_history or accepted_history)):
             raise ValueError('source_binding')
         from .margin_budget import HRS_OWNED, policy_margin_scope, validate_cash_fields, validate_cash_observation
         if policy_margin_scope(policy) == HRS_OWNED:
