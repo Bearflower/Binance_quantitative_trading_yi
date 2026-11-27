@@ -1,6 +1,7 @@
 """One-way PM and classic USD-M adapter for the ETHUSDT order grid."""
 
 import asyncio
+import logging
 import time
 from decimal import Decimal
 from typing import Any, Dict
@@ -18,6 +19,10 @@ class AccountModeError(RuntimeError):
 
 class UnknownOrderResultError(RuntimeError):
     pass
+
+
+class MakerOrderRejected(RuntimeError):
+    """Binance explicitly refused this GTX write without creating an order."""
 
 
 class StopCancellationUncertain(RuntimeError):
@@ -95,6 +100,15 @@ class GridExchange:
         try:
             return await self.client._request_once("POST", path, params, signed=True)
         except Exception as exc:
+            if (isinstance(exc, BinanceAPIError) and exc.code == -5022
+                    and not algo and params.get('type') == 'LIMIT'
+                    and params.get('timeInForce') == 'GTX'):
+                raise MakerOrderRejected(client_id) from exc
+            # Keep the original failure category; exception strings can carry
+            # signed URLs and must not be logged. Never retry the POST.
+            logging.getLogger(__name__).warning(
+                'grid order submission uncertain: client_order_id=%s type=%s api_code=%s',
+                client_id, type(exc).__name__, exc.code if isinstance(exc, BinanceAPIError) else None)
             # A lost POST response is ambiguous. Query only; never repeat the write.
             for _ in range(3):
                 try:

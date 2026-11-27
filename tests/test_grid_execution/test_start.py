@@ -110,3 +110,39 @@ async def test_stale_decision_or_risk_lock_never_writes(tmp_path):
                                    leverage=10, now_ms=now) is False
     assert exchange.sent == []
     store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('rejected_index', [0, 1])
+async def test_maker_rejection_cleans_up_and_consumes_signal_without_unknown_intent(tmp_path, rejected_index):
+    from strategies.grid.execution.exchange import MakerOrderRejected
+    from unittest.mock import AsyncMock
+    path = tmp_path / 'rejected.sqlite3'
+    migrate(path)
+    store = DecisionStore(path)
+    exchange = StartExchange()
+    accepted = exchange.place_limit
+    async def place(side, qty, price, cid):
+        if len(exchange.sent) == rejected_index:
+            raise MakerOrderRejected(cid)
+        return await accepted(side, qty, price, cid)
+    async def cancel(cid):
+        row = next(r for r in exchange.ordinary if r['clientOrderId'] == cid)
+        exchange.ordinary.remove(row)
+        return dict(row, status='CANCELED')
+    exchange.place_limit, exchange.cancel_order = place, AsyncMock(side_effect=cancel)
+    now = 1_800_000_000_000
+    decision = _decision(store, now)
+    plan = GridPlan(tuple(PlannedOrder(i, 'BUY', Decimal(1900+50*i), Decimal('0.02')) for i in range(2)),
+                    (Decimal('1900'), Decimal('1950')), Decimal('77'), Decimal('7.7'))
+    assert not await GridEngine(store, exchange).start_grid(decision, plan,
+        RiskAssessment(RiskStatus.ALLOW, ()), leverage=10, now_ms=now)
+    assert store.engine_state()['state'] == 'FLAT'
+    assert store.cursor() == decision['decision_id']
+    assert not store.active_orders() and not exchange.ordinary
+    rejected = [r for r in store.all_orders() if r['status'] == 'REJECTED']
+    assert len(rejected) == 1 and not rejected[0]['exchange_order_id']
+    assert store.conn.execute("SELECT value FROM schema_meta WHERE key=?",
+                             ('order_rejection:'+rejected[0]['client_order_id'],)).fetchone()
+    assert exchange.cancel_order.await_count == rejected_index
+    store.close()

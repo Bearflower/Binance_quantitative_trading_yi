@@ -13,6 +13,7 @@ import logging
 from shared.binance_api import BinanceAPIError
 
 from .exposure import projected_exposure, validate_exposure
+from .exchange import MakerOrderRejected
 from .planner import PlanLimitExceeded
 
 from .policy import Action, decide, grid_candles_current
@@ -531,6 +532,15 @@ class GridEngine:
                     self._lock("position changed during grid start")
                     await self.exit_all(epoch_id)
                     return False
+            except MakerOrderRejected:
+                self.store.record_maker_rejection(client_id)
+                logger.info('grid startup maker order rejected: epoch=%s client_order_id=%s', epoch_id, client_id)
+                # Market moved across a planned level while the batch was
+                # opening. Retire the partial grid through normal cancellation
+                # and position reconciliation; never change it to a taker.
+                if await self.exit_all(epoch_id, trigger='startup maker rejection'):
+                    self.store.acknowledge_after_action(decision['decision_id'], epoch_id)
+                return False
             except PlanLimitExceeded as exc:
                 logging.getLogger(__name__).warning("grid start paused: %s", exc)
                 if await self.exit_all(epoch_id):
