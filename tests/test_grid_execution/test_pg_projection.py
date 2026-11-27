@@ -67,6 +67,32 @@ class RecordingPg:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('status', ['REJECTED', 'ABSENT'])
+async def test_unexecuted_intent_projection_keeps_null_venue_id_and_pnl(tmp_path, status):
+    journal, notices = tmp_path/'journal', tmp_path/'notices'
+    migrate(journal)
+    store = DecisionStore(journal)
+    epoch = store.create_epoch('signal')
+    store.prepare_order(epoch, 1, 'ENTRY', 'SELL', Decimal('1700'), Decimal('.02'), 'eg-unused')
+    if status == 'REJECTED':
+        store.record_maker_rejection('eg-unused')
+    else:
+        # ABSENT is written only by the separately tested operator recovery.
+        store.conn.execute("UPDATE order_intent SET status='ABSENT'")
+    store.close()
+    conn = sqlite3.connect(notices)
+    conn.execute('CREATE TABLE fact(order_id,trade_id,side,quantity,price,commission,realized_pnl,commission_asset,trade_time_ms,created_at_ms)')
+    conn.close()
+    pg = RecordingPg()
+    projector = GridPgProjector(journal, notices, 'grid_classic', AsyncMock(), pg)
+    assert await projector.run_once() == (1, 0)
+    record = pg.rows[('grid_classic', 'eg-unused')]
+    assert record[3] is None and record[7] == 0 and record[9] == 0
+    assert record[10] == status and record[12] is None and record[13] is None
+    assert not pg.fills
+
+
+@pytest.mark.asyncio
 async def test_projection_replay_attributes_normal_and_triggered_stop(tmp_path):
     journal = tmp_path / "execution.sqlite3"
     notices = tmp_path / "notices.sqlite3"
