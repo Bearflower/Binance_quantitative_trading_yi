@@ -62,6 +62,8 @@ def render_skip(reason: str, *, equity=None, ath=None, initial_capital=None) -> 
         detail = f"当前权益 {_amount(equity)} U 创新高，但建议提取额低于最小提取额，本次不发送建议。"
     elif reason == "already_notified_this_week":
         detail = f"本周已发送过提取建议（ATH {_amount(ath)} U），本次不重复提醒。"
+    elif reason == "classic_equity_anchor_missing":
+        detail = "PM 期末或经典期初权益证据尚未补齐，不计算累计盈利和提取建议。"
     else:
         detail = f"未触发（{reason or '未知原因'}）。"
     return f"【利润提取提醒】本次未触发\n{detail}\n{_SKIP_HINT}"
@@ -134,8 +136,16 @@ class ProfitExtractionJob:
                 cutover = classic_cutover_ms()
                 if cutover is None:
                     raise ValueError("利润提取提醒缺少账户切点")
-                pm_final, classic_open = await read_anchors(
-                    self.db_manager, cutover, expected_uid=await signed_spot_uid_sha256(self.binance))
+                try:
+                    pm_final, classic_open = await read_anchors(
+                        self.db_manager, cutover, expected_uid=await signed_spot_uid_sha256(self.binance))
+                except ValueError as exc:
+                    if str(exc) != "缺少有效的 PM 期末或经典期初权益":
+                        raise
+                    logger.info("利润提取提醒等待切换权益证据", reason=str(exc))
+                    await self._publish(
+                        render_skip("classic_equity_anchor_missing"), "skip", "切换权益证据待补")
+                    return {"action": "skip", "reason": "classic_equity_anchor_missing"}
                 # Express old capital and peak in opening USDT at the same relative performance.
                 factor = classic_open / pm_final
                 initial_capital *= factor

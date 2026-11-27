@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.ref == 'refs/heads/codex/unified-production-20261127'
+    if: github.ref == 'refs/heads/codex/unified-production-20261127' || github.ref == 'refs/heads/codex/classic-final-release-20261128'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
