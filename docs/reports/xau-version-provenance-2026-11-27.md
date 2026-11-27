@@ -1,6 +1,6 @@
 # XAU 版本追踪修复与复查（2026-11-27）
 
-状态：版本修复已合并 PR #60；首次 Actions 46010982575 发布失败，正在修复发布执行器，尚未完成上线验收。风险 R2：只改影子事件版本身份和 run 分段，不改信号、参数或交易行为。沿用用户已授权的连续修复、测试后部署范围。
+状态：PR #60 版本修复与 PR #61 精确 ID 执行器已合并；第二次 Actions 46014565497 已成功部署，五层与数据库 run 验证通过。三个 profile 新版本自然周期事件尚待北京时间 11/27 23:15、23:20 验收，当前不宣称全部验收闭合。风险 R2：只改影子事件版本身份和 run 分段，不改信号、参数或交易行为。沿用用户已授权的连续修复、测试后部署范围。
 
 ## 生产事实与根因
 
@@ -50,3 +50,27 @@ Actions `46010982575` 在第一目标运行配置校验失败，回退旧镜像�
 重试执行器最终相关回归：549 passed、1 skipped（需显式本地 PG 配置的资金费集成，本轮前置已单独通过），其中发布守护 39 项、版本真实路径 13 项。git diff --check 通过。
 
 C 最终复审放行：独立上下文复测 52 passed、diff 检查通过，确认前述四类执行器缺陷关闭，可仅部署两影子容器；尚需上线与自然周期验收。
+
+## 第二次部署与已完成验收
+
+- PR #61 合并 SHA `d402ad0c06a5c501277d1f03d6c8b172768ac2b3`；[Actions 46014565497](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/46014565497) success，DEPLOY_ID `00000401`。
+- 两目标镜像 ID `sha256:be6d38aebe8b6008742bb5c559b9dd777fc7af9ade79daeedfe9bacb36820237`；原版/激进版容器 `300a004d72db` 于 14:19:42 UTC 启动，校准版 `3e8ba0e2b118` 于 14:20:49 UTC 启动。均 running/healthy、RestartCount=0，VERSION 两个 SHA 字段和三个发布文件哈希均匹配；启动后 ERROR/CRITICAL/FATAL/Traceback 为 0。
+- 两目标完整运行配置均匹配克隆前状态（仅审定镜像/版本标签变化），执行模式 shadow_batch，跳过首次立即采集。原容器 b0947495c862/d96a6453836d 按原 ID 停止保留、restart=no。本次重试的 158 个排除容器全部未变化，包含资金费/实盘服务及前述两配置替代备份；此结论仅针对第二次发布。
+- 权限包 audit：1,355 对象，0 issues；无 apply、DDL 或 GRANT。
+- 数据库已持久化两个新 active run：`xau-shadow-20261127141943-b38cdde224914128`、`xau-calibrated-shadow-20261127142051-e9663e8424bec4da`，其 git_commit/git_sha 均为 d402ad0c。三个冻结 config_hashes 与发布前完全相同。
+- 截至 14:21 UTC，最新自然事件仍为切换前 14:00 UTC 周期，三 profile 均 no_signal/no_candidate、质量为空。四张 production 表为 0；1h/4h/1d 各 100 根；原版/激进版缺口 0、重复小时各 12，校准版缺口 6、重复小时 6，未新增。资金费 439 个成熟应到槽位无缺失、无失败，注册到期日未变。
+- 03:00–14:00 UTC 的空版本事件累计为三 profile 各 12 条，共 36 条，全部保留。第一次短暂新 run 的 0 事件分段也如实保留；不删除“难看”的分段或补写历史。
+
+### 仍待完成的业务周期验收
+
+新 run 当前各 0 事件。原版/激进版下次自然采集为 2026-11-27 15:15 UTC（北京时间23:15），校准版15:20 UTC（23:20），对应 scheduled_at=15:00 UTC。届时须确认三条事件的 git_commit 和 entry_attribution.producer_git_commit=d402ad0c，归因状态与信号一致、质量为空，并复核无新增缺口/跨 run 重复。不得人工触发采集制造证据。本轮真实 PostgreSQL 测试已覆盖趋势/价值回归候选持久化及进程退出后读取，但尚无新版本生产候选，不能把测试样本称为真实开仓样本。
+
+本地只读证据位于 ignored 的 `data/research/xau-version-provenance-20261127/`；服务器私有发布状态在 `.releases/xau-attribution/d402ad0c06a5c501277d1f03d6c8b172768ac2b3/`，包含完整 inspect，不应公开 Env。
+
+证据文件 SHA256：
+- `release-acceptance.json`：`ff4acf1e5c29c06799ed524148f2c291dc0f3676009e7fa27e477d9e592ed25e`
+- `runtime-after.json`：`6070bbbee7f97f7164caf6238ce4c0dffbeae5f753f06139f05510265b7c25f8`
+- `post-release-safety.json`：`c718b4319f10af35c3ea00d7fa1d8ee6ade7c176f0b4b20f02cc2e647367d023`
+- `backup-recovery.json`：`df9149b53644203bf990f64f7b73b3c0bdfd33c9a2ce8fc3669dc7e18248fc43`
+
+补充复核：生产表查询移除 symbol 限制后，同一实例/profile 在全部交易对范围仍为四表 0；完整后置快照 `runtime-after-final.json` SHA256 `a0c011439717c34f48551c79e6ad10b051103fc2fded3bccc63c803bb582b982`。
