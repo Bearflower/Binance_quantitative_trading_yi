@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import time
 import logging
+import traceback
 
 from shared.binance_api import BinanceAPIError
 
@@ -664,8 +665,48 @@ class GridEngine:
                 # Refresh the complete view under the existing execution guard
                 # before considering the funds unmatched.
                 await asyncio.sleep(0.15 * attempt)
-            except Exception:
+            except Exception as exc:
+                # Signed transport errors may include credentials in their message.
+                path = " > ".join(frame.name for frame in traceback.extract_tb(exc.__traceback__))
+                logger.error("grid reconciliation failed: epoch=%s path=%s error_type=%s api_code=%s",
+                             self.store.active_epoch_id(), path, type(exc).__name__,
+                             getattr(exc, "code", None))
                 return self._lock("exchange reconciliation failed")
+
+    async def _query_missing_order(self, intent):
+        client_id = intent["client_order_id"]
+        venue_id = intent["exchange_order_id"]
+        if intent["role"] == "STOP":
+            return await self.exchange.query_order_by_id(int(venue_id))
+        try:
+            return await self.exchange.query_order(client_id)
+        except BinanceAPIError as exc:
+            logger.warning("grid ordinary order lookup failed: epoch=%s role=%s client_order_id=%s "
+                           "exchange_order_id=%s api_code=%s", intent["epoch_id"], intent["role"],
+                           client_id, venue_id, exc.code)
+            if exc.code != -2013 or not venue_id:
+                raise
+
+        # The accepted order has a durable exchange ID. A negative lookup
+        # proves neither cancellation nor a fill. Only retry exact GETs.
+        for attempt in range(1, 4):
+            try:
+                row = await self.exchange.query_order_by_id(int(venue_id))
+            except BinanceAPIError as exc:
+                if exc.code != -2013 or attempt == 3:
+                    raise
+                await asyncio.sleep(0.2 * attempt)
+                continue
+            if (not isinstance(row, dict) or str(row.get("orderId")) != venue_id
+                    or row.get("clientOrderId") != client_id or row.get("symbol") != "ETHUSDT"
+                    or row.get("side") != intent["side"]
+                    or Decimal(str(row["origQty"])) != Decimal(intent["quantity"])
+                    or not Decimal(0) <= Decimal(str(row["executedQty"])) <= Decimal(intent["quantity"])):
+                raise ValueError("exchange order identity or quantity mismatch")
+            logger.info("grid order verified by exchange ID: epoch=%s client_order_id=%s "
+                        "exchange_order_id=%s attempt=%s status=%s", intent["epoch_id"], client_id,
+                        venue_id, attempt, row.get("status"))
+            return row
 
     async def _reconcile_facts(self, *, allow_locked: bool = False) -> bool:
         if self.store.engine_state()["state"] == "LOCKED" and not allow_locked:
@@ -710,12 +751,13 @@ class GridEngine:
                 continue
             row = open_by_id.get(client_id)
             if row is None:
-                row = (await self.exchange.query_order_by_id(int(intent["exchange_order_id"]))
-                       if intent["role"] == "STOP" else await self.exchange.query_order(client_id))
+                row = await self._query_missing_order(intent)
             if not row or row.get("code") is not None:
                 return self._lock("order result unknown: %s" % client_id)
             if intent["role"] != "STOP" and row.get("clientOrderId", client_id) != client_id:
                 return self._lock("order client ID mismatch")
+            if intent["exchange_order_id"] and str(row.get("orderId")) != intent["exchange_order_id"]:
+                return self._lock("exchange order ID mismatch")
             status = row.get("status")
             if status not in ("NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED"):
                 return self._lock("unknown exchange order status")
