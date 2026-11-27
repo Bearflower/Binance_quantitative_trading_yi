@@ -993,11 +993,16 @@ async def test_event_v2_recovers_exact_independent_income_and_full_exit_end_to_e
     await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage=case)
 
 
-async def _approve_history_for_existing_segment(setup, monkeypatch, *, latched=False):
+async def _approve_history_for_existing_segment(setup, monkeypatch, *, latched=False, automatic=False):
     """Real PG policy/repository; exchange GET replies remain fixture inputs."""
     from shared.accounting.history_tolerance import acceptance_digest, CLASSIC_RISK_METHOD
     from strategies.hrs.equity_evidence import canonical
     service, account, pool, api, clock = setup
+    if automatic:
+        async with pool.acquire() as c:
+            await c.execute("UPDATE public.capital_allocation SET entries=$1::jsonb WHERE status='active'",
+                json.dumps([dict(strategy_id=s,allocated_amount=1000.0 if s=='hrs' else 0.0)
+                            for s in ('btc_eth','btc_eth_aggressive','hrs','new_coin')]))
     await service.refresh()
     async with pool.acquire() as c:
         if latched:
@@ -1026,7 +1031,7 @@ async def _approve_history_for_existing_segment(setup, monkeypatch, *, latched=F
         accepted_from=T.replace(day=1,hour=0).isoformat(),accepted_through=through.isoformat(),
         effective_at=clock[0].isoformat(),classic_cutover_ms=cut,classic_flat_at=flat.isoformat(),
         classic_flat_evidence_sha256='c'*64,classic_open_equity='1000',risk_limit_ratio='.05',
-        hrs_daily_limit='.03',hrs_rolling_limit='.06',automatic_allocation=False,
+        hrs_daily_limit='.03',hrs_rolling_limit='.06',automatic_allocation=automatic,
         classic_risk_method=CLASSIC_RISK_METHOD,
         allocation_ceilings_usdt=dict(btc_eth='0',btc_eth_aggressive='0',hrs='1000',new_coin='0'),
         allowed_gap_codes=['pm_native_income_coverage','pm_native_fill_coverage','historical_nav_sampling',
@@ -1034,6 +1039,10 @@ async def _approve_history_for_existing_segment(setup, monkeypatch, *, latched=F
         hrs_segment_id=old['segment_id'],hrs_baseline_state_version=old['version'],
         hrs_baseline_ledger_sha256=canonical(ledger)[1],hrs_baseline_gate_sha256=canonical(gate)[1])
     async with pool.acquire() as c:
+        if automatic:
+            from shared.accounting.allocation_provenance import entries_digest
+            row=await c.fetchrow("SELECT id,entries FROM public.capital_allocation WHERE status='active' ORDER BY id DESC LIMIT 1")
+            payload.update(allocation_anchor_id=row['id'],allocation_anchor_entries_sha256=entries_digest(row['entries']))
         await c.execute('INSERT INTO trading.historical_risk_acceptance(account_id,revision,payload,receipt_sha256) VALUES($1,1,$2::jsonb,$3)',account,json.dumps(payload),acceptance_digest(payload))
     await service._collect(cut,int(flat.timestamp()*1000),{'inventory':[]})
     return old,payload
@@ -1125,3 +1134,156 @@ async def test_accepted_history_accounts_new_classic_fees_without_reseeding(setu
     async with pool.acquire() as c:
         ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
         assert D(ledger['income_total'])==-1 and len(ledger['incomes'])==2
+
+
+@pytest_asyncio.fixture
+async def rollover_setup(monkeypatch):
+    # Synthetic future journal timestamps are intentionally immutable. Isolate
+    # each scenario so its source clock cannot contaminate another segment.
+    import asyncpg
+    import sys
+    from urllib.parse import urlsplit,urlunsplit
+    name='hrs_rollover_'+uuid.uuid4().hex
+    admin=await asyncpg.connect(DSN)
+    await admin.execute('CREATE DATABASE '+name)
+    parts=urlsplit(DSN)
+    isolated=urlunsplit(parts._replace(path='/'+name))
+    monkeypatch.setattr(sys.modules[__name__],'DSN',isolated)
+    generator=setup.__wrapped__(monkeypatch)
+    try:
+        yield await anext(generator)
+    finally:
+        await generator.aclose()
+        await admin.execute('DROP DATABASE '+name+' WITH (FORCE)')
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_accepted_month_missing_continues_ledger_but_denies_entry(rollover_setup,monkeypatch):
+    setup=rollover_setup
+    service,account,pool,api,clock=setup
+    old,payload=await _approve_history_for_existing_segment(setup,monkeypatch,automatic=True)
+    from shared.accounting import history_tolerance
+    validate=history_tolerance.validate_history_acceptance
+    def observed_validation(*args,**kwargs):
+        kwargs.setdefault('now',clock[0])
+        return validate(*args,**kwargs)
+    monkeypatch.setattr(history_tolerance,'validate_history_acceptance',observed_validation)
+    boundary=(T.replace(day=28)+timedelta(days=4)).replace(day=1,hour=0)-timedelta(hours=8)
+    async with pool.acquire() as c:
+        await c.execute('UPDATE trading.strategy_risk_policy SET expires_at=$2 WHERE account_id=$1',account,boundary+timedelta(days=2))
+    clock[0]=boundary-timedelta(seconds=30)
+    before=await service.refresh()
+    assert before['allowed'],before
+    assert before['valid_until']==boundary
+    clock[0]=boundary
+    result=await service.refresh()
+    assert result['ready'] and not result['allowed'],result
+    assert 'allocation_month_missing' in result['reasons']
+    async with pool.acquire() as c:
+        ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+        assert datetime.fromisoformat(ledger['as_of'])==boundary
+        assert ledger['units']==json.loads(old['ledger_state'])['units']
+        assert ledger['cash_flows']==[]
+
+
+async def _publish_at_observed_test_time(pool, at, month, entries):
+    """Real trigger and journal; inject only its wall clock inside one local transaction.
+
+    The original trigger definition is restored before commit. No guard/trigger is
+    disabled and no immutable journal row is edited to construct the scenario.
+    """
+    async with pool.acquire() as c, c.transaction():
+        original=await c.fetchval("SELECT pg_get_functiondef('trading.hrs_capture_allocation_event()'::regprocedure)")
+        observed=original.replace('clock_timestamp()', "TIMESTAMPTZ '"+at.isoformat()+"'")
+        await c.execute(observed)
+        identity=await c.fetchval("INSERT INTO public.capital_allocation(month,entries,status,created_at) VALUES($1,$2::jsonb,'active',$3) RETURNING id",
+            month,json.dumps(entries),at.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+        await c.execute(original)
+        return identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case',['same_amount','late_changed_amount','latched','malformed','new_daily_loss'])
+async def test_accepted_nonflat_month_rollover_samples_then_publishes(rollover_setup,monkeypatch,case):
+    setup=rollover_setup
+    from shared.accounting import history_tolerance
+    from shared.accounting.allocation_provenance import METHOD,entries_digest
+    service,account,pool,api,clock=setup
+    old,payload=await _approve_history_for_existing_segment(setup,monkeypatch,automatic=True,latched=case=='latched')
+    validate=history_tolerance.validate_history_acceptance
+    def observed_validation(*args,**kwargs):
+        kwargs.setdefault('now',clock[0])
+        return validate(*args,**kwargs)
+    monkeypatch.setattr(history_tolerance,'validate_history_acceptance',observed_validation)
+    boundary=(T.replace(day=28)+timedelta(days=4)).replace(day=1,hour=0)-timedelta(hours=8)
+    async with pool.acquire() as c:
+        await c.execute('UPDATE trading.strategy_risk_policy SET expires_at=$2 WHERE account_id=$1',account,boundary+timedelta(days=2))
+        parent=await c.fetchrow('SELECT id,entries FROM public.capital_allocation WHERE id=$1',payload['allocation_anchor_id'])
+    clock[0]=boundary-timedelta(seconds=60)
+    first=await service.refresh();assert first['ready'],first
+    opened=boundary-timedelta(seconds=45)
+    trade=dict(symbol='BTCUSDT',id=811,orderId=811,side='BUY',qty='1',price='100',quoteQty='100',
+        commission='0',commissionAsset='USDT',realizedPnl='0',time=int(opened.timestamp()*1000))
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES($1,'BTCUSDT','811','hrs','BUY','FILLED','LIMIT',$2)",
+            account,opened.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+        schedule_id=uuid.uuid4();service._test_schedule_ids.append(schedule_id)
+        await c.execute("INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,8,'test','{}')",schedule_id,opened,opened+timedelta(hours=8))
+    api.get_user_trades.return_value=[trade]
+    inventory=[dict(symbol='BTCUSDT',positionAmt='1',entryPrice='100',positionSide='BOTH')]
+    api.get_position.return_value=inventory;api.get_um_account_positions.return_value=inventory
+    service.position_manager.get_all_positions=lambda:{'BTCUSDT':dict(direction='long',remaining_quantity='1',position_id='month-held')}
+    def expected_nav():
+        if case=='new_daily_loss':return D('.96') if clock[0]>=boundary+timedelta(seconds=60) else D('1')
+        return D('.999')
+    def response(method,path,**kwargs):
+        if path=='/fapi/v1/premiumIndex':
+            mark=100+(expected_nav()-1)*1000
+            return dict(symbol='BTCUSDT',markPrice=str(mark),time=int(clock[0].timestamp()*1000))
+        return funding_source_response(path)
+    api._request.side_effect=response
+    for instant in (boundary-timedelta(seconds=30),boundary,boundary+timedelta(seconds=60)):
+        clock[0]=instant
+        result=await service.refresh()
+        assert result['ready'],result
+        if instant>=boundary:
+            assert not result['allowed'] and 'allocation_month_missing' in result['reasons'],result
+        if case=='latched':assert 'inception_segment_drawdown_latched' in result['reasons']
+        async with pool.acquire() as c:
+            ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+            assert datetime.fromisoformat(ledger['as_of'])==instant
+            assert D(ledger['nav'])==expected_nav() and D(ledger['units'])==1000
+            assert ledger['cash_flows']==[]
+            if case=='new_daily_loss':
+                gate=json.loads(await c.fetchval('SELECT gate_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+                assert gate['daily_latched']==(instant>=boundary+timedelta(seconds=60))
+                if instant>=boundary+timedelta(seconds=60):
+                    assert 'daily_loss_latched' in result['reasons']
+                    assert result['daily_return']=='-0.04'
+    publish_at=boundary+timedelta(seconds=30 if case=='late_changed_amount' else 90)
+    receipt=history_tolerance.acceptance_digest(payload)
+    entries=[dict(e,publication_method=METHOD,previous_allocation_id=parent['id'],previous_entries_sha256=entries_digest(parent['entries']),
+                  history_acceptance_sha256=receipt,holdings_floor_usdt=str(e['allocated_amount'])) for e in json.loads(parent['entries'])]
+    if case=='late_changed_amount':next(e for e in entries if e['strategy_id']=='hrs')['allocated_amount']='900'
+    if case=='malformed':entries=[]
+    inserted=await _publish_at_observed_test_time(pool,publish_at,boundary.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m'),entries)
+    try:
+        clock[0]=boundary+timedelta(seconds=120)
+        result=await service.refresh()
+        if case=='late_changed_amount':
+            assert not result['allowed'] and result['reasons']==['late_allocation_requires_reconciliation'],result
+        elif case=='malformed':
+            assert not result['allowed'] and 'allocation_identity_ambiguous' in result['reasons'],result
+        else:
+            assert result['ready'] and result['allowed']==(case not in ('latched','new_daily_loss')),result
+            assert 'allocation_month_missing' not in result['reasons']
+            async with pool.acquire() as c:
+                ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+                assert datetime.fromisoformat(ledger['as_of'])==clock[0]
+                assert D(ledger['nav'])==expected_nav() and D(ledger['units'])==1000 and ledger['cash_flows']==[]
+                if case=='new_daily_loss':
+                    gate=json.loads(await c.fetchval('SELECT gate_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+                    assert gate['daily_latched'] is True and 'daily_loss_latched' in result['reasons']
+    finally:
+        async with pool.acquire() as c:await c.execute('DELETE FROM public.capital_allocation WHERE id=$1',inserted)

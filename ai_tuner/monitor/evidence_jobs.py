@@ -291,7 +291,22 @@ class EvidenceJobs:
         account = self.budget['account_id']
         cfg = self.config['capital_allocation']
         strategies = tuple(cfg['participating_strategies'])
+        if self.classic:
+            # Reporting must observe revocation just like the live publisher.
+            try:
+                self._classic_policy = await read_history_acceptance(self.db, account)
+            except Exception:
+                self._classic_policy = None
         risk = self.latest_risk()
+        live = None
+        if self.classic:
+            policy = self._classic_policy
+            live = dict(approved=bool(policy and policy.automatic_allocation is True),
+                        risk_ready=False, approval_revision=policy.revision if policy else None)
+            try:
+                live['risk_ready'] = risk_allows_allocation(risk, policy, int(time.time()*1000))
+            except (ValueError, TypeError, KeyError):
+                pass
         try:
             report = await read_published_report(self.db, account, start, end,
                                                  f'monthly:{start}', current=False, include_derived_attribution=True)
@@ -314,20 +329,27 @@ class EvidenceJobs:
                                          'profitability_thresholds_unfrozen'])
         if risk['status'] != 'VERIFIED':
             result['activation_blocks'].append('account_risk_unverified_or_budget_breached')
+        if live is not None:
+            result['classic_live_allocation'] = live
+        live_note = '仅生成影子结果，实盘分配保持冻结。'
+        if live and live['approved']:
+            live_note = ('经典账户自动分配已获审批；' +
+                         ('当前风险校验就绪，按月度调度及发布校验执行。' if live['risk_ready']
+                          else '当前风险校验未就绪，本轮实盘发布仍受阻。'))
         atomic_report(self.state_dir / 'allocation-shadow-latest.json', result)
         digest = hashlib.sha256(json.dumps(result, sort_keys=True, default=str).encode()).hexdigest()
         atomic_report(self.state_dir / 'reports' / (digest + '.json'), result)
         state = NotificationState(self.state_dir / 'allocation-shadow-notified.json')
         signature = json.dumps([result['status'], result.get('report_id'),
-                                result.get('reasons'), result['activation_blocks']], sort_keys=True)
+                                result.get('reasons'), result['activation_blocks'], live], sort_keys=True)
         if state.changed(signature):
             delivered = await self.messenger.send_alert(
                 '【AI Tuner 自动分配影子核验】',
                 f"范围: 主账户 {'经典合约' if self.classic else 'PM'}；窗口: {left.isoformat()} 至 {right.isoformat()}\n"
                 f"核验: {result['status']}；主账户风险: {risk['status']}\n"
                 f"数据问题: {', '.join(result.get('reasons', [])) or '无'}\n"
-                f"恢复前待办: {', '.join(result['activation_blocks'])}\n"
-                '仅生成影子结果，实盘分配保持冻结。', level='warning')
+                f"研究晋级待办: {', '.join(result['activation_blocks'])}\n"
+                + live_note, level='warning')
             if delivered:
                 state.mark_delivered(signature, now)
         return result

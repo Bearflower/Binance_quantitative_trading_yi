@@ -65,7 +65,7 @@ from .funding_reference import read_forecasts_prefix,load_forecasts_ref,evidence
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
 from .loss_gate_repository import LossGateSession, RepositoryConflict, ledger_from_dict, ledger_to_dict
 from .risk_ledger import CashFlow, LedgerNotReady, LedgerObservation, PositionMark, initialize_ledger, reconcile_ledger
-from .history_tolerance import accepted_history, verify_resume_state, observed_historical_incomes, retained_income_events, observed_gate
+from .history_tolerance import accepted_history, verify_resume_state, observed_historical_incomes, retained_income_events, observed_gate, AcceptedAllocationSelector
 
 log = structlog.get_logger()
 
@@ -912,7 +912,7 @@ class HrsEquityService:
                     or owners.get(key)!={'hrs'}):
                 raise EvidenceBlocked('settled_reservation_fill_proof_missing')
 
-    async def _allocation_audit(self, connection, bootstrap, as_of):
+    async def _allocation_audit(self, connection, bootstrap, as_of, *, history_policy=None):
         control=await connection.fetchrow('SELECT version,installed_at FROM trading.hrs_allocation_audit_control WHERE singleton')
         triggers=await connection.fetchval("""SELECT count(*) FROM pg_trigger
             WHERE tgrelid='public.capital_allocation'::regclass AND tgenabled='O'
@@ -943,8 +943,17 @@ class HrsEquityService:
             event['old_row']=decode(event['old_row'])
             event['new_row']=decode(event['new_row'])
             journal.append(event)
-        changes=allocation_event_changes(baseline,journal,current_rows,bootstrap['inception'],as_of)
-        return dict(version=1,event_id=last['id'],baseline=baseline,journal=journal,changes=changes)
+        selector = (AcceptedAllocationSelector(history_policy, baseline, journal)
+                    if history_policy is not None and history_policy.automatic_allocation else None)
+        changes=allocation_event_changes(baseline,journal,current_rows,bootstrap['inception'],as_of,
+            select_allocation=selector)
+        economic = selector(current_rows, as_of) if selector is not None else None
+        if selector is not None:
+            await selector.verify(connection, self.account)
+        month = as_of.astimezone(SHANGHAI).strftime('%Y-%m')
+        carried = bool(economic is not None and economic.source['month'][:7] != month)
+        return dict(version=1,event_id=last['id'],baseline=baseline,journal=journal,changes=changes,
+            economic_allocation=economic, allocation_carried=carried)
 
     def _allocation_flows(self,state,changes,events,fills,orders,as_of):
         existing={flow.event_id:flow for flow in state.cash_flows}
@@ -1018,6 +1027,10 @@ class HrsEquityService:
             evidence.get('segment_id'), as_of, available, encoded)
         expiry = as_of + timedelta(seconds=120) if result['ready'] else as_of
         if result['ready']:
+            if result.get('history_status') == 'ACCEPTED_GAPS':
+                month = as_of.astimezone(SHANGHAI).replace(day=1,hour=0,minute=0,second=0,microsecond=0)
+                next_month = (month + timedelta(days=32)).replace(day=1)
+                expiry = min(expiry, next_month)
             capture=evidence.get('capture',{})
             held=set(capture.get('local',{}))
             for forecast in capture.get('funding_publication',{}).get('forecasts',()):
@@ -1237,12 +1250,12 @@ class HrsEquityService:
         else:
             credits=anchor.get('credited_opening_income',())
         events=retained_income_events(state,historical,current_events,opening_credits=credits)
-        audit=await self._allocation_audit(connection,actual,as_of)
+        audit=await self._allocation_audit(connection,actual,as_of,history_policy=policy)
         flows=self._allocation_flows(state,audit['changes'],events,fills,orders,as_of)
         # Existing unitized flows stay intact; any newly accepted funding must
         # still have the ordinary journal and event-time NAV proof.
         expected_allocation=number(anchor['allocation']['allocated_amount'],'opening_allocation')+sum((change.delta for change in audit['changes']),Decimal(0))
-        actual_allocation=allocation_evidence(await connection.fetchrow('''SELECT id,month,entries,created_at FROM public.capital_allocation
+        actual_allocation=audit.get('economic_allocation') or allocation_evidence(await connection.fetchrow('''SELECT id,month,entries,created_at FROM public.capital_allocation
             WHERE left(month::text,7)=$1 AND status='active' ORDER BY created_at DESC LIMIT 1''',as_of.astimezone(SHANGHAI).strftime('%Y-%m')),as_of)
         if expected_allocation != actual_allocation.amount:
             raise EvidenceBlocked('allocation_event_history_amount_mismatch')
@@ -1254,7 +1267,8 @@ class HrsEquityService:
             history_acceptance_revision=policy.revision,accepted_through=policy.accepted_through,
             current_path_from=flat,inventory_owner_path_proofs=path_proofs,
             funding_publication_proofs=funding_proofs,fills=fills,order_owners=orders,
-            allocation_audit=dict(version=audit['version'],through_event_id=audit['event_id'],journal=audit['journal']),
+            allocation_audit=dict(version=audit['version'],through_event_id=audit['event_id'],journal=audit['journal'],
+                economic_allocation=actual_allocation.source, allocation_carried=audit['allocation_carried']),
             reconstructed_boundaries=[])
         midnight=datetime.combine(state.as_of.astimezone(SHANGHAI).date()+timedelta(days=1),time.min,SHANGHAI)
         while midnight < as_of:
@@ -1296,6 +1310,11 @@ class HrsEquityService:
             current_status='READY' if gate.allow_new_risk else ('EXCEEDED' if gate.ready else 'BLOCKED_CURRENT_DATA'),
             daily_return=str(gate.daily_return) if gate.daily_return is not None else None,
             observed_rolling_drawdown=str(gate.rolling_drawdown) if gate.rolling_drawdown is not None else None)
+        if audit['allocation_carried']:
+            result['allowed'] = False
+            result['reasons'].append('allocation_month_missing')
+            if gate.allow_new_risk:
+                result['current_status'] = 'BLOCKED_ALLOCATION'
         evidence['result']=result
         evidence['available_at']=self._now()
         return await self._projection(connection,await self._policy_revision(connection),result,evidence)

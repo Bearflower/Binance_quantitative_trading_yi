@@ -342,3 +342,77 @@ def test_protection_manager_cannot_create_a_split_owner_orphan_path():
         certify_owned_inventory_paths('test',{},[entered,closed],[owner(10,strategy='new_coin'),owner(11,strategy='hrs')],coverage_complete=True)
     result=certify_owned_inventory_paths('test',{},[entered,closed],[owner(10,strategy='hrs'),owner(11,strategy='hrs')],coverage_complete=True)
     assert result[0]['symbol']=='BTCUSDT' and result[0]['verified_zero_to_current_path'] is True
+
+
+def test_accepted_month_rollover_keeps_economic_amount_until_actual_publication():
+    from types import SimpleNamespace
+    from strategies.hrs.equity_evidence import allocation_event_changes
+    from strategies.hrs.history_tolerance import AcceptedAllocationSelector
+    base=dict(id=1,month='2026-11',status='active',created_at='2026-11-01T00:00:00',
+              entries=[dict(strategy_id='hrs',allocated_amount='1000')])
+    boundary=datetime(2026,11,30,16,tzinfo=timezone.utc)
+    published=boundary+timedelta(hours=9,minutes=30)
+    new=dict(base,id=2,month='2026-12',created_at=published.isoformat())
+    event=dict(event_id=1,transaction_id=10,statement_at=published,operation='INSERT',old_row=None,new_row=new)
+    p=SimpleNamespace(accepted_through=T,payload=dict(allocation_anchor_id=1))
+    select=AcceptedAllocationSelector(p,[base],[event])
+    assert allocation_event_changes([base],[event],[base,new],T,published,select_allocation=select)==()
+    assert select([base],boundary).amount==D('1000')
+    assert select.carried_months=={'2026-12'}
+    # A changed amount takes effect at its real journal time, never midnight.
+    changed=dict(new,entries=[dict(strategy_id='hrs',allocated_amount='900')])
+    change=dict(event,new_row=changed)
+    result=allocation_event_changes([base],[change],[base,changed],T,published,
+        select_allocation=AcceptedAllocationSelector(p,[base],[change]))
+    assert len(result)==1 and result[0].delta==D('-100') and result[0].occurred_at==published
+    # The default strict accounting path is unchanged.
+    with pytest.raises(EvidenceBlocked,match='allocation_active_gap'):
+        allocation_event_changes([base],[event],[base,new],T,published)
+
+
+@pytest.mark.parametrize('case',['inactive','malformed','duplicate','deleted','before_anchor'])
+def test_accepted_rollover_never_masks_unknown_month_rows(case):
+    from types import SimpleNamespace
+    from strategies.hrs.history_tolerance import AcceptedAllocationSelector
+    boundary=datetime(2026,11,30,16,tzinfo=timezone.utc)
+    base=dict(id=1,month='2026-11',status='active',created_at='2026-11-01T00:00:00',
+              entries=[dict(strategy_id='hrs',allocated_amount='1000')])
+    new=dict(base,id=2,month='2026-12',created_at=boundary.isoformat())
+    rows=[base];journal=[]
+    if case=='inactive':rows.append(dict(new,status='inactive'))
+    if case=='malformed':rows.append(dict(new,entries=[]))
+    if case=='duplicate':rows.extend([new,dict(new,id=3)])
+    if case=='deleted':journal=[dict(statement_at=boundary,old_row=new,new_row=None)]
+    p=SimpleNamespace(accepted_through=T,payload=dict(allocation_anchor_id=2 if case=='before_anchor' else 1))
+    with pytest.raises(EvidenceBlocked):
+        AcceptedAllocationSelector(p,[base,new] if case=='before_anchor' else [base],journal)(rows,boundary)
+
+
+def test_rollover_start_is_immutable_anchor_month_not_latest_acceptance_end():
+    from types import SimpleNamespace
+    from strategies.hrs.history_tolerance import AcceptedAllocationSelector
+    base=dict(id=1,month='2026-11',status='active',created_at='2026-11-01T00:00:00',
+              entries=[dict(strategy_id='hrs',allocated_amount='1000')])
+    boundary=datetime(2026,11,30,16,tzinfo=timezone.utc)
+    revised=SimpleNamespace(accepted_through=boundary+timedelta(days=1),payload=dict(allocation_anchor_id=1))
+    assert AcceptedAllocationSelector(revised,[base],[])([base],boundary).amount==D('1000')
+    drift=dict(statement_at=boundary,old_row=base,new_row=dict(base,month='2026-12'))
+    with pytest.raises(EvidenceBlocked,match='allocation_anchor_month_unproven'):
+        AcceptedAllocationSelector(revised,[base],[drift])
+
+
+@pytest.mark.parametrize('case',['inactive_previous','competing_previous','broken_journal'])
+def test_rollover_requires_one_unchanged_previous_allocation_and_full_journal(case):
+    from types import SimpleNamespace
+    from strategies.hrs.history_tolerance import AcceptedAllocationSelector
+    from strategies.hrs.equity_evidence import allocation_event_changes
+    base=dict(id=1,month='2026-11',status='active',created_at='2026-11-01T00:00:00',
+              entries=[dict(strategy_id='hrs',allocated_amount='1000')])
+    boundary=datetime(2026,11,30,16,tzinfo=timezone.utc)
+    p=SimpleNamespace(accepted_through=T,payload=dict(allocation_anchor_id=1))
+    rows=[base]
+    if case=='inactive_previous':rows=[dict(base,status='inactive')]
+    if case=='competing_previous':rows.append(dict(base,id=2))
+    if case=='broken_journal':rows=[dict(base,entries=[dict(strategy_id='hrs',allocated_amount='900')])]
+    with pytest.raises(EvidenceBlocked):
+        allocation_event_changes([base],[],rows,T,boundary,select_allocation=AcceptedAllocationSelector(p,[base],[]))

@@ -218,3 +218,30 @@ async def test_classic_observations_do_not_overwrite_or_reuse_reviewed_pm_budget
     assert not (tmp_path / 'pm-equity').exists()
     assert [call.args[1] for call in get.await_args_list] == ['/fapi/v1/accountConfig', '/fapi/v3/account']
     pm_bridge.assert_not_awaited()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('approved,ready', [(True, True), (True, False), (False, False)])
+async def test_classic_shadow_reports_live_approval_separately(tmp_path, monkeypatch, approved, ready):
+    obj = job(tmp_path)
+    obj.classic = True
+    policy = SimpleNamespace(automatic_allocation=True, revision=1, receipt_sha256='receipt') if approved else None
+    # A cached approval must not survive revocation in the database.
+    obj._classic_policy = SimpleNamespace(automatic_allocation=True)
+    monkeypatch.setattr(m, 'read_history_acceptance', AsyncMock(return_value=policy))
+    monkeypatch.setattr(obj, 'latest_risk', lambda: {'status': m.READY if ready else 'BLOCKED_DATA'})
+    monkeypatch.setattr(m, 'risk_allows_allocation', lambda risk, actual, now: actual is policy and approved and ready)
+    monkeypatch.setattr(m, 'read_published_report', AsyncMock(return_value={}))
+    monkeypatch.setattr(m, 'read_capital_evidence', AsyncMock(return_value={}))
+    monkeypatch.setattr(m, 'read_activity_evidence', AsyncMock(return_value={}))
+    result = await obj.run_allocation_shadow()
+    assert obj._classic_policy is policy
+    assert result['classic_live_allocation']['approved'] is approved
+    assert result['classic_live_allocation']['risk_ready'] is ready
+    assert result['live_activation_eligible'] is False  # research promotion remains separate
+    message = obj.messenger.send_alert.await_args.args[1]
+    if approved:
+        assert '实盘分配保持冻结' not in message
+        assert '经典账户自动分配已获审批' in message
+        assert '研究晋级待办' in message
+    else:
+        assert '实盘分配保持冻结' in message

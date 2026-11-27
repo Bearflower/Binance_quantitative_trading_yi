@@ -112,3 +112,97 @@ def observed_gate(previous, current, samples, *, policy, current_complete, daily
     gate = evaluate_loss_gate(previous, current, history)
     return replace(gate, state=replace(gate.state,
         history_acceptance_ref=policy.receipt_sha256, history_acceptance_revision=policy.revision))
+
+
+class AcceptedAllocationSelector:
+    """Economic continuity only; a carried row never authorizes a new month's entry.
+
+    The caller must verify every selected post-acceptance row against the immutable
+    approval chain before committing anything. Previously visible month rows may
+    not disappear into the carry path, even when their final journal state is empty.
+    """
+    def __init__(self, policy, baseline, journal):
+        self.policy, self.baseline, self.journal = policy, tuple(baseline), tuple(journal)
+        self.selected_rows = {}
+        self.carried_months = set()
+        from .loss_gate import SHANGHAI
+        from datetime import timedelta
+        anchor_id = policy.payload.get('allocation_anchor_id')
+        anchor_rows = [row for row in self.baseline if row.get('id') == anchor_id]
+        for event in self.journal:
+            anchor_rows.extend(row for row in (event.get('old_row'), event.get('new_row'))
+                               if row and row.get('id') == anchor_id)
+        months = {str(row.get('month', ''))[:7] for row in anchor_rows}
+        if len(months) != 1:
+            raise EvidenceBlocked('allocation_anchor_month_unproven')
+        try:
+            anchor_month = datetime.strptime(months.pop(), '%Y-%m').replace(tzinfo=SHANGHAI)
+        except ValueError:
+            raise EvidenceBlocked('allocation_anchor_month_unproven') from None
+        self.carry_from = (anchor_month + timedelta(days=32)).replace(day=1)
+
+    def __call__(self, rows, at):
+        from .equity_evidence import _selected_allocation, allocation_evidence
+        from .loss_gate import SHANGHAI
+        rows = list(rows)
+        month = at.astimezone(SHANGHAI).strftime('%Y-%m')
+        current = [row for row in rows if str(row.get('month', ''))[:7] == month]
+        if at < self.carry_from:
+            proof = _selected_allocation(rows, at)
+            if at >= self.policy.accepted_through:
+                row = next(row for row in rows if row['id'] == proof.source['id'])
+                self.selected_rows[canonical(row)[1]] = dict(row)
+            return proof
+        if current:
+            # Never let a second, draft, malformed or retired row hide behind
+            # LIMIT 1, including when the selected HRS amount happens to match.
+            if len(current) != 1 or current[0].get('status') != 'active':
+                raise EvidenceBlocked('allocation_current_identity_unproven')
+            row = current[0]
+            proof = _selected_allocation(current, at)
+        else:
+            known = list(self.baseline)
+            for event in self.journal:
+                if event['statement_at'] <= at:
+                    known.extend(row for row in (event.get('old_row'), event.get('new_row')) if row)
+            if any(str(row.get('month', ''))[:7] == month for row in known):
+                raise EvidenceBlocked('allocation_published_month_missing')
+            older = [row for row in rows if str(row.get('month', ''))[:7] < month]
+            if not older:
+                raise EvidenceBlocked('allocation_active_gap')
+            previous_month = max(str(row.get('month', ''))[:7] for row in older)
+            candidates = [row for row in older if str(row.get('month', ''))[:7] == previous_month]
+            if len(candidates) != 1 or candidates[0].get('status') != 'active':
+                raise EvidenceBlocked('allocation_previous_identity_unproven')
+            row = candidates[0]
+            # Validate using its actual month and actual timestamp, without
+            # inventing either a new allocation row or a midnight cash flow.
+            created = row.get('created_at')
+            created = datetime.fromisoformat(created) if isinstance(created, str) else created
+            if not isinstance(created, datetime):
+                raise EvidenceBlocked('allocation_time_missing')
+            created = created.replace(tzinfo=SHANGHAI) if created.tzinfo is None else created
+            if created > at or created.astimezone(SHANGHAI).strftime('%Y-%m') != previous_month:
+                raise EvidenceBlocked('allocation_previous_time_unproven')
+            proof = allocation_evidence(dict(row, created_at=created), created)
+            self.carried_months.add(month)
+        self.selected_rows[canonical(row)[1]] = dict(row)
+        return proof
+
+    async def verify(self, connection, account):
+        from shared.accounting.allocation_provenance import validate_allocation_chain
+        import json
+        for row in self.selected_rows.values():
+            try:
+                native = await connection.fetchrow('SELECT id,entries FROM public.capital_allocation WHERE id=$1', row['id'])
+                if native is None:
+                    raise ValueError('allocation_selected_row_missing')
+                # Journal decoding uses Decimal; retain the native JSON spelling
+                # for the approved digest rather than stringifying its numbers.
+                entries = json.loads(native['entries'], parse_float=Decimal) if isinstance(native['entries'], str) else native['entries']
+                expected = json.loads(row['entries'], parse_float=Decimal) if isinstance(row['entries'], str) else row['entries']
+                if entries != expected:
+                    raise ValueError('allocation_selected_row_changed')
+                await validate_allocation_chain(connection, native, account=account, policy=self.policy)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise EvidenceBlocked('allocation_approval_unproven:' + str(exc)) from None

@@ -36,7 +36,7 @@ from ai_tuner.allocation.allocation_calculator import (
 from ai_tuner.allocation.balance_provider import get_actual_balance
 from ai_tuner.allocation.config_updater import AllocationConfigUpdater
 from ai_tuner.allocation.pnl_collector import PnLCollector, AllocationInputUnavailable
-from ai_tuner.allocation.history_acceptance import retained_allocation, cap_result
+from ai_tuner.allocation.history_acceptance import retained_allocation, cap_result, approved_hrs_amount
 from ai_tuner.allocation.classic_publication import publish_classic_allocation
 from ai_tuner.monitor.classic_account_risk import risk_allows_allocation
 from shared.accounting.history_tolerance import read_history_acceptance
@@ -251,8 +251,9 @@ class MonthlyAllocationJob:
             if policy is None:
                 await self._ensure_table()
 
-            # 检查是否启用
-            if not self.allocation_cfg.get("enabled", False):
+            # The signed classic approval is a separate publication authority.
+            # The legacy enabled flag remains untouched and still gates PM.
+            if policy is None and not self.allocation_cfg.get("enabled", False):
                 logger.info("月度资金分配未启用，跳过")
                 return None
 
@@ -307,6 +308,8 @@ class MonthlyAllocationJob:
                 for s in self._strategy_configs
             }
 
+            fixed_hrs = (await approved_hrs_amount(self.db_manager,policy,effective_month)
+                         if policy is not None else None)
             if retain_history:
                 result = await retained_allocation(self.db_manager, policy, month_start, month_end,
                     total_capital, reserve_ratio, effective_month, strategy_names)
@@ -317,14 +320,14 @@ class MonthlyAllocationJob:
                     rank_ratios=rank_ratios, reserve_ratio=reserve_ratio,
                     strategy_names=strategy_names, month=effective_month)
                 if policy is not None:
-                    result = cap_result(result, policy, reserve_ratio)
+                    result = cap_result(result, policy, reserve_ratio, fixed_hrs_amount=fixed_hrs)
             if policy is not None:
                 final_policy, final_risk = await self._classic_guard()
                 if final_policy.receipt_sha256 != policy.receipt_sha256:
                     raise AllocationInputUnavailable('classic_allocation_policy_changed')
                 # A newer lower signed equity narrows this proposal; never enlarge it.
                 result = cap_result(replace(result,total_capital=min(result.total_capital,
-                    float(final_risk['current_equity_usd']))),policy,reserve_ratio)
+                    float(final_risk['current_equity_usd']))),policy,reserve_ratio,fixed_hrs_amount=fixed_hrs)
                 total_capital = result.total_capital
                 update_success = await publish_classic_allocation(self.db_manager,result,
                     final_policy,final_risk,reserve_ratio,pnl_month)

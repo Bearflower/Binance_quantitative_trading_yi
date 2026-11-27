@@ -98,7 +98,7 @@ async def setup_case(pg,monkeypatch):
         'rolling_latch_scope':None,'revision':2,'as_of':'2026-11-30T15:59:00+00:00'}
     await admin.execute("INSERT INTO trading.hrs_loss_gate_state(account_id,segment_id,version,ledger_state,gate_state) VALUES ('default','hrs-original',2,'{}',$1::jsonb)",json.dumps(gate))
     pool=await asyncpg.create_pool(**args,user='trading_user',min_size=1,max_size=4)
-    r=AllocationResult('2026-12',100,20,80,False,[AllocationEntry(s,s,0,30,None,None,.2,20) for s in SIDS],history_acceptance_sha256=sha)
+    r=AllocationResult('2026-12',100,25,75,False,[AllocationEntry(s,s,0,30,None,None,.3 if s=='hrs' else .15,30 if s=='hrs' else 15) for s in SIDS],history_acceptance_sha256=sha)
     return admin,pool,policy,risk,r
 
 @pytest.mark.asyncio
@@ -110,7 +110,7 @@ async def test_concurrent_publish_inserts_once_and_preserves_floor(pg,monkeypatc
         assert sorted(outcomes)==[False,True]
         rows=await admin.fetch("SELECT entries FROM public.capital_allocation WHERE month='2026-12-01'")
         assert len(rows)==1
-        assert all(Decimal(e['holdings_floor_usdt'])==30 and e['allocated_amount']==20 for e in json.loads(rows[0]['entries']))
+        assert all(Decimal(e['holdings_floor_usdt'])==30 and e['allocated_amount']==(30 if e['strategy_id']=='hrs' else 15) for e in json.loads(rows[0]['entries']))
     finally:await pool.close();await admin.close()
 
 @pytest.mark.asyncio
@@ -254,4 +254,34 @@ async def test_prior_day_daily_latch_does_not_deadlock_rollover_and_is_not_clear
         assert gate['ready'] is False and gate['allowed'] is False
         entries=json.loads(await admin.fetchval("SELECT entries FROM public.capital_allocation WHERE month='2026-12-01'"))
         assert all(Decimal(str(e['allocated_amount']))<=Decimal(policy.payload['allocation_ceilings_usdt'][e['strategy_id']]) for e in entries)
+    finally:await pool.close();await admin.close()
+
+@pytest.mark.asyncio
+async def test_publisher_rechecks_hrs_principal_in_database_instead_of_accepting_calculator_claim(pg,monkeypatch):
+    from ai_tuner.allocation.classic_publication import publish_classic_allocation
+    admin,pool,policy,risk,result=await setup_case(pg,monkeypatch)
+    try:
+        for entry in result.entries:
+            entry.allocated_amount=29 if entry.strategy_id=='hrs' else 15
+        with pytest.raises(ValueError,match='hrs_allocation_changed'):
+            await publish_classic_allocation(SimpleNamespace(pool=pool),result,policy,risk,.15,'2026-11',now=NOW)
+        assert await admin.fetchval('SELECT count(*) FROM public.capital_allocation')==1
+    finally:await pool.close();await admin.close()
+
+@pytest.mark.asyncio
+async def test_new_month_publication_keeps_hrs_capital_with_existing_hrs_position(pg,monkeypatch):
+    from ai_tuner.allocation.classic_publication import publish_classic_allocation
+    admin,pool,policy,risk,result=await setup_case(pg,monkeypatch)
+    try:
+        risk['as_of_ms']+=1
+        risk['observation']={'raw_snapshot':{'positions':[{'symbol':'ETHUSDT','positionAmt':'1','entryPrice':'100'}]}}
+        risk['income_attribution']['current_inventory']=[{'strategy':'hrs','symbol':'ETHUSDT','quantity':'1'}]
+        await admin.execute("INSERT INTO trading.classic_account_risk_point(account_id,policy_revision,sample_time_ms,payload) VALUES ('default',1,$1,$2::jsonb)",risk['as_of_ms'],json.dumps(risk))
+        before=await admin.fetchrow('SELECT * FROM trading.hrs_loss_gate_state')
+        assert await publish_classic_allocation(SimpleNamespace(pool=pool),result,policy,risk,.15,'2026-11',now=NOW+timedelta(seconds=1))
+        rows=await admin.fetch('SELECT month,entries FROM public.capital_allocation ORDER BY month')
+        amounts=[Decimal(str(next(e for e in json.loads(r['entries']) if e['strategy_id']=='hrs')['allocated_amount'])) for r in rows]
+        assert amounts==[Decimal('30'),Decimal('30')]
+        assert before==await admin.fetchrow('SELECT * FROM trading.hrs_loss_gate_state')
+        assert all(e['allocation_constraint']=='fixed_hrs_allocation' for e in json.loads(rows[-1]['entries']))
     finally:await pool.close();await admin.close()

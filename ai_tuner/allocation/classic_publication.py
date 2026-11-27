@@ -55,7 +55,7 @@ def publication_entries(result, previous):
         entries.append(dict(asdict(entry), publication_method=METHOD,
             holdings_floor_usdt=str(floor), previous_allocation_id=previous['id'],
             previous_entries_sha256=digest, history_acceptance_sha256=result.history_acceptance_sha256,
-            caliber=result.caliber))
+            caliber=result.caliber,allocation_constraint='fixed_hrs_allocation'))
     return entries
 
 
@@ -178,6 +178,11 @@ async def publish_classic_allocation(db, result, policy, risk, reserve_ratio, pn
             if previous is None:
                 raise ValueError('classic_allocation_previous_approval_missing')
             await validate_allocation_chain(conn,previous,account=policy.account_id,policy=live_policy)
+            _, previous_entries = _entries(previous['entries'])
+            previous_hrs = amount(previous_entries['hrs']['allocated_amount'])
+            next_hrs = next(amount(e.allocated_amount) for e in result.entries if e.strategy_id=='hrs')
+            if previous_hrs <= 0 or next_hrs != previous_hrs:
+                raise ValueError('classic_hrs_allocation_changed')
             entries = publication_entries(result,previous)
             # A damaged prior metadata chain must never be silently propagated.
             for entry in entries:
