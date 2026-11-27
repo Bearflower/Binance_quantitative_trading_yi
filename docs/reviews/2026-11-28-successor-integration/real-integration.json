@@ -1,0 +1,37 @@
+{
+  "source": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+  "kline": {
+    "tests": 51,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "test_file": "tests/integration/test_kline_integration.py",
+    "execution": "local through read-only SSH tunnel to deployed Kline service"
+  },
+  "browser": {
+    "ok": true,
+    "observed_at": 1795822552.986136,
+    "status": 200,
+    "title": "QuantView · 量化交易看板",
+    "ledger_segment_checks": [
+      {
+        "period": "monthly",
+        "cutover_gap_visible": true,
+        "classic_segment_verified": true,
+        "publication_status": "published"
+      },
+      {
+        "period": "yearly",
+        "cutover_gap_visible": true,
+        "classic_segment_verified": true,
+        "publication_status": "published"
+      }
+    ],
+    "ledger_quality_visible": true,
+    "failed_requests": [],
+    "page_errors": [],
+    "dialogs": []
+  },
+  "browser_response_count": 23,
+  "browser_failed_http_responses": 0
+}
