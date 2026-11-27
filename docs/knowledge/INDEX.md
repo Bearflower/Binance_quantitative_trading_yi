@@ -1,5 +1,7 @@
 # Binance_quantitative_trading 知识库索引
 
+> 2026-11-28 本任务增量复核：[统一修复归档边界](./decisions/Binance_quantitative_trading-20261128-release-acceptance-archive-boundary.md)／[最新报告](../reports/unified-production-archive-readiness-2026-11-28.md)。原工程交付完成，后继组合及历史／自然周期验收保留；不把旧时点通过报告当作当前全量验收。
+
 最后巡检: 2026-10-15（2026-10-13 完成冷启动初始化 + 5 条样例 + 第一批 11 条放下时复核 + 第二批 8 条扩充；2026-10-14 新增 1 条诊断沉淀；2026-10-15 新增 5 issue + 2 decision 并入索引。2026-10-14/15 两次均为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论；2026-10-15 另对 ghost-entry-record-mutex / entry-terminal-state-hookpoint 两条做增量补齐（BNB/SOL 续报，提交 `8071f06`，条目统计不变）；2026-10-15 另对 hrs-pnl-double-count / hrs-third-close-path-missing-summary / dashboard-pnl-caliber-map 三条做增量更新（`hrs_pnl_governance` /finish 归档：D 段上线 Run #71-73 + 生产回填 −52.91988 定案），条目统计不变；2026-10-15 另新增 1 条 issue（income-history-silent-empty-non-unified，源自 C1/D1 只读采集交付）并对 deploy-yml-init-scripts-unsynced 补记同类边界场景，条目 +1；2026-10-15 另因「看板资金基数 / 最大回撤口径修复」B 段文档债更新，新增 1 条 decision（segmented-drawdown-caliber，**取代** 20261009-max-drawdown-caliber，后者状态转「已替代」）并对 allocation-return-denominator-zero 补注「看板口径升级」、monthly 月度资金分配需求文档升 v1.6，决策 +1）；2026-10-15 另因 C1/D1 消费方/生产者接线 + DDL 迁入 `init-scripts/`（R1/R2/R3）落地，对 2026-10-15 每日变更与 income-history issue 待复查口径做增量补充（**未新增知识条目**，条目统计不变）；2026-10-16 新增 1 issue + 1 decision（CI `deploy.yml` 并发策略缺陷修复 `ci_concurrency_queue_max_2026-10-16`，条目 +1/+1）并入索引，并对「CI 并发策略（`cancel-in-progress:false` + `queue:max`）」登记路径 ③（构建失败的 Run 其变更不被后继 Run diff 覆盖）为**待复查/知悉项**；同日另因「独立复审 R1–R6 六项修复收口（`strategy_remediation_R1-R6_2026-10-16`）」新增 **2 issue**（execution-facts-cursor-before-fact-silent-drop / execution-facts-same-ms-page-advance）+ **2 decision**（fact-before-cursor-transaction-boundary / hrs-shadow-signal-origin-not-substitute），条目 **+2/+2**（本轮为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论）；2026-10-18 因「目的驱动型 AI Tuner MVP 阶段一（参数安全 + 90 天准备度审计）」收口，新增 **2 issue**（relative-path-wrong-root-silent-load-failure / db-api-hallucination-asyncpg-vs-wrapper），条目 **+2**（本轮为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论）；2026-10-19 因「阶段二前置项① MTPCS 系信号持久化」落地（`shared/mtpc_signal_persistence.py` + `init-scripts/12-mtpc-signal-persistence.sql` + 审计侧 `readiness.effective_signal_statuses` 状态过滤），新增 **1 decision**（`mtpc-signal-persistence-dedup-and-status`）、每日变更 +1、**无新增 issue**；本轮为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论；2026-10-19/20 因「XAUUSDT MTCPS 影子采集 + 本地回放链路」交付与两轮修复沉淀 **1 issue**（shadow-replay-flat-trailing-key-silent-default）+ **1 decision**（xau-replay-report-caliber-position-aggregation），**2026-10-20 修复轮**再新增 **1 issue**（shadow-replay-manifest-top-hash-verify-incomplete）并对既有 decision 补记「连续亏损状态机层口径」（幂等合并、未新增 decision），问题 **+1**（决策不变）（均为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论）；2026-10-20 因「`mtcps-xau-shadow` 复用 btc-eth 镜像漏 COPY 兄弟包 `strategies/btc_eth_aggressive/` 致容器 `ModuleNotFoundError` crash-loop」修复（代码侧补齐 Dockerfile COPY + 静态守护测试，待重新部署验证），新增 **1 issue**（shadow-image-missing-aggr-copy-crashloop）、每日变更 +1、**无新增 decision**，问题 **+1**；同轮登记 1 条**知悉项**（镜像依赖与 CI diff 判定不一致，待独立评估）；**2026-10-20 另因**「`mtcps-xau-shadow` compose 宿主 bind mount 空目录遮蔽镜像内烘焙影子 profile 配置致 crash-loop」修复（compose 移除遮蔽挂载 `./strategies/btc_eth/shadow/config` + 新增静态守护测试 `tests/test_strategies/test_shadow_compose_config_mount.py`，待重新部署验证）——**与前述「缺 aggr COPY」并列的第二处独立根因**——新增 **1 issue**（shadow-compose-bind-mount-masks-image-config）、每日变更 +1、**无新增 decision**，问题 **+1**（本轮为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论）
 
 2026-10-27 增量补充（未重跑全量巡检）：补入 2026-10-26/27 已存在但尚未进索引的 2 条 issue，并因“MTPCS 黄金校准版（XAU）”新增 1 条 decision 与 2026-10-27 每日变更；孤立/引用链分析仍沿用 2026-10-13 结论。
@@ -178,3 +180,12 @@
 
 ## 关联
 - [项目文档入口](../README.md)
+
+## 2026-11-28 统一修复归档复核（增量）
+
+新增 1 条决策、1 篇当日变更；本分支正文文件数：问题 50／决策 19／变更日志 14。仅复核本任务来源与链接，不将旧的全库巡检、孤立分析或其他未结事项标记完成。
+
+- [x] 原全量修复、历史测试失败、统一生产发布及网格空仓交接，见[验收报告](../reports/unified-production-acceptance-2026-11-27.md)。
+- [ ] 最新后继版本运行集的统一完整回归证明，见[本轮归档复核](../reports/unified-production-archive-readiness-2026-11-28.md)。
+- [ ] 历史数据与长期证明保持原缺口；12 月 1 日自然分配结果届时验收，不提前关闭。
+- 决策：[生产验收与阶段归档边界](./decisions/Binance_quantitative_trading-20261128-release-acceptance-archive-boundary.md)；[当日变更](./changelog/2026-11-28.md)。
