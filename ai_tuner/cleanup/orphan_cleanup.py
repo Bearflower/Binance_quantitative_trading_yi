@@ -410,10 +410,19 @@ class OrphanCleanupJob:
                         updated_at = updated_at.astimezone(timezone.utc).replace(tzinfo=None)
                     hours_since = (now - updated_at).total_seconds() / 3600
                     if hours_since > self.stale_hours_threshold:
-                        # 如果交易所确认有持仓，跳过
-                        if (not self._is_confirmed_no_position(symbol, exchange_positions)
-                                or await self._strategy_has_position(sn, symbol)):
-                            no_state_alerts.append(f"{sn} | {symbol} | 陈旧状态下缺少空仓确认")
+                        # A strategy state may only be written on position changes.
+                        # A confirmed live exchange position makes its protection
+                        # orders expected, even when that state timestamp is old.
+                        if exchange_positions is not None and symbol in exchange_positions:
+                            skipped.append(f"{sn} | {symbol} | {order['order_type']} | 场景A跳过: 交易所确认有持仓")
+                            continue
+                        has_trade = await self._strategy_has_position(sn, symbol)
+                        if exchange_positions is None or has_trade:
+                            reason = ('交易所持仓不可确认' if exchange_positions is None
+                                      else '交易所无仓但策略有活交易记录')
+                            alert = f"{sn} | {symbol} | {reason}"
+                            if alert not in no_state_alerts:
+                                no_state_alerts.append(alert)
                             skipped.append(f"{sn} | {symbol} | {order['order_type']} | 场景A跳过: 未确认可清理（策略{hours_since:.1f}h未更新）")
                             continue
                         stale_orders.append(order)

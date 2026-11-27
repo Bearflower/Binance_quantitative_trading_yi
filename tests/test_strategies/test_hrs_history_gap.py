@@ -378,3 +378,70 @@ def test_event_v2_internal_exact_minute_exit_unions_pre_post_holdings_and_income
     transient=next((bound for bound in bounds if bound['as_of']==at.isoformat()),None)
     assert transient is not None
     assert D(transient['low_nav'])==D('1.008') and D(transient['high_nav'])==D('1.09')
+
+
+def test_accepted_live_gap_reconstructs_new_entry_and_conservative_intrabar_bounds():
+    from strategies.hrs.accepted_live_gap import plan_live_gap, reconstruct_live_gap, live_gap_envelopes
+    left = START + timedelta(seconds=35)
+    right = START + timedelta(minutes=4, seconds=15)
+    entry = START + timedelta(minutes=1, seconds=30)
+    opening = [dict(symbol='BLESSUSDT', strategy='hrs', quantity='-2', entry_price='10')]
+    fills = (dict(account_id='default', symbol='AVAXUSDT', trade_id='2', order_id='2',
+                  trade_time_utc=entry, side='BUY', qty='1', price='20'),)
+    orders = (dict(account_id='default', symbol='AVAXUSDT', order_id='2', strategy='hrs'),)
+    income = IncomeEvent('f2', 'fee', D('-.01'), entry, SEGMENT, True)
+    ledger = LedgerState(SEGMENT, START, right, D(100), D('-.01'), D(100), D('99.99'),
+                         D('.9999'), (income,))
+    points = (cp(left, '1'), cp(right, '.9999'))
+    plan = plan_live_gap('default', ledger, *points, fills, orders, opening)
+    assert plan['symbols'] == ['AVAXUSDT', 'BLESSUSDT']
+    bars = {}
+    for symbol, price in (('AVAXUSDT', '20'), ('BLESSUSDT', '10')):
+        bars[symbol] = [[int((START+timedelta(minutes=i)).timestamp()*1000),
+                         price, price, price, price, '0',
+                         int((START+timedelta(minutes=i+1)).timestamp()*1000)-1]
+                        for i in range(4)]
+    item = dict(plan, bars=bars)
+    samples, _ = reconstruct_live_gap('default', ledger, item, fills, orders, opening,
+                                      D(100), right+timedelta(seconds=1))
+    assert [point.nav for point in samples] == [D(1), D('.9999'), D('.9999'), D('.9999')]
+    bounds = live_gap_envelopes('default', ledger, item, fills, orders, opening, D(100))
+    assert len(bounds) == 4
+    assert all(D(bound['low_nav']) <= D('.9999') <= D(bound['high_nav'])
+               for bound in bounds[1:])
+
+
+def test_accepted_live_gap_refuses_unknown_entry_owner():
+    from strategies.hrs.accepted_live_gap import plan_live_gap
+    from dataclasses import replace
+    manifest, ledger, points, opening, after = inputs()
+    ledger = replace(ledger, as_of=END)
+    fill = dict(account_id='default', symbol='AVAXUSDT', trade_id='2', order_id='2',
+                trade_time_utc=START+timedelta(minutes=2), side='BUY', qty='1', price='20')
+    with pytest.raises(EvidenceBlocked):
+        plan_live_gap('default', ledger, *points, (fill,), (), opening)
+
+
+def test_accepted_live_gap_receipt_revalues_after_later_income():
+    from dataclasses import replace
+    from strategies.hrs.accepted_live_gap import KIND, plan_live_gap, live_gap_envelopes
+    from strategies.hrs.equity_history_gap import verify_mark_receipts, revalue_gap_bounds, BAR_SOURCE
+    from strategies.hrs.equity_evidence import canonical
+    manifest, ledger, points, opening, after = inputs()
+    ledger = replace(ledger, as_of=END)
+    plan = plan_live_gap('default', ledger, *points, (), (), opening)
+    item = dict(plan, bars=manifest['gaps'][0]['bars'])
+    receipt = dict(profile=KIND, account='default', available_at=after.isoformat(),
+                   gaps=[item], http_receipts=[dict(source=BAR_SOURCE,
+                       params=dict(symbol='WLDUSDT', interval='1m',
+                                   startTime=item['bars']['WLDUSDT'][0][0],
+                                   endTime=item['bars']['WLDUSDT'][-1][6], limit=4),
+                       requested_at=after.isoformat(), received_at=after.isoformat(),
+                       response_sha256=canonical(item['bars']['WLDUSDT'])[1])])
+    verify_mark_receipts(receipt, after)
+    prior = live_gap_envelopes('default', ledger, item, (), (), opening, D(100))
+    changed = replace(ledger, as_of=after,
+                      incomes=(*ledger.incomes, IncomeEvent('later','funding',D('.5'),after,SEGMENT,True)))
+    revised = revalue_gap_bounds(dict(kind=KIND, account_id='default', mark_gaps=[item]),
+                                 changed, points, (), (), opening)
+    assert revised == prior

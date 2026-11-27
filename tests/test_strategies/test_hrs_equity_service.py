@@ -1136,6 +1136,87 @@ async def test_accepted_history_accounts_new_classic_fees_without_reseeding(setu
         assert D(ledger['income_total'])==-1 and len(ledger['incomes'])==2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('adverse_mark',[False,True])
+async def test_accepted_live_gap_with_second_entry_reconstructs_from_closed_marks(setup,monkeypatch,adverse_mark):
+    service,account,pool,api,clock=setup
+    await _approve_history_for_existing_segment(setup,monkeypatch)
+    assert (await service.refresh())['allowed']
+    first_at=clock[0]+timedelta(seconds=10)
+    rows=[dict(symbol='BLESSUSDT',id=901,orderId=901,side='SELL',qty='1',price='10',
+               quoteQty='10',commission='.01',commissionAsset='USDT',realizedPnl='0',
+               time=int(first_at.timestamp()*1000))]
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES($1,'BLESSUSDT','901','hrs','SELL','FILLED','LIMIT',$2)",
+                        account,first_at.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+        for symbol in ('BLESSUSDT','AVAXUSDT'):
+            schedule_id=uuid.uuid4();service._test_schedule_ids.append(schedule_id)
+            await c.execute("INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,$2,$3,$3,$4,8,'test','{}')",
+                            schedule_id,symbol,clock[0],clock[0]+timedelta(hours=8))
+    def income(**kw):
+        return [dict(symbol=r['symbol'],incomeType='COMMISSION',income='-.01',asset='USDT',
+                     tranId=r['id'],tradeId=str(r['id']),time=r['time'],info='')
+                for r in rows if kw['income_type']=='COMMISSION'
+                and kw['start_time']<=r['time']<=kw['end_time']]
+    api.get_user_trades.side_effect=lambda symbol,**kw:[r for r in rows if r['symbol']==symbol
+        and kw['start_time']<=r['time']<=kw['end_time']]
+    api.get_income_history.side_effect=income
+    api.get_order.side_effect=lambda symbol,order_id:dict(orderId=order_id,symbol=symbol,
+        side='SELL' if order_id==901 else 'BUY',status='FILLED',time=next(r['time'] for r in rows if r['orderId']==order_id))
+    held={'BLESSUSDT':dict(direction='short',remaining_quantity='1',position_id='bless')}
+    service.position_manager.get_all_positions=lambda:held
+    def inventory():
+        result=[dict(symbol='BLESSUSDT',positionAmt='-1',entryPrice='10',positionSide='BOTH')]
+        if 'AVAXUSDT' in held:
+            result.append(dict(symbol='AVAXUSDT',positionAmt='1',entryPrice='20',positionSide='BOTH'))
+        return result
+    api.get_position.side_effect=inventory
+    api.get_um_account_positions.side_effect=inventory
+    def request(method,path,**kw):
+        if path=='/fapi/v1/premiumIndex':
+            symbol=kw['params']['symbol'];return dict(symbol=symbol,
+                markPrice='10' if symbol=='BLESSUSDT' else '20',
+                time=int(clock[0].timestamp()*1000),nextFundingTime=int((clock[0]+timedelta(hours=8)).timestamp()*1000))
+        if path=='/fapi/v1/markPriceKlines':
+            params=kw['params'];price='10' if params['symbol']=='BLESSUSDT' else '20'
+            high='80' if adverse_mark and params['symbol']=='BLESSUSDT' else price
+            return [[at,price,high,price,price,'0',at+59999]
+                    for at in range(params['startTime'],params['endTime']+1,60000)]
+        if path=='/fapi/v1/exchangeInfo':
+            return dict(symbols=[dict(symbol=s,underlyingType='COIN',contractType='PERPETUAL',
+                                      quoteAsset='USDT',marginAsset='USDT')
+                                 for s in ('BLESSUSDT','AVAXUSDT')])
+        return funding_source_response(path)
+    api._request.side_effect=request
+    clock[0]+=timedelta(seconds=30)
+    parent=await service.refresh()
+    assert parent['ready'] and parent['allowed'],parent
+    parent_version=parent['ledger_version']
+    second_at=clock[0]+timedelta(seconds=30)
+    rows.append(dict(symbol='AVAXUSDT',id=902,orderId=902,side='BUY',qty='1',price='20',
+                     quoteQty='20',commission='.01',commissionAsset='USDT',realizedPnl='0',
+                     time=int(second_at.timestamp()*1000)))
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES($1,'AVAXUSDT','902','hrs','BUY','FILLED','LIMIT',$2)",
+                        account,second_at.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+    held['AVAXUSDT']=dict(direction='long',remaining_quantity='1',position_id='avax')
+    clock[0]+=timedelta(minutes=3,seconds=15)
+    result=await service.refresh()
+    assert result['ready'] and result['allowed'] is not adverse_mark,result
+    if adverse_mark:
+        assert {'daily_loss_latched','inception_segment_drawdown_latched'} <= set(result['reasons']),result
+    assert result['ledger_version']==parent_version+1
+    async with pool.acquire() as c:
+        receipt=await c.fetchval("SELECT receipt FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND receipt->>'kind'='accepted_live_mark_gap_v1'",account)
+        assert receipt is not None
+        if isinstance(receipt,str):receipt=json.loads(receipt)
+        assert receipt['history_complete'] is True and receipt['backfilled_points']>=2
+        assert {key for gap in receipt['mark_gaps'] for key in gap['bars']}=={'BLESSUSDT','AVAXUSDT'}
+    clock[0]+=timedelta(seconds=30)
+    again=await service.refresh()
+    assert again['ready'] and again['allowed'] is not adverse_mark,again
+
+
 @pytest_asyncio.fixture
 async def rollover_setup(monkeypatch):
     # Synthetic future journal timestamps are intentionally immutable. Isolate

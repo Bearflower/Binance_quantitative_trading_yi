@@ -60,6 +60,7 @@ from .equity_evidence import (
     flat_boundary_observation, number, order_key, order_owners, owned_fill_positions, prove_positions,
 )
 from .equity_history_gap import BAR_SOURCE, reconstruct_gaps, replay_inception_latches, gap_nav_envelopes, apply_conservative_bounds, verify_mark_receipts, revalue_gap_bounds, plan_event_gaps, EVENT_GAP_KIND, mark_scope, gap_receipt_active
+from .accepted_live_gap import KIND as ACCEPTED_LIVE_GAP_KIND, MAX_BARS as ACCEPTED_LIVE_MAX_BARS, plan_live_gap, reconstruct_live_gap, live_gap_envelopes
 from .equity_reconciliation import RebuiltHistory, ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
 from .funding_reference import read_forecasts_prefix,load_forecasts_ref,evidence_forecasts_ref,verify_stored_prefixes
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
@@ -729,7 +730,13 @@ class HrsEquityService:
                 snapshot['historical_mark_bars'][key]=self._mark_bar_cache[key]
 
         if snapshot.get('current_path_from'):
-            return  # Accepted historical holes are retained, not reconstructed as complete.
+            # The approved PM prefix stays incomplete. A new *classic* gap can
+            # only be repaired with its own signed fills and closed mark bars.
+            try:
+                await asyncio.wait_for(self._prepare_accepted_live_gap(bootstrap,snapshot),timeout=30)
+            except (EvidenceBlocked,asyncio.TimeoutError) as exc:
+                snapshot['accepted_live_gap']=dict(status='blocked',reason=str(exc) or type(exc).__name__)
+            return
         try:
             await asyncio.wait_for(self._prepare_automatic_history(bootstrap,snapshot),timeout=30)
         except (EvidenceBlocked,asyncio.TimeoutError) as exc:
@@ -783,6 +790,63 @@ class HrsEquityService:
         snapshot['automatic_history_gap']=dict(status='complete',profile=EVENT_GAP_KIND,parent_ledger_version=stored['version'],
             parent_evidence_sha256=parent['evidence_sha256'],parent_available_at=parent['available_at'],
             account=self.account,segment=ledger.segment_id,available_at=self._now().isoformat(),gaps=items,http_receipts=receipts)
+
+    async def _prepare_accepted_live_gap(self, bootstrap, snapshot):
+        stored=await self.db.fetch_one('SELECT version,segment_id,ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',self.account)
+        if stored is None or stored['segment_id']!=bootstrap['segment_id']:
+            raise EvidenceBlocked('accepted_live_gap_parent_missing')
+        ledger=json.loads(stored['ledger_state']) if isinstance(stored['ledger_state'],str) else stored['ledger_state']
+        left=datetime.fromisoformat(ledger['as_of'])
+        right=snapshot['captured_at']
+        if right-left<=timedelta(seconds=120):
+            return
+        parent=await self.db.fetch_one("""SELECT evidence_sha256,available_at,payload FROM trading.hrs_equity_evidence
+            WHERE account_id=$1 AND segment_id=$2 AND as_of=$3 AND payload->'result'->>'ledger_version'=$4
+            ORDER BY available_at DESC LIMIT 1""",self.account,stored['segment_id'],left,str(stored['version']))
+        if parent is None:
+            raise EvidenceBlocked('accepted_live_gap_parent_evidence_missing')
+        payload=json.loads(parent['payload']) if isinstance(parent['payload'],str) else parent['payload']
+        if (canonical(payload)[1]!=parent['evidence_sha256'] or parent['available_at']>self._now()
+                or payload.get('source_collection',{}).get('complete') is not True
+                or payload.get('source_collection',{}).get('gaps')
+                or payload.get('current_income_report',{}).get('account_coverage_complete') is not True):
+            raise EvidenceBlocked('accepted_live_gap_parent_invalid')
+        symbols=set(payload.get('capture',{}).get('local',{}))|set(snapshot['local'])
+        rows=await self.db.fetch_all('''SELECT DISTINCT symbol FROM trading.execution_fact_fill
+            WHERE account_id=$1 AND trade_time_utc>$2 AND trade_time_utc<=$3''',self.account,left,right)
+        symbols.update(row['symbol'] for row in rows)
+        first,end=mark_scope(left,right)
+        count=(end-first)//timedelta(minutes=1)
+        if not symbols or not 0<count*len(symbols)<=ACCEPTED_LIVE_MAX_BARS:
+            raise EvidenceBlocked('accepted_live_gap_source_budget')
+        bars={};receipts=[]
+        for symbol in sorted(symbols):
+            series=[]
+            cursor=int(first.timestamp())*1000
+            stop=int(end.timestamp())*1000
+            while cursor<stop:
+                page_end=min(stop,cursor+128*60000)
+                params=dict(symbol=symbol,interval='1m',startTime=cursor,endTime=page_end-1,
+                            limit=(page_end-cursor)//60000)
+                requested=self._now()
+                response=await self.api._request('GET',BAR_SOURCE,params=params,signed=False)
+                received=self._now()
+                if (not isinstance(response,list) or len(response)!=params['limit']
+                        or any(not isinstance(bar,list) or len(bar)<7 or bar[0]!=cursor+i*60000
+                            or bar[6]!=cursor+(i+1)*60000-1
+                            or bar[6]>=int(requested.timestamp()*1000)
+                            for i,bar in enumerate(response))):
+                    raise EvidenceBlocked('accepted_live_gap_mark_response_invalid')
+                series.extend(response)
+                receipts.append(dict(source=BAR_SOURCE,params=params,requested_at=requested,
+                    received_at=received,response_sha256=canonical(response)[1]))
+                cursor=page_end
+            bars[symbol]=series
+        snapshot['accepted_live_gap']=dict(status='complete',profile=ACCEPTED_LIVE_GAP_KIND,
+            parent_ledger_version=stored['version'],parent_evidence_sha256=parent['evidence_sha256'],
+            account=self.account,segment=stored['segment_id'],available_at=self._now().isoformat(),
+            gaps=[dict(left=left.isoformat(),right=right.isoformat(),symbols=sorted(symbols),bars=bars)],
+            http_receipts=receipts)
 
     @asynccontextmanager
     async def _locked(self):
@@ -1120,7 +1184,7 @@ class HrsEquityService:
 
     async def _saved_gap_latches(self,connection,prior,state,samples,evidence,extra=()):
         rows=await connection.fetch("""SELECT receipt_sha256,available_at,receipt FROM trading.hrs_equity_reconciliation
-            WHERE account_id=$1 AND segment_id=$2 AND receipt->>'kind' IN ('automatic_constant_mark_gap_v1','automatic_event_mark_gap_v2')
+            WHERE account_id=$1 AND segment_id=$2 AND receipt->>'kind' IN ('automatic_constant_mark_gap_v1','automatic_event_mark_gap_v2','accepted_live_mark_gap_v1')
             ORDER BY after_state_version LIMIT 4097""",self.account,state.segment_id)
         if len(rows)>4096:raise EvidenceBlocked('history_gap_automatic_receipt_budget')
         bounds=[];refs=[];endpoints={}
@@ -1299,10 +1363,14 @@ class HrsEquityService:
         today=datetime.combine(as_of.astimezone(SHANGHAI).date(),time.min,SHANGHAI)
         daily=self._history_complete(samples,fills,orders,flat,since=today)
         live=self._history_complete(samples,fills,orders,flat,since=policy.accepted_through)
-        prior=await self._accepted_saved_gap_latches(connection,stored.gate,state,samples,evidence,anchor)
-        gate=observed_gate(prior,state.checkpoint,samples,policy=policy,
-            current_complete=live,daily_complete=daily,complete_from=state.inception)
-        stored=await session.commit(state,gate.state,expected_version=stored.version,checkpoint_id=f'{segment}:{end_ms}')
+        if live:
+            prior=await self._accepted_saved_gap_latches(connection,stored.gate,state,samples,evidence,anchor)
+            gate=observed_gate(prior,state.checkpoint,samples,policy=policy,
+                current_complete=True,daily_complete=daily,complete_from=state.inception)
+            stored=await session.commit(state,gate.state,expected_version=stored.version,checkpoint_id=f'{segment}:{end_ms}')
+        else:
+            stored,gate=await self._repair_accepted_live_gap(connection,stored,state,
+                checkpoints,samples,fills,orders,evidence,anchor,policy,flat,today)
         result=dict(ready=gate.ready,allowed=gate.allow_new_risk,reasons=list(gate.reasons),
             window_label=gate.window_label,qualified_30_day=False,ledger_version=stored.version,
             history_status='ACCEPTED_GAPS',history_acceptance_revision=policy.revision,
@@ -1319,13 +1387,63 @@ class HrsEquityService:
         evidence['available_at']=self._now()
         return await self._projection(connection,await self._policy_revision(connection),result,evidence)
 
+    async def _repair_accepted_live_gap(self,connection,stored,state,checkpoints,
+                                        samples,fills,orders,evidence,anchor,policy,flat,today):
+        plan=evidence['capture'].get('accepted_live_gap',{})
+        if (plan.get('status')!='complete' or plan.get('profile')!=ACCEPTED_LIVE_GAP_KIND
+                or plan.get('parent_ledger_version')!=stored.version
+                or plan.get('account')!=self.account or plan.get('segment')!=state.segment_id
+                or len(plan.get('gaps',()))!=1):
+            raise EvidenceBlocked('current_nav_history_incomplete')
+        parent=await connection.fetchrow('''SELECT payload FROM trading.hrs_equity_evidence
+            WHERE account_id=$1 AND segment_id=$2 AND evidence_sha256=$3''',
+            self.account,state.segment_id,plan['parent_evidence_sha256'])
+        payload=json.loads(parent['payload']) if parent is not None and isinstance(parent['payload'],str) else (parent['payload'] if parent else None)
+        if (payload is None or canonical(payload)[1]!=plan['parent_evidence_sha256']
+                or payload.get('result',{}).get('ledger_version')!=stored.version
+                or datetime.fromisoformat(payload['as_of'])!=stored.ledger.as_of
+                or payload.get('source_collection',{}).get('complete') is not True
+                or payload.get('source_collection',{}).get('gaps')
+                or payload.get('current_income_report',{}).get('account_coverage_complete') is not True):
+            raise EvidenceBlocked('accepted_live_gap_parent_changed')
+        item=plan['gaps'][0]
+        expected=plan_live_gap(self.account,state,checkpoints[-1],state.checkpoint,
+                               fills,orders,(),)
+        if (item['left'],item['right'],item['symbols']) != (
+                expected['left'],expected['right'],expected['symbols']):
+            raise EvidenceBlocked('accepted_live_gap_path_changed')
+        verify_mark_receipts(plan,self._now())
+        added,retained=reconstruct_live_gap(self.account,state,item,fills,orders,(),
+            checkpoints[-1].units,datetime.fromisoformat(plan['available_at']))
+        full=tuple(sorted((*samples,*added),key=lambda point:point.as_of))
+        live=self._history_complete(full,fills,orders,flat,since=policy.accepted_through)
+        daily=self._history_complete(full,fills,orders,flat,since=today)
+        if not live:
+            raise EvidenceBlocked('current_nav_history_incomplete')
+        bounds=live_gap_envelopes(self.account,state,item,fills,orders,(),checkpoints[-1].units)
+        prior=await self._accepted_saved_gap_latches(connection,stored.gate,state,full,evidence,anchor)
+        prior=apply_conservative_bounds(prior,state,full,bounds)
+        gate=observed_gate(prior,state.checkpoint,full,policy=policy,
+            current_complete=True,daily_complete=daily,complete_from=state.inception)
+        evidence['capture']['historical_mark_bars'].update(retained)
+        receipt=dict(kind=ACCEPTED_LIVE_GAP_KIND,account_id=self.account,segment_id=state.segment_id,
+            as_of=state.as_of,available_at=self._now(),source_evidence_sha256=plan['parent_evidence_sha256'],
+            source_income_report_sha256=canonical(evidence['current_income_report'])[1],
+            after_ledger_sha256=canonical(ledger_to_dict(state))[1],
+            after_gate_sha256=canonical(gate.state.to_dict())[1],
+            mark_gaps=plan['gaps'],http_receipts=plan['http_receipts'],conservative_bounds=bounds,
+            history_complete=live,backfilled_points=len(added),retained_mark_bars=len(retained),
+            valued_series_sha256=canonical([asdict(point) for point in added])[1])
+        rebuilt=RebuiltHistory(state,gate,full,receipt)
+        return await activate_reconciliation(connection,self.account,stored,rebuilt),gate
+
     async def _accepted_saved_gap_latches(self, connection, prior, state, samples, evidence, anchor):
         """Retain old conservative marks with their original authenticated PM path."""
         exists=await connection.fetchval("""SELECT EXISTS(SELECT 1 FROM trading.hrs_equity_reconciliation
             WHERE account_id=$1 AND segment_id=$2 AND receipt->>'kind'
             IN ('automatic_constant_mark_gap_v1','automatic_event_mark_gap_v2'))""",self.account,state.segment_id)
         if not exists:
-            return prior
+            return await self._saved_gap_latches(connection,prior,state,samples,evidence)
         cutoff=datetime.fromtimestamp(account_cutover_ms(self.account)/1000,timezone.utc)
         archived=await connection.fetchrow("""SELECT evidence_sha256,payload FROM trading.hrs_equity_evidence
             WHERE account_id=$1 AND segment_id=$2 AND as_of<$3 AND available_at<$3
