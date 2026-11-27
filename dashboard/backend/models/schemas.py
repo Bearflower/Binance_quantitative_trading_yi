@@ -51,6 +51,8 @@ class ErrorResponse(BaseModel):
 class LedgerMetadata(BaseModel):
     classic_cutover_ms: Optional[int] = None
     mode_segments: Optional[list] = None
+    cutover_income_gap: Optional[Dict[str, int]] = None
+    verified_classic_income: Optional[Dict[str, Any]] = None
     manual_attribution_count: Optional[int] = None
     manual_closure_count: Optional[int] = None
     report_id: Optional[str] = None

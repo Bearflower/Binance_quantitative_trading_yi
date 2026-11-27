@@ -184,12 +184,37 @@ class ExchangeLedgerDashboardMixin:
                 if suffix.get("classic_cutover_ms") is not None:
                     from shared.accounting.economic_ledger import add_mode_segments
                     add_mode_segments(result, suffix["classic_cutover_ms"])
-                return result
+                return await self._with_classic_income(result, account, start, end, window_key, current)
             except (ValueError, OSError) as exc:
                 logging.getLogger(__name__).warning("Annual income archive unavailable: %s", exc)
-        return await read_published_report(
+        report = await read_published_report(
             self._db_manager, account, _ms(start), _ms(end), window_key,
             current=current, refresh_seconds=int(os.environ.get('LEDGER_REFRESH_SECONDS', '60')))
+        return await self._with_classic_income(report, account, start, end, window_key, current)
+
+    async def _with_classic_income(self, report, account, start, end, window_key, current):
+        cutover = report.get("classic_cutover_ms")
+        pm_end = report["end_ms"]
+        if not cutover or not _ms(start) < cutover < _ms(end) or pm_end >= cutover:
+            return report
+
+        result = dict(report, cutover_income_gap={"start_ms": pm_end, "end_ms": cutover})
+        try:
+            classic = await read_published_report(
+                self._db_manager, account, cutover, _ms(end), f"{window_key}:classic",
+                current=current, refresh_seconds=int(os.environ.get("LEDGER_REFRESH_SECONDS", "60")))
+        except Exception:
+            logging.getLogger(__name__).exception("Classic income segment refresh failed")
+            return result
+
+        if (classic["account_coverage_complete"] and classic["start_ms"] == cutover
+                and cutover < classic["end_ms"] <= _ms(end)
+                and classic.get("publication_status") in ("published", "stale")):
+            result["verified_classic_income"] = {key: classic.get(key) for key in (
+                "report_id", "start_ms", "end_ms", "as_of", "publication_status", "income_count",
+                "account_components", "by_strategy", "unattributed_count", "unattributed_usdt_total",
+                "other_asset_totals")}
+        return result
 
     @staticmethod
     def _ledger_metadata(report):
@@ -198,7 +223,8 @@ class ExchangeLedgerDashboardMixin:
             'requested_end_ms', 'as_of', 'stale_seconds', 'account_coverage_complete',
             'strategy_attribution_complete', 'coverage_gaps', 'other_asset_totals',
             'publication_status', 'refresh_error', 'income_archive_end_ms', 'archive_attribution_count',
-            'manual_attribution_count', 'manual_closure_count', 'classic_cutover_ms', 'mode_segments')}
+            'manual_attribution_count', 'manual_closure_count', 'classic_cutover_ms', 'mode_segments',
+            'cutover_income_gap', 'verified_classic_income')}
 
     def _strategy_projection(self, report, strategy_id):
         complete = report['strategy_attribution_complete']
