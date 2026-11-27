@@ -118,6 +118,7 @@
 
 | 日期 | 变更数 | 摘要 |
 |------|--------|------|
+| 2026-11-27 | 1 | XAU 版本身份修复与受限发布审计包固化；见[当日变更](./changelog/2026-11-27.md)。 |
 | 2026-11-03 | 1 | [aggr_legacy_recovery_2026-11-03] SOL 部分盈亏归属漏仓修复、CI Run #148 部署验收；SOL/XRP 提前减仓归零，残余交易所和数据库条件单清零。新仓自然重启恢复待观察。详见[当日变更](./changelog/2026-11-03.md)。 |
 | 2026-11-02 | 2 | [aggr_legacy_recovery_2026-11-02] 激进策略旧仓恢复、看板上报、额度与时间退出核验，以及 ETH 反向开仓事故修复已合并主线并部署；SOL/XRP 到期实盘退出及新仓自然重启恢复待复查。详见[当日变更](./changelog/2026-11-02.md)；[ai_tuner_contract_and_allocation_2026-11-02] 网格旧契约提示词与月度分配可选持仓上限路径两项缺陷已部署，任务实跑待验证。 |
 | 2026-10-29 | 2 | [container_log_retention_2026-10-29] 新影子服务 `mtcps-xau-calibrated-shadow` 先归档旧日志，再由 `74916f3` 单独切换至 journald；09:25 部署后 16/16 健康、16/16 驱动和当前日志均核验通过。[r05_r06_precision_and_na_legs_2026-10-29] 两处线上缺陷修复**已上线并观察 18 小时无复发**：精度键名驼峰/下划线不一致致静默兜底（`47af6c02`）、微仓比例腿取整为 0 致 TP1 补挂耗尽（`174de235` + `925d6693`）；生产容器 `trading_system-btc_eth_aggressive` 运行 `925d6693`，`DEPLOY_TIME=2026-10-29 07:38:27 UTC`、`DEPLOY_ID=00008101`，部署后 `[-4003] Quantity less than zero.` 0 次、`保护单补挂达上限仍未完整` 0 次；新增 issue 2 + decision 1。详见[当日变更](./changelog/2026-10-29.md)。 |
@@ -132,6 +133,7 @@
 | 2026-10-13 | 9 | [knowledge-base-build] 建立知识库样板（3 模板 + 5 样例 + INDEX）、knowledge 入 Git、修正 3 条样例证据/状态、补齐 skill 与 Claude 入口接入；[knowledge-base-expand] 第一批 11 条 + 放下时复核转「已审查」（1 条 commit 引用更正）；第二批 8 条（09-21 分配/佣金 + 10-01 补挂/部署 + 10-13 分母口径）；[hrs-pnl-dedup] HRS 盈亏双计防双计口径修复（f940a61/91e99c2，统计层，写入层待治理）；[pnl-caliber-map] 看板盈亏三口径设计确认（本期净盈亏/总盈亏/已实现+浮动，决策：维持现状不改文案） |
 
 ## 待复查清单
+- [ ] XAU 版本修复实际容器与自然 cron 新事件验收；见[问题条目](./issues/Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse.md)。
 - [ ] 2026-11-11 看板修复任务仍待绩效指标恢复、自动归属任务证据冲突修复及生产连续周期验收；见[看板修复未闭合问题](./issues/Binance_quantitative_trading-20261111-dashboard-closure-gaps.md)。
 - [ ] 2026-11-02 `grid` 周度调优实跑后，核对不再因缺 `reasons` / `summary` 解析失败，且执行记录结果正确；见[提示词契约冲突](./issues/Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch.md)。
 - [ ] 2026-11-02 资金分配任务实跑后，核对无 `position_sizing.total.account_ratio_cap` 路径错误，并确认各策略 `capital_limits` 与发布结果一致；见[可选持仓上限路径](./issues/Binance_quantitative_trading-20261102-ai-tuner-optional-position-cap-path.md)。

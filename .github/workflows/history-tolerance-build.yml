@@ -3,6 +3,11 @@ on:
   push:
     branches: [codex/classic-account-cutover]
   workflow_dispatch:
+    inputs:
+      activate:
+        description: Activate the four reviewed HRS and AI consumers after build
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -66,7 +71,7 @@ jobs:
           fi
           if [ "$GROUP" = ai-tuner ]; then
             docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /app/logs:rw,mode=1777 \
-              --entrypoint python "$IMAGE" -B -c 'import ai_tuner.monitor.evidence_jobs; import ai_tuner.allocation.classic_publication'
+              --entrypoint python "$IMAGE" -B -c 'import ai_tuner.monitor.evidence_jobs; import ai_tuner.allocation.classic_publication; import ai_tuner.cleanup.orphan_cleanup'
           fi
           python3 - <<'PY'
           import json,os,pathlib,subprocess
@@ -81,3 +86,57 @@ jobs:
           name: history-tolerance-${{ matrix.name }}
           path: .history-build/${{ matrix.name }}/source.json
           if-no-files-found: error
+  activate:
+    if: github.event_name == 'workflow_dispatch' && inputs.activate == true
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: history-tolerance-*
+          path: ${{ runner.temp }}/history-live-gap-artifacts
+      - name: Bind images to reviewed consumers
+        run: |
+          python3 scripts/prepare_history_live_gap_release.py \
+            --artifacts "$RUNNER_TEMP/history-live-gap-artifacts" \
+            --source "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/history-live-gap"
+          tar -C "$RUNNER_TEMP/history-live-gap" -czf "$RUNNER_TEMP/history-live-gap.tar.gz" .
+      - name: Set up SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          # 复用已核验生产公钥，不能在发送令牌前信任现场扫描结果。
+          printf '%s\n' '43.156.242.184 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFNCPR4nqDmkewu2141YjcAEiP/PD+cBEXMZKWDcAlSu' > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<'EOF'
+          Host 43.156.242.184
+            User root
+            IdentityFile ~/.ssh/id_rsa
+            StrictHostKeyChecking yes
+            ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+          EOF
+          chmod 600 ~/.ssh/config
+      - name: Authenticate GHCR for scoped pull
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          set -o pipefail
+          printf '%s' "$GHCR_PULL_TOKEN" | ssh -o ConnectTimeout=15 root@43.156.242.184 \
+            'docker login ghcr.io -u bearflower --password-stdin'
+      - name: Stage and activate only four consumers
+        run: |
+          remote="/root/trading_system/.deploy_tmp/history-live-gap-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "mkdir -m 700 -p '$remote'"
+          scp -o ConnectTimeout=15 "$RUNNER_TEMP/history-live-gap.tar.gz" "root@43.156.242.184:$remote/bundle.tar.gz"
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "tar -xzf '$remote/bundle.tar.gz' -C '$remote'"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 \
+            "python3 '$remote/activate.py' stage"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 \
+            "python3 '$remote/activate.py' activate"

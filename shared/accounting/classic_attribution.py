@@ -13,7 +13,7 @@ from shared.readonly_client import ReadOnlyBinanceClient
 from shared.accounting.history_tolerance import read_history_acceptance
 from shared.accounting.equity_bridge import signed_spot_uid_sha256
 from shared.accounting.economic_ledger import coverage_gaps
-from shared.accounting.income_integrity import require_income_integrity
+from shared.accounting.income_integrity import income_account_lock, require_income_integrity
 from scripts.audit_algo_attribution import _fetch_links, _CLASSIC_CONDITIONS
 from scripts.reconcile_income_attribution import (
     verified_fact_cutoff, verified_position_at_cutoff, build_replay_by_symbol,
@@ -99,9 +99,11 @@ async def reconcile_classic_attribution(db, client, acceptance=None):
     target_ms=int(time.time()*1000)-1000
     target=datetime.fromtimestamp(target_ms/1000,timezone.utc)
     async with db.pool.acquire() as connection:
-        async with connection.transaction(isolation='repeatable_read',readonly=True):
-            await require_income_integrity(connection,account)
-            preliminary=await _facts(connection,account,start,target)
+        # Wait for any in-flight income writer before taking the snapshot.
+        async with income_account_lock(connection,account):
+            async with connection.transaction(isolation='repeatable_read',readonly=True):
+                await require_income_integrity(connection,account)
+                preliminary=await _facts(connection,account,start,target)
     symbols=_symbols(preliminary)
     end_ms=verified_fact_cutoff(preliminary['cursors'],account,
         int(start.timestamp()*1000),target_ms,symbols)
@@ -121,28 +123,29 @@ async def reconcile_classic_attribution(db, client, acceptance=None):
     links=await _fetch_links(client,symbols,int(start.timestamp()*1000),end_ms) if symbols else []
     links=[dict(row,account_id=account) for row in links]
     async with db.pool.acquire() as connection:
-        async with connection.transaction(isolation='serializable'):
-            await require_income_integrity(connection,account)
-            current=await read_history_acceptance(connection,account,expected_uid=uid)
-            if current is None or current.receipt_sha256!=policy.receipt_sha256:
-                raise ClassicAttributionBlocked('classic_acceptance_changed')
-            data=await _facts(connection,account,start,end)
-            if _symbols(data)!=symbols:
-                raise ClassicAttributionBlocked('classic_fact_scope_changed')
-            data['trades']=[dict(r) for r in await connection.fetch(_TRADE_SQL,account,symbols)]
-            data['conditions']=[dict(r) for r in await connection.fetch(_CLASSIC_CONDITIONS,account,symbols,
-                policy.payload['classic_cutover_ms'])]
-            data['manual']=[dict(r) for r in await connection.fetch(_MANUAL_SQL,account,start,end)]
-            data['existing']=[dict(r) for r in await connection.fetch(_EXISTING_SQL,account,start,end)]
-            data['owners']=[dict(r) for r in await connection.fetch('SELECT * FROM trading.order_strategy_evidence WHERE account_id=$1 AND symbol=ANY($2::text[])',account,symbols)]
-            plan=classic_plan(policy,end,data,quantities,links)
-            for row in plan['derived_rows']:
-                if row['method']=='verified_position_interval':
-                    row['evidence']['classic_history_acceptance']={
-                        'receipt_sha256':policy.receipt_sha256,
-                        'flat_evidence_sha256':policy.classic_flat_evidence_sha256,
-                        'position_at_cutoff':proofs[row['symbol']]}
-            result=await apply_plan(connection,plan,coverage_complete=True)
+        async with income_account_lock(connection,account):
+            async with connection.transaction(isolation='serializable'):
+                await require_income_integrity(connection,account)
+                current=await read_history_acceptance(connection,account,expected_uid=uid)
+                if current is None or current.receipt_sha256!=policy.receipt_sha256:
+                    raise ClassicAttributionBlocked('classic_acceptance_changed')
+                data=await _facts(connection,account,start,end)
+                if _symbols(data)!=symbols:
+                    raise ClassicAttributionBlocked('classic_fact_scope_changed')
+                data['trades']=[dict(r) for r in await connection.fetch(_TRADE_SQL,account,symbols)]
+                data['conditions']=[dict(r) for r in await connection.fetch(_CLASSIC_CONDITIONS,account,symbols,
+                    policy.payload['classic_cutover_ms'])]
+                data['manual']=[dict(r) for r in await connection.fetch(_MANUAL_SQL,account,start,end)]
+                data['existing']=[dict(r) for r in await connection.fetch(_EXISTING_SQL,account,start,end)]
+                data['owners']=[dict(r) for r in await connection.fetch('SELECT * FROM trading.order_strategy_evidence WHERE account_id=$1 AND symbol=ANY($2::text[])',account,symbols)]
+                plan=classic_plan(policy,end,data,quantities,links)
+                for row in plan['derived_rows']:
+                    if row['method']=='verified_position_interval':
+                        row['evidence']['classic_history_acceptance']={
+                            'receipt_sha256':policy.receipt_sha256,
+                            'flat_evidence_sha256':policy.classic_flat_evidence_sha256,
+                            'position_at_cutoff':proofs[row['symbol']]}
+                result=await apply_plan(connection,plan,coverage_complete=True)
     return dict(status='PARTIAL' if plan['rejected'] else 'VERIFIED',account_id=account,
         ready=not plan['rejected'],pending=plan['rejected'],coverage_end_ms=end_ms,
         end_ms=end_ms,receipt_sha256=policy.receipt_sha256,write_result=result,

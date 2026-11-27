@@ -159,10 +159,10 @@ def _validate_all_intervals(
 def _read_git_info() -> Tuple[str, str]:
     """尝试从容器 /app/VERSION 或环境变量读取 git 信息
 
-    读不到则返回空串（采集器仍可运行，decision event 会落 git_commit=""）。
+    只有 GIT_SHA 的构建用 SHA 补齐事件版本；两者均缺失时仍返回空串。
     """
-    git_commit = os.getenv("GIT_COMMIT", "")
-    git_sha = os.getenv("GIT_SHA", "")
+    git_commit = os.getenv("GIT_COMMIT", "").strip()
+    git_sha = os.getenv("GIT_SHA", "").strip()
 
     # 尝试读容器 VERSION 文件
     version_paths = ["/app/VERSION", "VERSION"]
@@ -186,7 +186,7 @@ def _read_git_info() -> Tuple[str, str]:
                 logger.debug("VERSION 文件读取失败，降级走环境变量", path=path, error=str(exc))
             break
 
-    return git_commit, git_sha
+    return git_commit or git_sha, git_sha
 
 
 # ---------------------------------------------------------------------------

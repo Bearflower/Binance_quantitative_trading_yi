@@ -629,12 +629,16 @@ def test_legacy_missing_oci_revision_matches_verified_image_label_merge():
 def test_candidate_revision_replaces_stale_source_metadata_without_changing_other_labels():
     old = running('trading_system-grid-executor')
     old['Config']['Labels'].update({'org.opencontainers.image.revision':'e' * 40,
+                                  'codex.runtime.source':'d' * 40,
+                                  'codex.xau.source':'c' * 40,
                                   'runtime.security.boundary':'dedicated-grid',
                                   'org.opencontainers.image.source':'https://example.invalid/repository'})
     before = copy.deepcopy(old)
     body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
     assert body['Labels']['org.opencontainers.image.revision'] == SHA
     assert body['Labels']['codex.full_regression.source'] == SHA
+    assert 'codex.runtime.source' not in body['Labels']
+    assert 'codex.xau.source' not in body['Labels']
     for key in ('runtime.security.boundary','org.opencontainers.image.source','com.docker.compose.project'):
         assert body['Labels'][key] == old['Config']['Labels'][key]
     assert old == before
@@ -664,7 +668,7 @@ def test_hrs_image_family_declares_verified_revision_without_changing_risk_env(t
     body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
     env = dict(value.split('=', 1) for value in body['Env'])
     assert env['HRS_IMAGE_REVISION'] == SHA
-    assert env['HRS_RELEASE_SHA'] == (SHA if target == 'trading_system-hrs' else 'existing-release')
+    assert env['HRS_RELEASE_SHA'] == SHA
     for value in before['Config']['Env']:
         key, expected = value.split('=', 1)
         if key not in ('HRS_IMAGE_REVISION', 'HRS_RELEASE_SHA'):
@@ -685,6 +689,19 @@ def test_other_image_families_do_not_gain_hrs_revision_environment(target):
     body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
     assert body['Env'] == old['Config']['Env']
     assert not any(value.startswith('HRS_IMAGE_REVISION=') for value in body['Env'])
+
+
+@pytest.mark.parametrize('target', ['trading_system-hrs', 'trading_system-hrs-acceptance',
+                                    'trading_system-execution-facts', 'trading_system-market-cap'])
+def test_only_main_hrs_requires_injecting_absent_release_environment(target):
+    old = running(target)
+    assert not any(value.startswith('HRS_RELEASE_SHA=') for value in old['Config']['Env'])
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    env = dict(value.split('=', 1) for value in body['Env'])
+    if target == 'trading_system-hrs':
+        assert env['HRS_RELEASE_SHA'] == SHA
+    else:
+        assert 'HRS_RELEASE_SHA' not in env
 
 
 def successor_proof(release, old):

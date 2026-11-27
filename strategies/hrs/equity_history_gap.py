@@ -359,7 +359,8 @@ def verify_mark_receipts(plan,known_at):
                     and row['params'].get('startTime')==cursor
                     and type(row['params'].get('endTime')) is int
                     and cursor<=row['params']['endTime']<=end
-                    and (event_aware or row['params']['endTime']==end)]
+                    and (event_aware or plan.get('profile')=='accepted_live_mark_gap_v1'
+                         or row['params']['endTime']==end)]
                 _require(len(matches)==1,'automatic_source_scope')
                 index,row=matches[0];params=row['params'];requested=clock(row['requested_at']);received=clock(row['received_at'])
                 stop=params['endTime']+1
@@ -377,7 +378,7 @@ def verify_mark_receipts(plan,known_at):
 def gap_receipt_active(receipt,cutoff,as_of):
     # Late independently certified endpoint income can add a right-time bound
     # during revaluation. Keep the original receipt through that endpoint.
-    if receipt.get('kind')==EVENT_GAP_KIND:
+    if receipt.get('kind') in (EVENT_GAP_KIND,'accepted_live_mark_gap_v1'):
         return any(cutoff<=datetime.fromisoformat(gap['right'])<=as_of for gap in receipt['mark_gaps'])
     return any(cutoff<=datetime.fromisoformat(bound['as_of'])<=as_of for bound in receipt.get('conservative_bounds',()))
 
@@ -393,8 +394,19 @@ def revalue_gap_bounds(receipt,ledger,samples,fills,orders,opening):
             _require(all(flow.nav_before is not None for flow in later),'automatic_valuation_unitization')
             units=ledger.units-sum((flow.amount/flow.nav_before for flow in later),Decimal(0))
             _require(by_time[at].units==units,'automatic_valuation_units')
-        planner=plan_event_gaps if receipt.get('kind')==EVENT_GAP_KIND else plan_constant_gaps
-        expected=planner(receipt['account_id'],ledger,(by_time[left],by_time[right]),fills,orders,opening,inception_only=False)
-        _require(expected==[dict(left=gap['left'],right=gap['right'],symbols=sorted(gap['bars']))],
-            'automatic_valuation_path')
+        if receipt.get('kind')=='accepted_live_mark_gap_v1':
+            from .accepted_live_gap import plan_live_gap
+            expected=plan_live_gap(receipt['account_id'],ledger,by_time[left],by_time[right],fills,orders,opening)
+            _require(expected=={key:gap[key] for key in ('left','right','symbols')},
+                     'automatic_valuation_path')
+        else:
+            planner=plan_event_gaps if receipt.get('kind')==EVENT_GAP_KIND else plan_constant_gaps
+            expected=planner(receipt['account_id'],ledger,(by_time[left],by_time[right]),fills,orders,opening,inception_only=False)
+            _require(expected==[dict(left=gap['left'],right=gap['right'],symbols=sorted(gap['bars']))],
+                'automatic_valuation_path')
+    if receipt.get('kind')=='accepted_live_mark_gap_v1':
+        from .accepted_live_gap import live_gap_envelopes
+        return [bound for gap in receipt['mark_gaps'] for bound in live_gap_envelopes(
+            receipt['account_id'],ledger,gap,fills,orders,opening,
+            by_time[datetime.fromisoformat(gap['left'])].units)]
     return gap_nav_envelopes(dict(account=receipt['account_id'],gaps=receipt['mark_gaps'],profile=receipt.get('kind')),ledger,samples,fills,orders,opening)

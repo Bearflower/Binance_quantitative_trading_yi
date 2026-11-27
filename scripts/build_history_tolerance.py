@@ -22,7 +22,7 @@ def prepare(name):
     destination = ROOT / '.history-build' / name
     destination.mkdir(parents=True, exist_ok=False)
     hashes = {}
-    for relative in plan['files']:
+    for relative in group['files']:
         path = Path(relative)
         if path.is_absolute() or '..' in path.parts or path.suffix != '.py':
             raise ValueError('unsafe_overlay_path')

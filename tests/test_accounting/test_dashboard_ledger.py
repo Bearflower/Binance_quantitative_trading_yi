@@ -234,3 +234,52 @@ async def test_only_yearly_overview_shows_period_with_scheduled_snapshots():
     assert yearly["total_verified_period"]["window_end"] == "2026-11-03"
     assert yearly["total_verified_period"]["missing_opening_days"] == 1
     assert (await svc.get_overview("monthly"))["total_verified_period"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("period", ["weekly", "monthly", "yearly"])
+async def test_cross_cutover_report_exposes_verified_classic_segment(monkeypatch, period):
+    from dashboard.backend.models.schemas import OverviewData
+    from dashboard.backend.services import exchange_ledger as ledger
+    start = datetime(2026, 11, 23, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 28, tzinfo=timezone.utc)
+    cutover = ledger._ms(datetime(2026, 11, 25, 4, 54, tzinfo=timezone.utc))
+    pm_end = cutover - 10000
+    pm = dict(report(), start_ms=ledger._ms(start), end_ms=pm_end,
+              classic_cutover_ms=cutover, publication_status="published")
+    classic = dict(report(), start_ms=cutover, end_ms=ledger._ms(end) - 100,
+                   classic_cutover_ms=cutover, publication_status="published",
+                   account_components={"net_usdt": "1.25"}, income_count=12,
+                   unattributed_count=2, as_of="2026-11-27T23:59:59.900+00:00")
+    read = AsyncMock(side_effect=[pm, classic])
+    monkeypatch.setattr(ledger, "read_published_report", read)
+    service = Service()
+    service._db_manager = object()
+    actual = await service._ledger_report(start, end, report_type=period)
+    metadata = service._ledger_metadata(actual)
+    assert metadata["cutover_income_gap"] == {"start_ms": pm_end, "end_ms": cutover}
+    assert metadata["verified_classic_income"]["account_components"]["net_usdt"] == "1.25"
+    assert metadata["verified_classic_income"]["unattributed_count"] == 2
+    assert actual["account_components"] == pm["account_components"]
+    assert actual["end_ms"] == pm_end
+    assert read.await_args.args[2:4] == (cutover, ledger._ms(end))
+    model = OverviewData(strategies=[], report_type=period, updated_at="now",
+                         total_pnl=pm["account_components"]["net_usdt"], total_orders=None,
+                         total_closed=None, total_wins=None, win_rate=None, **metadata)
+    assert model.model_dump()["verified_classic_income"]["income_count"] == 12
+
+
+@pytest.mark.asyncio
+async def test_cross_cutover_does_not_show_unverified_classic_amount(monkeypatch):
+    from dashboard.backend.services import exchange_ledger as ledger
+    start = datetime(2026, 11, 23, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 28, tzinfo=timezone.utc)
+    cutover = ledger._ms(start) + 10000
+    pm = dict(report(), end_ms=cutover - 100, classic_cutover_ms=cutover)
+    classic = dict(report(False), start_ms=cutover, publication_status="unverified")
+    monkeypatch.setattr(ledger, "read_published_report", AsyncMock(side_effect=[pm, classic]))
+    service = Service()
+    service._db_manager = object()
+    actual = await service._ledger_report(start, end, report_type="weekly")
+    assert actual["cutover_income_gap"] == {"start_ms": cutover - 100, "end_ms": cutover}
+    assert actual.get("verified_classic_income") is None

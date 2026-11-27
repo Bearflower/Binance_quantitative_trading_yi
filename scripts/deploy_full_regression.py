@@ -109,13 +109,17 @@ def build_container_body(old, image_id, sha, *, source_removals=()):
                 NetworkingConfig={'EndpointsConfig': network_config(old)})
     # The candidate image's revision was verified before constructing this
     # clone. Declare it explicitly instead of inheriting or retaining old metadata.
-    body['Labels'] = dict(body.get('Labels') or {}, **{
+    labels = dict(body.get('Labels') or {})
+    # 窄发布来源已被本次完整源码替代，避免继承标签造成当前来源歧义。
+    for key in ('codex.runtime.source', 'codex.xau.source'):
+        labels.pop(key, None)
+    body['Labels'] = dict(labels, **{
         'codex.full_regression.source': sha, 'org.opencontainers.image.revision': sha})
     if old['Name'] in ('/trading_system-hrs', '/trading_system-hrs-acceptance',
                        '/trading_system-execution-facts', '/trading_system-market-cap'):
         env = dict(value.split('=', 1) for value in body.get('Env') or [])
         env['HRS_IMAGE_REVISION'] = sha
-        if old['Name'] == '/trading_system-hrs':
+        if old['Name'] == '/trading_system-hrs' or 'HRS_RELEASE_SHA' in env:
             env['HRS_RELEASE_SHA'] = sha
         body['Env'] = [key + '=' + value for key, value in env.items()]
     return body

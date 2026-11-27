@@ -1,0 +1,110 @@
+{
+  "scope": "OCR business delta against 063a1383",
+  "reviewer": "same-model independent context, not cross-model review",
+  "base_commit": "063a1383625e840889bd2a55e95e19601534c281",
+  "total_files": 12,
+  "reviewed_files": 12,
+  "skipped_files": [],
+  "coverage_rate": 1.0,
+  "files": [
+    {
+      "path": "ai_tuner/cleanup/orphan_cleanup.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "738041d44ea0f8429d6b7921f9f56ccca2b9ad6bb411b42cc7d15333481a4f25"
+    },
+    {
+      "path": "dashboard/backend/models/schemas.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "8a22e4460bbacd9ddddef3671c40a3572967f53009a06969fc86801c0c586014"
+    },
+    {
+      "path": "dashboard/backend/services/exchange_ledger.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "fda1802ed22c70a88f154c2218800877bca7a0a9aecaad2048677540b82ed9b4"
+    },
+    {
+      "path": "dashboard/frontend/index.html",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "08b89cb8b23b3eefdd2071fcb404ccd26ce28476ad6888e84f43fdeddfceef1e"
+    },
+    {
+      "path": "dashboard/frontend/js/main.js",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "14eb390d9279ba6828028d3bcdb51b6894bbf62b53a173224e2bdcaf31e33e57"
+    },
+    {
+      "path": "shared/accounting/classic_attribution.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "36955f471d5154d42d6264a4a10e4cbd74f5a654cffea4c4c193ce6d82374714"
+    },
+    {
+      "path": "strategies/btc_eth/shadow/collector.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "332763eeec9a77b5ed7f49351464bbf25f92f40e73d0c008fdf4db152e6a5a91"
+    },
+    {
+      "path": "strategies/btc_eth/shadow/main.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "f108f9e1ee5afe4b4aafa06e4d7bc3d5ae8eb8c330c618b37737ded95889c475"
+    },
+    {
+      "path": "strategies/hrs/accepted_live_gap.py",
+      "status": "added",
+      "review_status": "reviewed",
+      "sha256": "543839673a25a8f00a3f5c4d2f2e7f66eba71f32c28c020d73239961413013df"
+    },
+    {
+      "path": "strategies/hrs/decision_context.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "f99220e15eba4111bd1bb54c1136fa03bdf46bde52a8fe126eb91da68a900279"
+    },
+    {
+      "path": "strategies/hrs/equity_history_gap.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "4619a1fe71be2628248995ddc38b473debaadbda0e310e3c50cbdf8742b30b4e"
+    },
+    {
+      "path": "strategies/hrs/equity_service.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "52b5b4e8fb746eb616d5edbef46c0880675bc5e33448361554caf59b080c82eb"
+    }
+  ],
+  "findings": [
+    {
+      "path": "strategies/hrs/equity_service.py",
+      "start_line": 815,
+      "end_line": 817,
+      "severity": "high",
+      "category": "bug",
+      "content": "Account-wide changed symbols pollute the HRS-only repair plan. A valid other-strategy BTC fill during an occupied HRS BLESS sampling gap makes preparation include BTC but validation exclude it, causing repeated accepted_live_gap_path_changed. Select authenticated HRS symbols while retaining full-account owner conflict validation.",
+      "evidence": "/tmp/binance-successor-20261128/repro_live_gap_scope.py"
+    },
+    {
+      "path": "strategies/hrs/equity_service.py",
+      "start_line": 1390,
+      "end_line": 1394,
+      "severity": "high",
+      "category": "bug",
+      "content": "A cross-midnight repair binds the pre-refresh parent version, but the normal midnight loop commits an intermediate checkpoint and increments stored.version before repair. Parent binding then rejects and the transaction rolls back on every retry. Restore the complete bounded path atomically from the original parent before intermediate midnight commits; never relax parent validation.",
+      "evidence": "/tmp/binance-successor-20261128/midnight-repro.log",
+      "actual": "plan_version=5; commit_version=6; ready=False/current_nav_history_incomplete"
+    }
+  ],
+  "production_access": false,
+  "source_edits": false,
+  "validation": {
+    "unit": "external-network-blocked Python",
+    "postgres": "127.0.0.1:55432/successor_midnight_review_test disposable database"
+  }
+}

@@ -432,3 +432,28 @@ async def test_source_timeout_is_not_reported_as_expired_scan_deadline(monkeypat
     assert error.value.phase == phase
     assert error.value.elapsed_seconds < 1
     assert isinstance(error.value.__cause__, TimeoutError)
+
+@pytest.mark.parametrize('defect', [None, 'current_gap', 'missing_acceptance', 'tampered_sha'])
+def test_scan_accepts_only_committed_historical_gap_with_complete_current_path(defect):
+    from strategies.hrs.decision_context import SCAN_BOUNDARY_VERSION, validate_scan_boundary
+    context, refresh = boundary_context()
+    parent = context['equity_source_archives'][0]['payload']
+    parent.update(history_status='ACCEPTED_GAPS', history_acceptance_sha256='a'*64, history_acceptance_revision=1,
+        income_report=dict(id_match_and_coverage_complete=False, coverage_gaps=['pm_native_income_coverage']),
+        current_income_report=dict(id_match_and_coverage_complete=True, coverage_gaps=[],
+                                   attribution_conflicts=[], missing_income_fills=[], unattributed_count=0))
+    parent['result']['history_acceptance_sha256']='a'*64
+    if defect == 'current_gap': parent['current_income_report']['coverage_gaps']=['income:missing']
+    if defect == 'missing_acceptance': parent.pop('history_acceptance_sha256')
+    digest = canonical(parent)[1]
+    context['equity_source_archives'][0]['evidence_sha256']=digest
+    context['equity_gate']['evidence_sha256']=digest
+    context['scan_boundary']=dict(version=SCAN_BOUNDARY_VERSION,requested_at=(AT-timedelta(seconds=1)).isoformat(),
+        as_of=AT.isoformat(),available_at=(AT+timedelta(seconds=1)).isoformat(),
+        evidence_sha256=digest,ledger_version=7,policy_revision=8)
+    if defect == 'tampered_sha': context['scan_boundary']['evidence_sha256']='b'*64
+    if defect is None:
+        assert validate_scan_boundary(context,requested_at=AT-timedelta(seconds=1),checked_at=AT+timedelta(seconds=3))==AT
+    else:
+        with pytest.raises(ValueError,match='scan_boundary_unproven'):
+            validate_scan_boundary(context,requested_at=AT-timedelta(seconds=1),checked_at=AT+timedelta(seconds=3))

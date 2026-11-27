@@ -1,0 +1,35 @@
+{
+  "status": "implemented_pending_parent_review",
+  "paths": {
+    ".github/workflows/history-tolerance-build.yml": "504796049e6254043a20d4fc4f84b778dac3cc22617792d73c4489fb95a17794",
+    "scripts/prepare_history_live_gap_release.py": "37eb159a5548327f0375a368aa4d821d39eaf44f9a8d5cf0e961e479753efe82",
+    "deployment/history-live-gap/activate.py": "5659e896d813df8eb55ec8434cd0a2f829a5a1f69ca1708dd1a8912c8a811423",
+    "scripts/deploy_full_regression.py": "85431e9523a7e54992279f0dd96cc288db8d2fd321337b02a6dde876ee63d561",
+    "tests/test_scripts/test_prepare_history_live_gap_release.py": "de23f21153b8509e131dee5b0114a8499541c15bf58fd1a7d08d6e0b9c9fd665",
+    "tests/test_scripts/test_history_live_gap_activation.py": "092c18900339bb7678b95622d061762241a80946a6a65327276f879f6528ecc4",
+    "tests/test_scripts/test_full_regression_deploy.py": "ddedb7f6cd3d57c82f9b3bb635fd9312beca988c5e2b561db12d7090ff272168"
+  },
+  "red": {
+    "failed": 13,
+    "passed": 88,
+    "log": "/tmp/binance-successor-20261128/ops-red.log"
+  },
+  "green": {
+    "passed": 110,
+    "failed": 0,
+    "skipped": 0,
+    "log": "/tmp/binance-successor-20261128/ops-green.log"
+  },
+  "limits": [
+    "仅本地fake Docker故障注入；未生产执行窄入口；父agent负责全量回归及最终复核。"
+  ],
+  "findings_fixed": [
+    "激活前校验绑定权限资源并只读audit",
+    "四目标最终健康/身份/源码/环境检查与失败全组回退",
+    "固定已核验SSH公钥及严格主机核验"
+  ],
+  "metadata": [
+    "删除被统一发布取代的codex.runtime.source/codex.xau.source",
+    "HRS家族已有HRS_RELEASE_SHA更新；主HRS保留强制注入，其他不额外注入"
+  ]
+}
