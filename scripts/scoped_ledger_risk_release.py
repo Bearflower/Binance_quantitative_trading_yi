@@ -64,6 +64,40 @@ def verify_dashboard_reports(response,expected):
         if any(row.get(key)!=proof[key] for key in ('account_id','start_ms','end_ms','report_id','report_version','publication_status','strategy_attribution_complete')) or row.get('account_coverage_complete') is not True or row.get('refresh_error') is not None or Decimal(str(row.get('total_pnl')))!=Decimal(proof['net_usdt']):raise ReleaseBlocked('dashboard report identity/net/coverage mismatch')
 
 
+def validate_candidate_bounds(actual,approved,*,allow_lower_ceiling=True):
+    """Permit numeric notation changes, never allocation or policy drift."""
+    from decimal import Decimal, InvalidOperation
+    numeric={'multiplier','ratio_cap','entry_ceiling','allocation_amount'}
+    def finite(value):
+        if isinstance(value,bool):raise ReleaseBlocked('policy numeric value invalid')
+        try:result=Decimal(str(value))
+        except (InvalidOperation,ValueError,TypeError):
+            raise ReleaseBlocked('policy numeric value invalid') from None
+        if not result.is_finite():raise ReleaseBlocked('policy numeric value invalid')
+        return result
+    def indexed(rows):
+        result={}
+        for row in rows:
+            if not isinstance(row,dict) or not isinstance(row.get('strategy_id'),str):
+                raise ReleaseBlocked('policy candidate identity invalid')
+            key=row['strategy_id']
+            if key in result:raise ReleaseBlocked('duplicate policy candidate')
+            result[key]=row
+        return result
+    current=indexed(actual);reviewed=indexed(approved)
+    if current.keys()!=reviewed.keys():raise ReleaseBlocked('policy candidate membership drift')
+    for strategy,row in current.items():
+        old=reviewed[strategy]
+        if row.keys()!=old.keys():raise ReleaseBlocked('policy candidate field drift')
+        for key,value in row.items():
+            if key in numeric:
+                observed=finite(value);limit=finite(old[key])
+                equal=observed<=limit if key=='entry_ceiling' and allow_lower_ceiling else observed==limit
+            else:
+                equal=type(value) is type(old[key]) and value==old[key]
+            if not equal:raise ReleaseBlocked('policy candidate increase/drift')
+
+
 def private_admin_environment(root):
     """Use the existing private secret; never persist or print its derived DSN."""
     from urllib.parse import quote
@@ -266,13 +300,10 @@ class Runtime:
             if p['enable_reduced']:args+=['--enable-reduced']
             private_env=private_admin_environment(self.root)
             dry=json.loads(self.run(args,extra_env=private_env))
-            approved={row['strategy_id']:row for row in p['candidates']}
             if len(dry['candidates'])!=4 or dry['holdings_allocation_mutated'] or dry['close_callbacks']:raise ReleaseBlocked('policy candidate drift')
-            for row in dry['candidates']:
-                old=approved.get(row['strategy_id'])
-                if old is None or any(row.get(key)!=old.get(key) for key in old if key not in ('entry_ceiling','allocation_amount')) or Decimal(row['entry_ceiling'])>Decimal(old['entry_ceiling']):raise ReleaseBlocked('policy candidate increase/drift')
+            validate_candidate_bounds(dry['candidates'],p['candidates'])
             active=json.loads(self.run(args+['--activate'],extra_env=private_env))
-            if active['candidates']!=dry['candidates']:raise ReleaseBlocked('policy allocation changed between dry run and activation')
+            validate_candidate_bounds(active['candidates'],dry['candidates'],allow_lower_ceiling=False)
             if active['active_revision']!=p['expected_revision']+1:raise ReleaseBlocked('policy CAS failed')
             atomic_json(self.directory/'policy-activation.json',active)
             self.probe('policy')
