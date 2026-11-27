@@ -2,8 +2,8 @@
   "skill": "open-code-review-delegate",
   "baseline": "1801ef17",
   "source_snapshot": "b1af67ace2d59641956449f4ad1b76d4515f7b14",
-  "total_files": 28,
-  "reviewed_files": 28,
+  "total_files": 29,
+  "reviewed_files": 29,
   "skipped_files": 0,
   "coverage_rate": 1.0,
   "open_findings": [],
@@ -203,6 +203,13 @@
       "review": "reviewed",
       "sha256": "fcf7d1d98b62758ee695a1ae07a4138199356f6ed80ab5b28d2823329fdeaf76",
       "checks": "Original ledger and segment preserved, known loss latches retained, live inventory and funding proof strict, month boundary carry blocks entries without current allocation."
+    },
+    {
+      "path": "deployment/full-regression/source-mount-removals.json",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "4857b687774b8b036da237e3438900d301937266685b0264a4dbb5a167fb312a",
+      "checks": "Both historical code mounts are absent from current production. Empty removal list preserves all current data/configuration mounts; 23 runtime clones checked against required source paths."
     }
   ]
 }

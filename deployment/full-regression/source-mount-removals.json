@@ -1,17 +1,4 @@
 {
   "schema_version": 1,
-  "mounts": [
-    {
-      "container": "trading_system-mtcps-xau-calibrated-shadow",
-      "source": "/root/trading_system/.releases/xau-attribution/603a2a4e2cceac83ceee1328dfc14f78ddd33ad5/main.py",
-      "target": "/app/strategies/btc_eth/shadow/main.py",
-      "old_sha256": "0fe25260a60d8c4806b341524deb8936f652e0626ad3e0aefae56f71c50c5d39"
-    },
-    {
-      "container": "trading_system-hrs-acceptance",
-      "source": "/root/trading_system/.releases/hrs-p0-hourly-20261125/acceptance_report.py",
-      "target": "/app/strategies/hrs/acceptance_report.py",
-      "old_sha256": "35d34ec7639f1f610449cafc5134fa5034e5a066dc6ac7b798fc8fd4a4182997"
-    }
-  ]
+  "mounts": []
 }
