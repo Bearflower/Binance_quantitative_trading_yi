@@ -7,7 +7,7 @@ id: Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse
 标签: [bug, XAU, 归因, 版本证据, 受限发布]
 任务标识: xau-version-provenance-20261127
 状态: 待复查
-审查: 待审查
+审查: 已审查
 ---
 
 # SHA-only 构建导致 XAU 事件版本为空并跨版本复用 run
@@ -44,3 +44,7 @@ AI 归纳，仅供参考：运行版本必须按完整身份判断；空字符�
 - [归因持久化测试](../../../tests/test_strategies/test_xau_attribution_postgres.py)
 - [容器重建日志丢失](Binance_quantitative_trading-20261028-container-json-logs-lost-on-recreate.md)
 - [挂载遮蔽镜像配置](Binance_quantitative_trading-20261020-shadow-compose-bind-mount-masks-image-config.md)
+
+## 受限重试结果（22:21 北京时间）
+
+PR #61 / d402ad0c，Actions46014565497成功。两个影子healthy、0重启、版本/文件/运行配置核对通过；两个新run的commit/SHA已落库一致，冻结参数未变化。158个排除容器在重试中不变，四production表0。原ID停机备份保留；初次误删的两个旧备份仍仅为配置替代，不称完整恢复。最终相关549passed1skipped，独立52passed。新版本三profile自然事件待23:15/23:20，不提前标已解决。旧空版本累计36条不回填。
