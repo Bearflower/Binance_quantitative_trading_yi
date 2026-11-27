@@ -39,6 +39,16 @@ def json_value(value):
     raise TypeError(type(value).__name__)
 
 
+def stable_fill_digest(fills):
+    """Bind exchange economics, excluding refreshable collector metadata."""
+    fields = ('account_id', 'symbol', 'trade_id', 'order_id', 'side', 'qty',
+              'price', 'quote_qty', 'commission', 'commission_asset',
+              'realized_pnl', 'trade_time_utc')
+    facts = [{field: row.get(field) for field in fields} for row in fills]
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=json_value,
+                                    separators=(',', ':')).encode()).hexdigest()
+
+
 def verified_owners(account, fills, owners, trades):
     fills_by_order = defaultdict(list)
     trades_by_order = defaultdict(list)
@@ -302,8 +312,7 @@ def closed_lot_plan(account, incomes, fills, owners, anchors, cursors, reviewed,
                         position += delta
                         if position == 0:
                             active_strategy = None
-                    suffix_hash = hashlib.sha256(json.dumps(suffix, sort_keys=True,
-                        default=json_value, separators=(',', ':')).encode()).hexdigest()
+                    suffix_hash = stable_fill_digest(suffix)
                     opening_proofs = [dict(owner_map[order_id]) for order_id in sorted(
                         {str(f['order_id']) for f in window} & set(owner_map))]
                     for income in events:
@@ -313,6 +322,7 @@ def closed_lot_plan(account, incomes, fills, owners, anchors, cursors, reviewed,
                         proof = {'source_kind': 'closed_position_replay', 'flat_before': left,
                                  'verification_end': right, 'signed_flat_anchor': dict(anchor),
                                  'suffix_fill_sha256': suffix_hash,
+                                 'suffix_fill_hash_version': 2,
                                  'lot_trade_ids': [str(f['trade_id']) for f in ordered],
                                  'order_evidence': opening_proofs}
                         if kind == 'FUNDING_FEE':

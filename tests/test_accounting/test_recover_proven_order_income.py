@@ -203,3 +203,39 @@ def test_closed_lot_scope_requires_exact_signed_anchor_and_no_trade_in_snapshot_
                 [dict(row, flat_at=datetime(2026, 11, 12, tzinfo=timezone.utc))]):
         with pytest.raises(ValueError):
             validate_closed_lot_anchors(bad, 'default', ['WLDUSDT'], point)
+
+
+def test_closed_lot_digest_ignores_collection_metadata():
+    """Refreshing the same exchange facts must not invalidate a reviewed plan."""
+    events, fills, owners, anchors, cursors = lot_facts()
+    plan, digest, _ = closed_lot_plan('default', events, fills, owners, anchors, cursors, [], [])
+    refreshed = [dict(row, fetched_at='2026-11-27T07:00:00+00:00', schema_version=2) for row in fills]
+    again, repeated, _ = closed_lot_plan('default', events, refreshed, owners, anchors, cursors, [], [])
+    assert repeated == digest
+    assert again == plan
+
+
+@pytest.mark.parametrize('field,value', [
+    ('account_id', 'other'), ('symbol', 'BTCUSDT'), ('trade_id', 99),
+    ('order_id', 100), ('side', 'SELL'), ('qty', Decimal('2')),
+    ('price', Decimal('123')), ('quote_qty', Decimal('246')),
+    ('commission', Decimal('0.2')), ('commission_asset', 'BNB'),
+    ('realized_pnl', Decimal('3')), ('trade_time_utc', datetime(2026, 8, 4, tzinfo=timezone.utc)),
+])
+def test_fill_evidence_digest_binds_every_economic_field(field, value):
+    from scripts.recover_proven_order_income import stable_fill_digest
+
+    _, fills, _, _, _ = lot_facts()
+    changed = [dict(row) for row in fills]
+    changed[0][field] = value
+    assert stable_fill_digest(changed) != stable_fill_digest(fills)
+
+
+def test_closed_lot_plan_digest_changes_with_exchange_economics():
+    events, fills, owners, anchors, cursors = lot_facts()
+    plan, digest, _ = closed_lot_plan('default', events, fills, owners, anchors, cursors, [], [])
+    fills[0]['price'] = Decimal('123')
+    changed, other, rejected = closed_lot_plan('default', events, fills, owners, anchors, cursors, [], [])
+    assert not rejected and other != digest
+    assert changed['derived_rows'][0]['evidence']['suffix_fill_sha256'] != plan['derived_rows'][0]['evidence']['suffix_fill_sha256']
+    assert changed['derived_rows'][0]['evidence']['suffix_fill_hash_version'] == 2
