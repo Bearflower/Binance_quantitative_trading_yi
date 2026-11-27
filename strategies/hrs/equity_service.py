@@ -1408,19 +1408,20 @@ class HrsEquityService:
             raise EvidenceBlocked('accepted_live_gap_parent_changed')
         item=plan['gaps'][0]
         expected=plan_live_gap(self.account,state,checkpoints[-1],state.checkpoint,
-                               fills,orders,(),)
+                               fills,orders,self._anchor_inventory)
         if (item['left'],item['right'],item['symbols']) != (
                 expected['left'],expected['right'],expected['symbols']):
             raise EvidenceBlocked('accepted_live_gap_path_changed')
         verify_mark_receipts(plan,self._now())
-        added,retained=reconstruct_live_gap(self.account,state,item,fills,orders,(),
+        added,retained=reconstruct_live_gap(self.account,state,item,fills,orders,self._anchor_inventory,
             checkpoints[-1].units,datetime.fromisoformat(plan['available_at']))
         full=tuple(sorted((*samples,*added),key=lambda point:point.as_of))
         live=self._history_complete(full,fills,orders,flat,since=policy.accepted_through)
         daily=self._history_complete(full,fills,orders,flat,since=today)
         if not live:
             raise EvidenceBlocked('current_nav_history_incomplete')
-        bounds=live_gap_envelopes(self.account,state,item,fills,orders,(),checkpoints[-1].units)
+        bounds=live_gap_envelopes(self.account,state,item,fills,orders,self._anchor_inventory,
+                                  checkpoints[-1].units)
         prior=await self._accepted_saved_gap_latches(connection,stored.gate,state,full,evidence,anchor)
         prior=apply_conservative_bounds(prior,state,full,bounds)
         gate=observed_gate(prior,state.checkpoint,full,policy=policy,
