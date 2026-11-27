@@ -106,3 +106,43 @@ async def test_rest_failure_during_reconcile_locks_openings(tmp_path):
     assert await GridEngine(store, exchange).reconcile() is False
     assert store.engine_state()["state"] == "LOCKED"
     store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["visible", "missing", "wrong_client", "wrong_id",
+                                      "wrong_qty", "wrong_side", "wrong_symbol", "overfilled", "unacknowledged"])
+async def test_missing_owned_order_after_stream_restore(tmp_path, scenario, caplog):
+    from unittest.mock import AsyncMock
+    from shared.binance_api import BinanceAPIError
+
+    path = tmp_path / "restore.sqlite"
+    migrate(path)
+    store = DecisionStore(path)
+    epoch = store.create_epoch("reconnect")
+    client_id = "eg-r-owned"
+    store.prepare_order(epoch, 2, "REVERSE", "BUY", Decimal("1708.72"), Decimal(".077"), client_id)
+    if scenario != "unacknowledged":
+        store.record_order(client_id, "42", "NEW", 0)
+    store.set_engine_state("ACTIVE")
+    exchange = FakeExchange()
+    missing = BinanceAPIError(-2013, "Order does not exist")
+    exchange.query_order = AsyncMock(side_effect=missing)
+    row = dict(orderId=42, clientOrderId=client_id, side="BUY", symbol="ETHUSDT",
+               origQty="0.077", status="NEW", executedQty="0.000")
+    for case, field, value in [("wrong_client", "clientOrderId", "foreign"),
+                               ("wrong_id", "orderId", 43), ("wrong_qty", "origQty", ".078"),
+                               ("overfilled", "executedQty", ".078"), ("wrong_side", "side", "SELL"), ("wrong_symbol", "symbol", "BTCUSDT")]:
+        if scenario == case:
+            row[field] = value
+    exchange.query_order_by_id = AsyncMock(side_effect=missing if scenario == "missing" else [missing, row])
+    result = await GridEngine(store, exchange).reconcile()
+    assert result is (scenario == "visible")
+    assert store.engine_state()["state"] == ("ACTIVE" if result else "LOCKED")
+    assert store.get_order(client_id)["status"] == ("PREPARED" if scenario == "unacknowledged" else "NEW")
+    if scenario == "unacknowledged":
+        exchange.query_order_by_id.assert_not_awaited()
+    else:
+        assert 0 < exchange.query_order_by_id.await_count <= 3
+        exchange.query_order_by_id.assert_awaited_with(42)
+    assert client_id in caplog.text
+    store.close()
