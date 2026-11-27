@@ -1,4 +1,4 @@
-name: Build inspection evidence diagnostics
+name: Build audited startup rejection recovery
 on: workflow_dispatch
 permissions:
   contents: read
@@ -11,17 +11,17 @@ jobs:
       fail-fast: false
       matrix:
         service:
+          - role: executor
+            image: trading-grid
+            base: ghcr.io/bearflower/trading-grid@sha256:0ed01fd9e7becba2620b0f27796763fa7c3d6b9da576b3c6684f0e2dd703e630
+          - role: signal
+            image: trading-grid
+            base: ghcr.io/bearflower/trading-grid@sha256:620dbd4452cb0b70301279d4f100a2b90175f877ee7345064496dd91b53c7cf8
           - role: hrs
             image: trading-hrs
-            base: ghcr.io/bearflower/trading-hrs@sha256:1e44aee6a2838badc0a02f5d25ff15d57264120d56a296584d80f55425f9b4d7
-          - role: tuner
-            image: trading-ai-tuner
-            base: ghcr.io/bearflower/trading-ai-tuner@sha256:71beda3a685cd17ce54e7be05d58e30c85c748a9599bda43fe7808934097a2e2
-          - role: funding
-            image: trading-xau-attribution-funding
-            base: ghcr.io/bearflower/trading-xau-attribution-funding@sha256:4b2230fb25a0f5223e338bd2fd5a103c37fb312f345f957a3d7eb2d1d6fb1277
+            base: ghcr.io/bearflower/trading-hrs@sha256:b7250bb62903567ddfd642ece75a0147c6f8ae647e9bbdbfc6781b10cc1d93ac
     env:
-      SOURCE_SHA: a74901f429762820e6ffdd77329a1caeb337f294
+      SOURCE_SHA: 3ba21646090d11da00017c84d9206053d1045e35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,12 +29,7 @@ jobs:
       - name: Prepare exact reviewed overlay
         run: |
           mkdir -p runtime-layer/overlay
-          case '${{ matrix.service.role }}' in
-            hrs) files='strategies/hrs/decision_context.py ai_tuner/reconciler/income_reconciler.py ai_tuner/funding_schedule/collector.py' ;;
-            tuner) files='ai_tuner/reconciler/income_reconciler.py' ;;
-            funding) files='ai_tuner/funding_schedule/collector.py' ;;
-          esac
-          cp --parents $files runtime-layer/overlay/
+          cp --parents strategies/grid/execution/engine.py strategies/grid/execution/exchange.py strategies/grid/execution/store.py strategies/grid/execution/startup_recovery.py runtime-layer/overlay/
           printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > runtime-layer/overlay/VERSION
           printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
           if [ '${{ matrix.service.role }}' = 'hrs' ]; then
@@ -54,7 +49,7 @@ jobs:
           labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/bearflower/${{ matrix.service.image }}:inspection-${{ matrix.service.role }}-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ghcr.io/bearflower/${{ matrix.service.image }}:startup-${{ matrix.service.role }}-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
       - name: Record digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
