@@ -2078,6 +2078,30 @@
         "database/postgres/migrations/2026-11-25-bootstrap-autovacuum-probe.sql",
         "database/postgres/migrations/2026-11-25-bootstrap-autovacuum-probe-cleanup.sql"
       ]
+    },
+    {
+      "schema": "trading",
+      "name": "historical_risk_acceptance",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "required": true,
+      "grants": {
+        "trading_user": "read",
+        "hrs_acceptance_reader": "read"
+      },
+      "note": "Historical tolerance receipt is admin-only; risk observations append-only. UPDATE/DELETE/TRUNCATE triggers reject changes; no row-lock UPDATE privilege."
+    },
+    {
+      "schema": "trading",
+      "name": "classic_account_risk_point",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "required": true,
+      "grants": {
+        "trading_user": "append",
+        "hrs_acceptance_reader": "read"
+      },
+      "note": "Historical tolerance receipt is admin-only; risk observations append-only. UPDATE/DELETE/TRUNCATE triggers reject changes; no row-lock UPDATE privilege."
     }
   ],
   "bootstrap_identity": {

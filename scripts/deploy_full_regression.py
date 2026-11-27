@@ -173,7 +173,9 @@ def expected_image_sources(image_name, source):
         'btc-eth-aggr': ('shared/', 'strategies/btc_eth_aggressive/', 'strategies/hrs/'),
         'new-coin': ('shared/', 'strategies/new_coin/', 'strategies/hrs/'),
         'grid': ('shared/', 'strategies/grid/', 'scripts/grid_release_guard.py', 'scripts/full_regression_live_gate.py'),
-        'ai-tuner': ('ai_tuner/', 'shared/', 'strategies/hrs/', 'strategies/btc_eth_aggressive/', 'scripts/ai_tuner_mvp.py'),
+        'ai-tuner': ('ai_tuner/', 'shared/', 'strategies/hrs/', 'strategies/btc_eth_aggressive/', 'scripts/ai_tuner_mvp.py',
+                     'scripts/reconcile_income_attribution.py', 'scripts/audit_algo_attribution.py',
+                     'scripts/export_execution_facts.py', 'scripts/report_economic_ledger.py'),
         'data-backend': ('shared/', 'dashboard/backend/core/', 'dashboard/backend/services/', 'services/data_backend/src/'),
         'kline-service': tuple('services/kline_service/' + name + '/' for name in ('shared', 'core', 'api', 'models', 'db', 'scripts', 'src')),
         'kline-monitor': ('services/kline_monitor/src/',),
@@ -524,6 +526,48 @@ class Release:
             raise ReleaseError('prior activation requires manual review before another service')
         return path, active
 
+    def supersede(self, expected_proof_sha256):
+        """Admit a reviewed successor under the CLI deployment lock; touch no service.
+
+        A historical pin can describe containers replaced by another approved
+        release. Bind the new admission to fresh actual runtimes, preserve the
+        exact old pin, and never reuse its staged candidates or live gates.
+        """
+        proof, proof_sha = private_json(self.directory, 'supersede-proof.json')
+        path = self.project / '.deploy_tmp/full-regression-active.json'
+        previous_bytes = path.read_bytes()
+        previous = json.loads(previous_bytes)
+        scopes = set(self.containers) | {r['container'] for r in read_plan()['preserve_existing']}
+        if (not _sha(expected_proof_sha256) or proof_sha != expected_proof_sha256
+                or proof.get('schema_version') != 1 or proof.get('source') != self.sha
+                or proof.get('previous_source') != previous.get('source')
+                or previous.get('source') == self.sha
+                or proof.get('previous_pin_sha256') != hashlib.sha256(previous_bytes).hexdigest()
+                or not isinstance(previous.get('services'), dict)
+                or any(r.get('status', 'active') != 'active' for r in previous['services'].values())
+                or not isinstance(proof.get('containers'), dict) or set(proof['containers']) != scopes):
+            raise ReleaseError('successor admission identity or prior status invalid')
+        self.audit('supersede')
+        observed = proof.get('observed_at')
+        if type(observed) not in (int, float) or not 0 <= time.time() - observed <= 180:
+            raise ReleaseError('successor admission evidence stale')
+        for name in sorted(scopes):
+            row = inspect(name)
+            expected = dict(id=row['Id'], image=row['Image'], runtime_sha256=runtime_fingerprint(row))
+            if not row['State']['Running'] or proof['containers'][name] != expected:
+                raise ReleaseError('successor admission runtime changed: ' + name)
+        if not _fresh(observed, time.time()) or path.read_bytes() != previous_bytes:
+            raise ReleaseError('previous active pin changed during admission')
+        archive = self.directory / 'previous-active-pin.json'
+        with archive.open('xb') as handle:
+            os.chmod(archive, 0o600)
+            handle.write(previous_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        write_private(path, dict(source=self.sha, services={}, predecessors=proof['containers'],
+                                 supersede_proof_sha256=proof_sha))
+        print(json.dumps(dict(admitted_source=self.sha, predecessor_containers=len(scopes))), flush=True)
+
     def audit(self, stage):
         result = subprocess.run([sys.executable, str(self.bundle / 'scripts/database_permissions.py'),
                                  'audit', '--manifest', str(self.bundle / 'database/postgres/permissions.json')],
@@ -538,13 +582,22 @@ class Release:
             raise ReleaseError('candidate permission contract audit failed')
 
     def stage(self, name):
-        self.pin()
+        _, active = self.pin()
+        if 'predecessors' in active:
+            admitted = active['predecessors'].get(name)
+            current = inspect(name)
+            if admitted != dict(id=current['Id'], image=current['Image'],
+                                runtime_sha256=runtime_fingerprint(current)):
+                raise ReleaseError('admitted predecessor runtime changed')
         row = self.containers[name]
         record = self.directory / (name + '-staged.json')
         if record.exists():
             raise ReleaseError('service already staged; inspect its evidence before continuing')
         self.audit(name + '-stage')
         old = inspect(name)
+        if 'predecessors' in active and active['predecessors'].get(name) != dict(
+                id=old['Id'], image=old['Image'], runtime_sha256=runtime_fingerprint(old)):
+            raise ReleaseError('admitted predecessor runtime changed')
         if not old['State']['Running']:
             raise ReleaseError('predecessor is not running')
         if old['Config'].get('Healthcheck', {}).get('Test', ['NONE'])[0] == 'NONE':
@@ -681,17 +734,21 @@ class Release:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('stage', 'activate', 'grid_probe'))
+    parser.add_argument('action', choices=('stage', 'activate', 'grid_probe', 'supersede'))
     parser.add_argument('--bundle', type=Path, required=True)
-    parser.add_argument('--container', required=True)
+    parser.add_argument('--container')
+    parser.add_argument('--supersede-proof-sha256')
     parser.add_argument('--expected-sha', required=True)
     args = parser.parse_args()
     release = Release(args.bundle, args.expected_sha)
-    if args.container not in release.containers:
+    if args.action != 'supersede' and args.container not in release.containers:
         raise ReleaseError('container is outside this reviewed release')
     with (release.project / '.deploy_tmp/compose_deploy.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        getattr(release, args.action)(args.container)
+        if args.action == 'supersede':
+            release.supersede(args.supersede_proof_sha256)
+        else:
+            getattr(release, args.action)(args.container)
 
 
 if __name__ == '__main__':

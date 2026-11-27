@@ -685,3 +685,68 @@ def test_other_image_families_do_not_gain_hrs_revision_environment(target):
     body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
     assert body['Env'] == old['Config']['Env']
     assert not any(value.startswith('HRS_IMAGE_REVISION=') for value in body['Env'])
+
+
+def successor_proof(release, old):
+    release.containers = {'ai-tuner': {}}
+    previous = {'source': 'e'*40, 'services': {'ai-tuner': {'status': 'active'}}}
+    pin = release.project / '.deploy_tmp/full-regression-active.json'
+    pin_sha = write_json(pin, previous)
+    proof = dict(schema_version=1, source=SHA, previous_source='e'*40,
+        previous_pin_sha256=pin_sha, observed_at=NOW,
+        containers={'ai-tuner':dict(id=old['Id'],image=old['Image'],
+            runtime_sha256=runtime_fingerprint(old))})
+    return pin, proof
+
+
+def test_successor_admission_archives_exact_pin_and_binds_current_runtime(activation, monkeypatch):
+    release, old, _, commands, _ = activation
+    monkeypatch.setattr(release_mod, 'read_plan', lambda: {'preserve_existing':[]})
+    pin, proof = successor_proof(release, old)
+    original = pin.read_bytes()
+    proof_sha = write_json(release.directory/'supersede-proof.json', proof)
+    release.supersede(proof_sha)
+    active = json.loads(pin.read_text())
+    assert active['source'] == SHA and active['services'] == {}
+    assert active['predecessors'] == proof['containers']
+    assert (release.directory/'previous-active-pin.json').read_bytes() == original
+    assert active['supersede_proof_sha256'] == proof_sha
+    assert not commands
+    release.audit.assert_called_once_with('supersede')
+
+
+@pytest.mark.parametrize('damage', ['hash','source','pin','stale','missing','identity','runtime','stopped','pending'])
+def test_successor_admission_failure_leaves_pin_and_runtime_untouched(activation,monkeypatch,damage):
+    release,old,_,commands,_=activation
+    monkeypatch.setattr(release_mod, 'read_plan', lambda: {'preserve_existing':[]})
+    pin,proof=successor_proof(release,old)
+    if damage=='source':proof['source']='f'*40
+    elif damage=='pin':proof['previous_pin_sha256']='0'*64
+    elif damage=='stale':proof['observed_at']=NOW-181
+    elif damage=='missing':proof['containers']={}
+    elif damage=='identity':proof['containers']['ai-tuner']['id']='0'*64
+    elif damage=='runtime':old['Config']['Env'].append('CHANGED=yes')
+    elif damage=='stopped':old['State']['Running']=False
+    elif damage=='pending':
+        previous=json.loads(pin.read_text());previous['services']['ai-tuner']['status']='activating'
+        proof['previous_pin_sha256']=write_json(pin,previous)
+    original=pin.read_bytes()
+    proof_sha=write_json(release.directory/'supersede-proof.json',proof)
+    with pytest.raises(ReleaseError):release.supersede('0'*64 if damage=='hash' else proof_sha)
+    assert pin.read_bytes()==original and not commands
+
+
+def test_stage_rejects_current_runtime_drift_after_successor_admission(activation):
+    release,old,_,commands,_=activation
+    write_json(release.project/'.deploy_tmp/full-regression-active.json',
+        dict(source=SHA,services={},predecessors={'ai-tuner':dict(id='0'*64,
+             image=old['Image'],runtime_sha256=runtime_fingerprint(old))}))
+    with pytest.raises(ReleaseError,match='admitted predecessor'):
+        release.stage('ai-tuner')
+    assert not commands
+
+
+def test_tuner_source_proof_includes_classic_attribution_runtime_dependencies():
+    paths=['scripts/'+name+'.py' for name in ('reconcile_income_attribution',
+        'audit_algo_attribution','export_execution_facts','report_economic_ledger')]
+    assert release_mod.expected_image_sources('ai-tuner',{p:'a'*64 for p in paths})=={p:'a'*64 for p in paths}

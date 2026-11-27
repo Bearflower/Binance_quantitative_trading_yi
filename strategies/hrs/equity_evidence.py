@@ -328,7 +328,7 @@ def _selected_allocation(rows, at):
     return active[0][1]
 
 
-def allocation_event_changes(baseline_rows, journal, current_rows, inception, as_of):
+def allocation_event_changes(baseline_rows, journal, current_rows, inception, as_of, *, select_allocation=None):
     """Replay raw row mutations in serialized COMMIT order, not latest-minus-first.
 
     The database audit trigger serializes every modifying transaction. Statements
@@ -338,10 +338,11 @@ def allocation_event_changes(baseline_rows, journal, current_rows, inception, as
     deterministic from the complete baseline plus mutations and gets an exact
     month-boundary event of its own.
     """
+    select_allocation = select_allocation or _selected_allocation
     rows={str(row['id']):dict(row) for row in baseline_rows}
     if len(rows)!=len(baseline_rows):
         raise EvidenceBlocked('allocation_event_chain_duplicate_baseline')
-    previous=_selected_allocation(rows.values(),inception).amount
+    previous=select_allocation(rows.values(),inception).amount
     changes=[]
     month_start=datetime.combine(inception.astimezone(SHANGHAI).date().replace(day=1),datetime.min.time(),SHANGHAI)
     def next_month(value):
@@ -351,7 +352,7 @@ def allocation_event_changes(baseline_rows, journal, current_rows, inception, as
     def calendar_until(end):
         nonlocal previous,boundary
         while boundary<=end:
-            value=_selected_allocation(rows.values(),boundary).amount
+            value=select_allocation(rows.values(),boundary).amount
             if value!=previous:
                 digest=canonical(dict(source=list(rows.values()),effective_at=boundary))[1]
                 changes.append(AllocationChange('calendar:'+boundary.isoformat(),value-previous,boundary,boundary,None,digest))
@@ -394,7 +395,7 @@ def allocation_event_changes(baseline_rows, journal, current_rows, inception, as
                 rows.pop(identity,None)
             else:
                 rows[identity]=dict(event_new)
-        value=_selected_allocation(rows.values(),last).amount
+        value=select_allocation(rows.values(),last).amount
         if value!=previous:
             digest=canonical(group)[1]
             changes.append(AllocationChange('journal:'+str(group[-1]['event_id']),value-previous,last,first,txid,digest))

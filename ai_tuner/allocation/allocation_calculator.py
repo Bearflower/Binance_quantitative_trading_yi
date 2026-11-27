@@ -10,7 +10,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import structlog
 
@@ -36,8 +36,8 @@ class AllocationEntry:
     strategy_name: str
     realized_pnl: float
     initial_capital: float
-    return_rate: float
-    rank: int
+    return_rate: Optional[float]
+    rank: Optional[int]
     allocated_ratio: float
     allocated_amount: float
 
@@ -61,6 +61,8 @@ class AllocationResult:
     allocatable_amount: float
     is_first_month: bool
     entries: List[AllocationEntry] = field(default_factory=list)
+    caliber: str = "verified_ranked_returns"
+    history_acceptance_sha256: Optional[str] = None
 
 
 class AllocationCalculator:

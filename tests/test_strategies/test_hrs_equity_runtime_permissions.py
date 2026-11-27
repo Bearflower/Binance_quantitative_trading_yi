@@ -43,6 +43,30 @@ async def runtime(monkeypatch):
     try:
         admin = await asyncpg.connect(DSN, database=name)
         await admin.execute('CREATE SCHEMA trading; CREATE SCHEMA btc_eth; CREATE SCHEMA new_coin; CREATE SCHEMA hrs')
+        # Classic refresh now consults the real administrator-owned acceptance
+        # table even when no receipt exists. Install its migration and exact ACL
+        # before other fixture tables, so the scoped permission audit is complete.
+        for role in ('trading_migration_admin', 'hrs_acceptance_reader'):
+            if not await admin.fetchval('SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)', role):
+                await admin.execute(f'CREATE ROLE {role} NOLOGIN NOSUPERUSER')
+        await admin.execute('GRANT USAGE,CREATE ON SCHEMA trading TO trading_migration_admin')
+        await admin.execute('SET ROLE trading_migration_admin')
+        await admin.execute(Path('database/postgres/migrations/2026-11-27-historical-risk-acceptance.sql').read_text())
+        await admin.execute('RESET ROLE')
+        from scripts.database_permissions import render_sql
+        full = json.loads(Path('database/postgres/permissions.json').read_text())
+        scoped = dict(version=1, schemas=['trading'], profiles=full['profiles'],
+            roles={r:dict(required=True, schemas={'trading':['USAGE']})
+                   for r in ('trading_user', 'hrs_acceptance_reader')},
+            objects=[r for r in full['objects'] if r.get('schema') == 'trading'
+                     and r.get('name') in ('historical_risk_acceptance', 'classic_account_risk_point')])
+        sql = render_sql(scoped, 'apply')
+        assert sql.endswith('COMMIT;\n')
+        await admin.execute(sql.removesuffix('COMMIT;\n'))
+        try:
+            assert await admin.fetchval('SELECT jsonb_array_length(issues)=0 FROM acl_result')
+        finally:
+            await admin.execute('COMMIT')
         await admin.execute(Path('database/postgres/init-scripts/11-execution-facts.sql').read_text())
         await admin.execute(Path('database/postgres/migrations/2026-11-04-income-immutability.sql').read_text())
         await admin.execute('''

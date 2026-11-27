@@ -128,6 +128,8 @@ class AllocationConfigUpdater:
                         "rank": e.rank,
                         "allocated_ratio": e.allocated_ratio,
                         "allocated_amount": e.allocated_amount,
+                        **({"caliber": result.caliber, "history_acceptance_sha256": result.history_acceptance_sha256}
+                           if result.history_acceptance_sha256 else {}),
                     }
                     for e in result.entries
                 ],

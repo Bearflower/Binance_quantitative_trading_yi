@@ -54,8 +54,8 @@ def test_unverified_digest_cannot_become_a_receipt(name, digest):
 def test_workflow_only_builds_branch_digest_images_and_tests_without_runtime_mounts():
     source = (ROOT / ".github/workflows/full-regression-release.yml").read_text()
     workflow = yaml.load(source, Loader=yaml.BaseLoader)
-    assert workflow["on"]["push"]["branches"] == ["codex/full-regression-production-20261126"]
-    assert workflow["jobs"]["prepare"]["if"] == "github.ref == 'refs/heads/codex/full-regression-production-20261126'"
+    assert workflow["on"]["push"]["branches"] == ["codex/unified-production-20261127"]
+    assert workflow["jobs"]["prepare"]["if"] == "github.ref == 'refs/heads/codex/unified-production-20261127'"
     assert set(workflow["jobs"]) == {"prepare", "build", "manifest"}
     steps = workflow["jobs"]["build"]["steps"]
     build = next(step for step in steps if step.get("id") == "image")

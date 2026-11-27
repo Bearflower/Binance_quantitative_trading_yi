@@ -374,6 +374,7 @@ class StratTuneAI:
                 self.evidence_jobs = EvidenceJobs(
                     self.db_manager, self.reduced_trial_exchange, self.evidence_wallet,
                     self.messenger, self.config, Path("/app/logs/trial_evidence"))
+                self.monthly_job.account_risk_provider = self.evidence_jobs.sample_risk
             else:
                 logger.error("主账户考核缺少生产只读凭据，自动分配仍冻结")
 

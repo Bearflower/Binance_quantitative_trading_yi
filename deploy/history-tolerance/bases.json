@@ -1,0 +1,48 @@
+{
+  "groups": [
+    {
+      "name": "hrs",
+      "base": "ghcr.io/bearflower/trading-hrs@sha256:0d905dcc15ab176f489bb35daebe70142bf8a0b3d154090c8fc439a4e8821305",
+      "repository": "ghcr.io/bearflower/trading-hrs",
+      "containers": [
+        "trading_system-hrs",
+        "trading_system-hrs-acceptance"
+      ]
+    },
+    {
+      "name": "ai-tuner",
+      "base": "ghcr.io/bearflower/trading-ai-tuner@sha256:35e43b5db6be91a018963618644e59a6dcbf96e0800dc63865722f23209dc9d1",
+      "repository": "ghcr.io/bearflower/trading-ai-tuner",
+      "containers": [
+        "ai-tuner",
+        "ai-tuner-snapshot",
+        "ai-tuner-funding-schedule"
+      ]
+    }
+  ],
+  "files": [
+    "ai_tuner/allocation/allocation_calculator.py",
+    "ai_tuner/allocation/classic_publication.py",
+    "ai_tuner/allocation/config_updater.py",
+    "ai_tuner/allocation/history_acceptance.py",
+    "ai_tuner/allocation/monthly_job.py",
+    "ai_tuner/main.py",
+    "ai_tuner/monitor/classic_account_risk.py",
+    "ai_tuner/monitor/evidence_jobs.py",
+    "ai_tuner/notifier/messenger.py",
+    "scripts/activate_history_acceptance.py",
+    "scripts/audit_algo_attribution.py",
+    "scripts/export_execution_facts.py",
+    "scripts/reconcile_income_attribution.py",
+    "scripts/report_economic_ledger.py",
+    "shared/accounting/allocation_provenance.py",
+    "shared/accounting/classic_attribution.py",
+    "shared/accounting/history_tolerance.py",
+    "shared/capital_manager.py",
+    "strategies/hrs/equity_evidence.py",
+    "strategies/hrs/equity_service.py",
+    "strategies/hrs/history_tolerance.py",
+    "strategies/hrs/loss_gate.py",
+    "strategies/hrs/risk_ledger.py"
+  ]
+}

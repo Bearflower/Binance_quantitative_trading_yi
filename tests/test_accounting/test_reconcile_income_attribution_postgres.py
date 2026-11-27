@@ -23,6 +23,7 @@ async def test_writer_is_idempotent_and_preserves_exchange_fact():
     connection = await asyncpg.connect(dsn)
     event_time = datetime(2026, 11, 9, tzinfo=timezone.utc)
     try:
+        await connection.execute("CREATE SCHEMA IF NOT EXISTS trading")
         await connection.execute("""CREATE TABLE IF NOT EXISTS trading.execution_fact_income (
             account_id text NOT NULL, income_type text NOT NULL, tran_id bigint NOT NULL,
             symbol text NOT NULL, income numeric NOT NULL, asset text NOT NULL,
@@ -30,6 +31,7 @@ async def test_writer_is_idempotent_and_preserves_exchange_fact():
             PRIMARY KEY(account_id, income_type, tran_id))""")
         # 写入器现行契约使用 derived_income_attribution；加载真正迁移及不可变触发器。
         ddl = Path(__file__).resolve().parents[2] / 'database/postgres/init-scripts/19-derived-income-attribution.sql'
+        await connection.execute(ddl.with_name('16-reviewed-income-attribution.sql').read_text())
         await connection.execute(ddl.read_text())
         await connection.execute("""INSERT INTO trading.execution_fact_income
             VALUES ('writer-test','FUNDING_FEE',992,'ABCUSDT',-0.1,'USDT',$1)
