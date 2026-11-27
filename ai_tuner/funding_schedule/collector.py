@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -17,6 +18,43 @@ from .repository import FundingScheduleAttempt, MissingHistoricalUniverse
 logger = logging.getLogger(__name__)
 _REQUIRED_MTPCS_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT"})
 _XAU_SYMBOL = "XAUUSDT"
+_BOUNDARY_REFRESH_ATTEMPTS = 3
+_BOUNDARY_REFRESH_TIMEOUT_SECONDS = 10
+
+
+def _normalize_current_batch(*, scheduled_at, received_at, required_symbols,
+                             premium_rows, funding_info_rows):
+    """Validate every required symbol before retrying settlement expirations.
+
+    Expired symbols are skipped only to inspect remaining required evidence;
+    no partial result is returned when any required forecast has expired.
+    """
+    pending = set(required_symbols)
+    expired = None
+    while pending:
+        try:
+            normalized = normalize_observations(
+                scheduled_at=scheduled_at, received_at=received_at,
+                required_symbols=pending, premium_rows=premium_rows,
+                funding_info_rows=funding_info_rows,
+            )
+        except FundingScheduleDataError as error:
+            if error.code != "INVALID_NEXT_FUNDING_TIME" or error.symbol not in pending:
+                raise
+            expired = expired or error
+            pending.remove(error.symbol)
+            continue
+        for observation in normalized[1]:
+            if observation.next_funding_time <= received_at:
+                expired = expired or FundingScheduleDataError(
+                    "INVALID_NEXT_FUNDING_TIME",
+                    f"{observation.symbol} forecast expired before receipt",
+                    symbol=observation.symbol,
+                )
+        if expired is None:
+            return normalized
+        break
+    raise expired
 
 
 @dataclass(frozen=True)
@@ -100,7 +138,16 @@ class FundingScheduleCollector:
             )
         try:
             try:
-                payload_hash, observations = normalize_observations(
+                # Required symbols must all validate before optional XAU can
+                # trigger a retry or a fallback to the original capture.
+                _normalize_current_batch(
+                    scheduled_at=scheduled_at,
+                    received_at=received_at,
+                    required_symbols=required_symbols,
+                    premium_rows=premium_rows,
+                    funding_info_rows=funding_info_rows,
+                )
+                payload_hash, observations = _normalize_current_batch(
                     scheduled_at=scheduled_at,
                     received_at=received_at,
                     required_symbols=required_symbols | {_XAU_SYMBOL},
@@ -108,21 +155,32 @@ class FundingScheduleCollector:
                     funding_info_rows=funding_info_rows,
                 )
             except FundingScheduleDataError as error:
-                if error.symbol != _XAU_SYMBOL or _XAU_SYMBOL in required_symbols:
+                if error.symbol != _XAU_SYMBOL and error.code != "INVALID_NEXT_FUNDING_TIME":
                     raise
-                logger.warning("XAUUSDT funding schedule unavailable for %s: %s",
-                               scheduled_at.isoformat(), error.code)
-                payload_hash, observations = normalize_observations(
-                    scheduled_at=scheduled_at,
-                    received_at=received_at,
-                    required_symbols=required_symbols,
-                    premium_rows=premium_rows,
-                    funding_info_rows=funding_info_rows,
-                )
+                refreshed = None
+                if error.code == "INVALID_NEXT_FUNDING_TIME":
+                    refreshed = await self._refresh_batch(
+                        scheduled_at, required_symbols,
+                        required_refresh=error.symbol in required_symbols,
+                    )
+                if refreshed is not None:
+                    request_started_at, received_at, payload_hash, observations = refreshed
+                else:
+                    if error.symbol in required_symbols:
+                        raise
+                    logger.warning("XAUUSDT funding schedule unavailable for %s: %s",
+                                   scheduled_at.isoformat(), error.code)
+                    payload_hash, observations = _normalize_current_batch(
+                        scheduled_at=scheduled_at,
+                        received_at=received_at,
+                        required_symbols=required_symbols,
+                        premium_rows=premium_rows,
+                        funding_info_rows=funding_info_rows,
+                    )
         except FundingScheduleDataError as error:
             return await self._failed(
                 scheduled_at, attempt_id, request_started_at, received_at,
-                error.code, http_attempted=True,
+                error.code, http_attempted=True, symbol=error.symbol,
             )
         attempt = FundingScheduleAttempt(
             attempt_id=attempt_id,
@@ -137,12 +195,77 @@ class FundingScheduleCollector:
         await self.repository.store_attempt(attempt, observations)
         return CollectionResult("success", None, len(observations))
 
+    async def _refresh_batch(self, scheduled_at: datetime, required_symbols, *, required_refresh: bool):
+        """Replace a boundary batch only with a complete, current public capture.
+
+        Failed refreshes never change the initial batch's evidence or timing.
+        No historical request, guessed interval, or previously saved row can
+        supply a replacement forecast. If required forecasts need replacement,
+        a valid fresh required-only batch can survive optional XAU failures.
+        """
+        deadline = scheduled_at + timedelta(seconds=120)
+        required_fallback = None
+
+        async def fetch_batch():
+            premiums = await self.binance._request("GET", "/fapi/v1/premiumIndex", signed=False)
+            if not _current_slot(scheduled_at, self.clock()):
+                raise asyncio.TimeoutError("funding refresh slot expired")
+            intervals = await self.binance._request("GET", "/fapi/v1/fundingInfo", signed=False)
+            return premiums, intervals
+
+        for attempt in range(_BOUNDARY_REFRESH_ATTEMPTS):
+            now = self.clock()
+            if not _current_slot(scheduled_at, now) or (deadline - now).total_seconds() <= 1:
+                break
+            await asyncio.sleep(1)
+            started = self.clock()
+            if not _current_slot(scheduled_at, started) or started >= deadline:
+                break
+            timeout = min(_BOUNDARY_REFRESH_TIMEOUT_SECONDS, (deadline - started).total_seconds())
+            try:
+                premiums, intervals = await asyncio.wait_for(fetch_batch(), timeout=timeout)
+                received = self.clock()
+                if not _current_slot(scheduled_at, received):
+                    break
+                payload_hash, observations = _normalize_current_batch(
+                    scheduled_at=scheduled_at,
+                    received_at=received,
+                    required_symbols=required_symbols,
+                    premium_rows=premiums,
+                    funding_info_rows=intervals,
+                )
+                if required_refresh and _XAU_SYMBOL not in required_symbols:
+                    required_fallback = started, received, payload_hash, observations
+                payload_hash, observations = _normalize_current_batch(
+                    scheduled_at=scheduled_at,
+                    received_at=received,
+                    required_symbols=required_symbols | {_XAU_SYMBOL},
+                    premium_rows=premiums,
+                    funding_info_rows=intervals,
+                )
+                return started, received, payload_hash, observations
+            except Exception as error:
+                # A settlement boundary can briefly retain the just-expired
+                # forecast. Report that retry as progress, not a failed slot.
+                # Unexpected network/data failures remain visible warnings.
+                pending = (isinstance(error, FundingScheduleDataError)
+                           and error.code == "INVALID_NEXT_FUNDING_TIME")
+                report = logger.info if pending else logger.warning
+                report("Funding schedule refresh attempt %s/%s for %s: %s",
+                       attempt + 1, _BOUNDARY_REFRESH_ATTEMPTS, scheduled_at.isoformat(),
+                       error.code if isinstance(error, FundingScheduleDataError) else type(error).__name__)
+        logger.warning("Funding schedule boundary refresh exhausted for %s; required_fallback=%s",
+                       scheduled_at.isoformat(), required_fallback is not None)
+        return required_fallback
+
     async def _failed(
         self, scheduled_at: datetime, attempt_id: UUID,
         started_at: datetime, received_at: datetime,
-        code: str, *, http_attempted: bool,
+        code: str, *, http_attempted: bool, symbol: Optional[str] = None,
     ) -> CollectionResult:
         raw_payload = {"failure_code": code, "http_attempted": http_attempted}
+        if symbol is not None:
+            raw_payload["symbol"] = symbol
         attempt = FundingScheduleAttempt(
             attempt_id=attempt_id,
             scheduled_at=scheduled_at,
