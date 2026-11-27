@@ -1,0 +1,43 @@
+"""Read-only current business contract through the HRS business role."""
+import asyncio, hashlib, json, os, time
+import asyncpg
+from strategies.hrs.loss_gate_repository import _stored, ledger_to_dict
+from shared.accounting.history_tolerance import validate_history_acceptance
+from ai_tuner.monitor.classic_account_risk import risk_allows_allocation
+
+def decode(v):return json.loads(v) if isinstance(v,str) else v
+def digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),default=str).encode()).hexdigest()
+async def main():
+ def env(k):return os.environ.get('DATABASE_'+k) or os.environ.get('DB_'+k)
+ account=os.environ.get('TRADE_ACCOUNT_ID','default')
+ if account!='default':raise RuntimeError('unexpected account')
+ c=await asyncpg.connect(host=env('HOST'),port=int(env('PORT')),database=env('NAME'),user=env('USER'),password=env('PASSWORD'),timeout=15,server_settings={'default_transaction_read_only':'on','statement_timeout':'15000'})
+ try:
+  async with c.transaction(isolation='repeatable_read',readonly=True):
+   role=await c.fetchrow('SELECT current_user AS name,rolsuper FROM pg_roles WHERE rolname=current_user')
+   if role['rolsuper']:raise RuntimeError('business probe must use restricted role')
+   approval=await c.fetchrow('SELECT account_id,revision,receipt_sha256,payload FROM trading.historical_risk_acceptance WHERE account_id=$1 ORDER BY revision DESC LIMIT 1',account)
+   risk_row=await c.fetchrow('SELECT sample_time_ms,payload FROM trading.classic_account_risk_point WHERE account_id=$1 ORDER BY sample_time_ms DESC LIMIT 1',account)
+   state=_stored(await c.fetchrow('SELECT segment_id,version,ledger_state,gate_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+   gate=await c.fetchrow("SELECT * FROM trading.strategy_equity_gate WHERE account_id=$1 AND strategy_id='hrs'",account)
+   evidence=decode(await c.fetchval('SELECT payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=$2',account,gate['evidence_sha256']))
+   allocations=[dict(r) for r in await c.fetch('SELECT * FROM public.capital_allocation ORDER BY month')]
+   policies=[dict(r) for r in await c.fetch('SELECT * FROM trading.strategy_risk_policy WHERE account_id=$1 ORDER BY strategy_id,revision',account)]
+   active=[dict(r) for r in await c.fetch('SELECT * FROM trading.strategy_risk_active WHERE account_id=$1 ORDER BY strategy_id',account)]
+   now=await c.fetchval('SELECT clock_timestamp()')
+  policy=validate_history_acceptance(dict(approval),account,now=now)
+  risk=decode(risk_row['payload']) if risk_row else {}
+  ledger=ledger_to_dict(state.ledger)
+  result=dict(read_only=True,observed_at=time.time(),checked_at=now,role=role['name'],superuser=False,
+   acceptance=dict(revision=approval['revision'],receipt_sha256=approval['receipt_sha256'],payload_sha256=digest(decode(approval['payload']))),
+   allocation_sha256=digest(allocations),risk_policy_sha256=digest(dict(policies=policies,active=active)),
+   ledger=ledger,ledger_version=state.version,hrs_gate=dict(gate),loss_state=state.gate.to_dict(),
+   risk_status=risk.get('status'),risk_ready=risk_allows_allocation(risk,policy,int(now.timestamp()*1000)),
+   risk_reasons=risk.get('reasons'),risk_age_ms=int(now.timestamp()*1000)-risk.get('as_of_ms',0),
+   attribution_ready=risk.get('income_attribution',{}).get('ready'),
+   hrs_ready=gate['ready'],hrs_allowed=gate['allowed'],gate_unexpired=gate['valid_until']>now,
+   history_status=evidence.get('history_status'),original_history_complete=evidence.get('income_report',{}).get('account_coverage_complete'),
+   current_coverage_complete=evidence.get('current_income_report',{}).get('account_coverage_complete'))
+  print('BUSINESS_RESULT='+json.dumps(result,sort_keys=True,default=str))
+ finally:await c.close()
+asyncio.run(main())

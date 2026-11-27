@@ -1,0 +1,74 @@
+{
+  "source": "c4a0bea5b9304779e4d64a526865541afce764a6",
+  "files": 553,
+  "tests": 9617,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "source_unchanged": true,
+  "groups": [
+    {
+      "group": "release",
+      "exit_code": 0,
+      "summary": {
+        "files": 5,
+        "failed_files": [],
+        "tests": 185,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "group": "pg",
+      "exit_code": 0,
+      "summary": {
+        "files": 41,
+        "failed_files": [],
+        "tests": 987,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "group": "pure",
+      "exit_code": 0,
+      "summary": {
+        "files": 434,
+        "failed_files": [],
+        "tests": 7306,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "group": "grid",
+      "exit_code": 0,
+      "summary": {
+        "files": 72,
+        "failed_files": [],
+        "tests": 1091,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "group": "performance",
+      "exit_code": 0,
+      "summary": {
+        "files": 1,
+        "failed_files": [],
+        "tests": 48,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "test_manifest_sha256": "c5ffad952a1ac0360c62fd7dc6eafcda9abd6500846db916105284134c5f2fff",
+  "source_snapshot_sha256": "d76788bcc646368181c88d2a695e19fd85fa4ac0e4766dce716639176b218bfe",
+  "private_evidence_directory": "/tmp/binance-unified-20261127/round3"
+}
