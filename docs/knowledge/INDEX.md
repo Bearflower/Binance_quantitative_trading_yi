@@ -46,7 +46,7 @@
 | [Binance_quantitative_trading-20261128-hrs-live-gap-symbol-scope](./issues/Binance_quantitative_trading-20261128-hrs-live-gap-symbol-scope.md) | HRS 补证范围误包含其他策略成交币种 | HRS,归属,补证 | 2026-11-28 | 已修复并发布 |
 | [Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse](./issues/Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse.md) | SHA-only 构建导致 XAU 事件版本为空并跨版本复用 run | bug,XAU,归因,版本证据 | 2026-11-27 | 已解决；八周观察另列 |
 | [Binance_quantitative_trading-20261127-recovery-digest-collector-metadata](./issues/Binance_quantitative_trading-20261127-recovery-digest-collector-metadata.md) | 采集元数据导致归属凭据摘要不稳定 | accounting,幂等 | 2026-11-27 | 固定模块维护验证通过；统一镜像已发布 |
-| Binance_quantitative_trading-20261111-dashboard-closure-gaps | 交易所收益已对齐，但看板绩效指标缺失且自动归属任务因证据冲突失败 | bug,dashboard,收益口径,绩效指标,自动归属,证据冲突 | 2026-11-11 | 部分修复，待复查 |
+| [Binance_quantitative_trading-20261111-dashboard-closure-gaps](./issues/Binance_quantitative_trading-20261111-dashboard-closure-gaps.md) | 交易所口径看板及 Classic 分段已验收，PM 尾段和年度历史证据仍缺 | bug,dashboard,收益口径,绩效指标,自动归属,证据冲突 | 2026-11-11 | 月度与分段已验收，历史缺口待复查 |
 | Binance_quantitative_trading-20261103-partial-pnl-masks-legacy-owner | 部分止盈写入入场记录 realized_pnl 后，未平旧仓归属查询返回空 | bug,btc_eth_aggressive,持仓归属,资金限额,部分平仓,旧仓 | 2026-11-03 | 已解决 |
 | Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch | 旧契约策略收到新信封提示词，网格调优缺 reasons 和 summary | bug,ai_tuner,grid,LLM,prompt,契约不一致 | 2026-11-02 | 已修复并部署，待周度任务实跑验证 |
 | Binance_quantitative_trading-20261102-ai-tuner-optional-position-cap-path | 无 position_sizing 的策略被写入持仓比例路径，部分写入误报成功 | bug,ai_tuner,月度分配,配置路径,部分写入 | 2026-11-02 | 已修复并部署，待资金分配任务实跑验证 |
@@ -146,7 +146,7 @@
 
 ## 待复查清单
 - [x] XAU 版本修复实际容器与自然 cron 新事件验收；三个 profile 已写入 `46fa983c` 的自然事件，八周观察另列。见[问题条目](./issues/Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse.md)。
-- [ ] 2026-11-11 看板修复任务仍待绩效指标恢复、自动归属任务证据冲突修复及生产连续周期验收；见[看板修复未闭合问题](./issues/Binance_quantitative_trading-20261111-dashboard-closure-gaps.md)。
+- [ ] 看板月度绩效、自动归属及 Classic 周／月／年分段已验收；PM 尾段完整覆盖、年度归属／非 USDT 折算及全年权益仍待证，见[看板历史缺口](./issues/Binance_quantitative_trading-20261111-dashboard-closure-gaps.md)。
 - [ ] 2026-11-02 `grid` 周度调优实跑后，核对不再因缺 `reasons` / `summary` 解析失败，且执行记录结果正确；见[提示词契约冲突](./issues/Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch.md)。
 - [ ] 2026-11-02 资金分配任务实跑后，核对无 `position_sizing.total.account_ratio_cap` 路径错误，并确认各策略 `capital_limits` 与发布结果一致；见[可选持仓上限路径](./issues/Binance_quantitative_trading-20261102-ai-tuner-optional-position-cap-path.md)。
 - [x] 2026-11-02 激进策略旧仓 SOL/XRP：两笔均在 120 小时到期前以 reduce-only 卖单归零；2026-11-03 08:05 北京时间独立复核交易所净仓、在挂条件单、看板旧仓与数据库 OPEN 条件单均为零；详见[旧仓恢复问题](./issues/Binance_quantitative_trading-20261102-aggr-legacy-position-recovery.md)。
