@@ -15,7 +15,8 @@
 2026-11-27 增量补充：归属证据摘要稳定性修复新增 1 issue、1 篇当日记录；本轮核对来源与链接，未重跑全库巡检。
 2026-11-28 增量复查：经典账户切换补入收口报告及当日变更；HRS/AI 后续验收已更新先前“仍冻结”状态。PM 原始权益和 12 月自然分配仍待验收；生产容量与发布状态见当日续报。本轮未重跑知识库全量巡检。
 2026-11-28 后继整合移交：新增 HRS 两项修复、利润提醒双锚点缺口的知识条目，并将 9,696 项回归、23/23 发布及自然 XAU 事件验收纳入[统一接手清单](../reports/binance-open-items-handoff-2026-11-28.md)。本次只复核新增来源与交叉链接，未重跑全库巡检。
-条目统计: 问题 54 / 决策 19 / 变更日志累计 14
+2026-11-28 缩量试跑归档补充：新增逐信号与权益证据决策、HRS 旧影子队列覆盖正式信号问题各一条。后续状态见[统一接手清单](../reports/binance-open-items-handoff-2026-11-28.md)。本轮核验新增条目与来源。
+条目统计: 问题 55 / 决策 20 / 变更日志累计 14
 
 ## 历史巡检状态汇总（原增量口径，非当前全库状态）
 | 状态   | 数量 | 判定规则              |
@@ -24,7 +25,7 @@
 | 待复查 | 31   | 存在证据缺口、相关代码变化或后续跟踪项等复查提示（= 待复查清单未勾选数，增量补充后实际） |
 | 孤立   | 8    | 无其他知识正文条目引用；索引入口不算入链，仅作提示（沿用 2026-10-13 全量链分析；本轮未重跑，未含 2026-10-15 及之后新增条目） |
 
-> 上表保留合并前的历史增量口径；其 51／17 和未勾选 31 项不能当作当前总数。当前文件数为问题 54、决策 19、变更日志 14。孤立数仍沿用 2026-10-13 全量链分析，本轮未重跑。当前接手事项以[统一清单](../reports/binance-open-items-handoff-2026-11-28.md)为准。
+> 上表保留合并前的历史增量口径；其 51／17 和未勾选 31 项不能当作当前总数。当前文件数为问题 55、决策 20、变更日志 14。孤立数仍沿用 2026-10-13 全量链分析，本轮未重跑。当前接手事项以[统一清单](../reports/binance-open-items-handoff-2026-11-28.md)为准。
 
 > 冷启动说明：5 条黄金样例的「审查」字段原均为「待审查」（仅表是否核对来源与表述，与状态互不混用）。2026-10-13 code-document-curator 完成首次放下时复核，5 条均已转「已审查」（其中 grid-min-quantity-unit 经「必要证据摘要」修正后转正）。
 >
@@ -41,6 +42,7 @@
 ## 问题模式库
 | ID | 标题 | 标签 | 日期 | 状态 |
 |----|------|------|------|------|
+| [Binance_quantitative_trading-20261128-hrs-shadow-overwrote-standard-signal](./issues/Binance_quantitative_trading-20261128-hrs-shadow-overwrote-standard-signal.md) | HRS 同币同向半 EMM 在旧执行队列覆盖正式信号 | HRS,半 EMM,信号终态 | 2026-11-28 | 已修复并发布 |
 | [Binance_quantitative_trading-20261128-profit-reminder-cutover-anchors-missing](./issues/Binance_quantitative_trading-20261128-profit-reminder-cutover-anchors-missing.md) | 利润提取提醒缺少 PM 期末和 Classic 期初真实双锚点 | 历史证据,AI,利润提醒 | 2026-11-28 | 报错已修，建议功能待凭据 |
 | [Binance_quantitative_trading-20261128-hrs-midnight-parent-version](./issues/Binance_quantitative_trading-20261128-hrs-midnight-parent-version.md) | HRS 跨午夜补证父版本和账本提交顺序 | HRS,账本,并发 | 2026-11-28 | 已修复并发布，自然样本待验 |
 | [Binance_quantitative_trading-20261128-hrs-live-gap-symbol-scope](./issues/Binance_quantitative_trading-20261128-hrs-live-gap-symbol-scope.md) | HRS 补证范围误包含其他策略成交币种 | HRS,归属,补证 | 2026-11-28 | 已修复并发布 |
@@ -99,6 +101,7 @@
 ## 决策记录
 | ID | 标题 | 日期 | 状态 | 替代入口 |
 |----|------|------|------|----------|
+| [Binance_quantitative_trading-20261128-trial-evidence-provenance](./decisions/Binance_quantitative_trading-20261128-trial-evidence-provenance.md) | 缩量试跑按交易证据与权益来源分层验收 | 2026-11-28 | 已采纳 | [统一接手清单](../reports/binance-open-items-handoff-2026-11-28.md) |
 | [Binance_quantitative_trading-20261128-release-acceptance-archive-boundary](./decisions/Binance_quantitative_trading-20261128-release-acceptance-archive-boundary.md) | 生产工程验收、自然周期与历史证据分别归档 | 2026-11-28 | 已采纳；接手清单持续跟踪 | [统一接手清单](../reports/binance-open-items-handoff-2026-11-28.md) |
 | Binance_quantitative_trading-20261127-bounded-history-acceptance | 经典账户有限历史容缺、HRS 连续账本与既有上限下 AI 自动分配 | 2026-11-27 | 已实施 | docs/reports/historical-evidence-recovery-2026-11-27.md |
 | Binance_quantitative_trading-20261102-untracked-position-safe-exit | 原始 ATR 丢失的未接管旧仓保留交易所保护并按真实成交时间退出 | 2026-11-02 | 已采纳 | — |
