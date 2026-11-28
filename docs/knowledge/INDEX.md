@@ -14,16 +14,17 @@
 2026-11-11 增量补充：新增 1 条看板修复未闭合问题，记录绩效指标缺失及自动归属任务证据冲突；未重跑全库巡检。
 2026-11-27 增量补充：归属证据摘要稳定性修复新增 1 issue、1 篇当日记录；本轮核对来源与链接，未重跑全库巡检。
 2026-11-28 增量复查：经典账户切换补入收口报告及当日变更；HRS/AI 后续验收已更新先前“仍冻结”状态。PM 原始权益和 12 月自然分配仍待验收；生产容量与发布状态见当日续报。本轮未重跑知识库全量巡检。
-条目统计: 问题 51 / 决策 17 / 变更日志累计 14
+2026-11-28 后继整合移交：新增 HRS 两项修复、利润提醒双锚点缺口的知识条目，并将 9,696 项回归、23/23 发布及自然 XAU 事件验收纳入[统一接手清单](../reports/binance-open-items-handoff-2026-11-28.md)。本次只复核新增来源与交叉链接，未重跑全库巡检。
+条目统计: 问题 54 / 决策 19 / 变更日志累计 14
 
-## 巡检状态汇总
+## 历史巡检状态汇总（原增量口径，非当前全库状态）
 | 状态   | 数量 | 判定规则              |
 |--------|------|-----------------------|
 | 正常   | 20   | 本次检查未发现需复查项，不代表重新验证全部结论（增量口径：问题 51 − 待复查清单 31） |
 | 待复查 | 31   | 存在证据缺口、相关代码变化或后续跟踪项等复查提示（= 待复查清单未勾选数，增量补充后实际） |
 | 孤立   | 8    | 无其他知识正文条目引用；索引入口不算入链，仅作提示（沿用 2026-10-13 全量链分析；本轮未重跑，未含 2026-10-15 及之后新增条目） |
 
-> 统计口径说明（2026-11-28 增量递增）：问题模式库实际 51 行，决策记录实际 17 行，变更日志 14 个文件；待复查清单未勾选 31 项，正常沿用旧表口径计为 51 − 31 = 20。孤立仍沿用 2026-10-13 全量链分析结论 8，本轮未重跑链分析。
+> 上表保留合并前的历史增量口径；其 51／17 和未勾选 31 项不能当作当前总数。当前文件数为问题 54、决策 19、变更日志 14。孤立数仍沿用 2026-10-13 全量链分析，本轮未重跑。当前接手事项以[统一清单](../reports/binance-open-items-handoff-2026-11-28.md)为准。
 
 > 冷启动说明：5 条黄金样例的「审查」字段原均为「待审查」（仅表是否核对来源与表述，与状态互不混用）。2026-10-13 code-document-curator 完成首次放下时复核，5 条均已转「已审查」（其中 grid-min-quantity-unit 经「必要证据摘要」修正后转正）。
 >
@@ -40,8 +41,11 @@
 ## 问题模式库
 | ID | 标题 | 标签 | 日期 | 状态 |
 |----|------|------|------|------|
-| Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse | SHA-only 构建导致 XAU 事件版本为空并跨版本复用 run | bug,XAU,归因,版本证据 | 2026-11-27 | 待复查 |
-| [Binance_quantitative_trading-20261127-recovery-digest-collector-metadata](./issues/Binance_quantitative_trading-20261127-recovery-digest-collector-metadata.md) | 采集元数据导致归属凭据摘要不稳定 | accounting,幂等 | 2026-11-27 | 固定模块维护验证通过；镜像待正常发布 |
+| [Binance_quantitative_trading-20261128-profit-reminder-cutover-anchors-missing](./issues/Binance_quantitative_trading-20261128-profit-reminder-cutover-anchors-missing.md) | 利润提取提醒缺少 PM 期末和 Classic 期初真实双锚点 | 历史证据,AI,利润提醒 | 2026-11-28 | 报错已修，建议功能待凭据 |
+| [Binance_quantitative_trading-20261128-hrs-midnight-parent-version](./issues/Binance_quantitative_trading-20261128-hrs-midnight-parent-version.md) | HRS 跨午夜补证父版本和账本提交顺序 | HRS,账本,并发 | 2026-11-28 | 已修复并发布，自然样本待验 |
+| [Binance_quantitative_trading-20261128-hrs-live-gap-symbol-scope](./issues/Binance_quantitative_trading-20261128-hrs-live-gap-symbol-scope.md) | HRS 补证范围误包含其他策略成交币种 | HRS,归属,补证 | 2026-11-28 | 已修复并发布 |
+| [Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse](./issues/Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse.md) | SHA-only 构建导致 XAU 事件版本为空并跨版本复用 run | bug,XAU,归因,版本证据 | 2026-11-27 | 已解决；八周观察另列 |
+| [Binance_quantitative_trading-20261127-recovery-digest-collector-metadata](./issues/Binance_quantitative_trading-20261127-recovery-digest-collector-metadata.md) | 采集元数据导致归属凭据摘要不稳定 | accounting,幂等 | 2026-11-27 | 固定模块维护验证通过；统一镜像已发布 |
 | Binance_quantitative_trading-20261111-dashboard-closure-gaps | 交易所收益已对齐，但看板绩效指标缺失且自动归属任务因证据冲突失败 | bug,dashboard,收益口径,绩效指标,自动归属,证据冲突 | 2026-11-11 | 部分修复，待复查 |
 | Binance_quantitative_trading-20261103-partial-pnl-masks-legacy-owner | 部分止盈写入入场记录 realized_pnl 后，未平旧仓归属查询返回空 | bug,btc_eth_aggressive,持仓归属,资金限额,部分平仓,旧仓 | 2026-11-03 | 已解决 |
 | Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch | 旧契约策略收到新信封提示词，网格调优缺 reasons 和 summary | bug,ai_tuner,grid,LLM,prompt,契约不一致 | 2026-11-02 | 已修复并部署，待周度任务实跑验证 |
@@ -95,6 +99,7 @@
 ## 决策记录
 | ID | 标题 | 日期 | 状态 | 替代入口 |
 |----|------|------|------|----------|
+| [Binance_quantitative_trading-20261128-release-acceptance-archive-boundary](./decisions/Binance_quantitative_trading-20261128-release-acceptance-archive-boundary.md) | 生产工程验收、自然周期与历史证据分别归档 | 2026-11-28 | 已采纳；接手清单持续跟踪 | [统一接手清单](../reports/binance-open-items-handoff-2026-11-28.md) |
 | Binance_quantitative_trading-20261127-bounded-history-acceptance | 经典账户有限历史容缺、HRS 连续账本与既有上限下 AI 自动分配 | 2026-11-27 | 已实施 | docs/reports/historical-evidence-recovery-2026-11-27.md |
 | Binance_quantitative_trading-20261102-untracked-position-safe-exit | 原始 ATR 丢失的未接管旧仓保留交易所保护并按真实成交时间退出 | 2026-11-02 | 已采纳 | — |
 | Binance_quantitative_trading-20261029-micro-leg-not-placeable-na-caliber | 微仓比例腿数量取整为 0 时按 N/A 处理，不补足最小下单量 | 2026-10-29 | 已采纳 | — |
@@ -140,7 +145,7 @@
 本项尚未整体归档：PM 原始期末权益与完整历史 NAV 仍缺；12 月 1 日 AI 月度自然运行待验收。生产容量与发布状态按当日续报更新。见[收口复查报告](../reports/classic-cutover-closure-audit-2026-11-28.md)。以上 31 项复查统计未包含此任务总览。
 
 ## 待复查清单
-- [ ] XAU 版本修复实际容器与自然 cron 新事件验收；见[问题条目](./issues/Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse.md)。
+- [x] XAU 版本修复实际容器与自然 cron 新事件验收；三个 profile 已写入 `46fa983c` 的自然事件，八周观察另列。见[问题条目](./issues/Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse.md)。
 - [ ] 2026-11-11 看板修复任务仍待绩效指标恢复、自动归属任务证据冲突修复及生产连续周期验收；见[看板修复未闭合问题](./issues/Binance_quantitative_trading-20261111-dashboard-closure-gaps.md)。
 - [ ] 2026-11-02 `grid` 周度调优实跑后，核对不再因缺 `reasons` / `summary` 解析失败，且执行记录结果正确；见[提示词契约冲突](./issues/Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch.md)。
 - [ ] 2026-11-02 资金分配任务实跑后，核对无 `position_sizing.total.account_ratio_cap` 路径错误，并确认各策略 `capital_limits` 与发布结果一致；见[可选持仓上限路径](./issues/Binance_quantitative_trading-20261102-ai-tuner-optional-position-cap-path.md)。
@@ -192,9 +197,9 @@
 
 ## 2026-11-28 统一修复归档复核（增量）
 
-新增 1 条决策、1 篇当日变更；本分支正文文件数：问题 50／决策 19／变更日志 14。仅复核本任务来源与链接，不将旧的全库巡检、孤立分析或其他未结事项标记完成。
+本节原为后继整合前的时点记录；最新正文文件数：问题 54／决策 19／变更日志 14。仅复核本任务来源与链接，不将旧的全库巡检、孤立分析或其他未结事项标记完成。
 
 - [x] 原全量修复、历史测试失败、统一生产发布及网格空仓交接，见[验收报告](../reports/unified-production-acceptance-2026-11-27.md)。
-- [ ] 最新后继版本运行集的统一完整回归证明，见[本轮归档复核](../reports/unified-production-archive-readiness-2026-11-28.md)。
+- [x] 最新后继版本运行集已完成 9,696 项统一完整回归、23/23 发布及真实联调；见[后继整合验收](../reports/successor-unified-production-acceptance-2026-11-28.md)。
 - [ ] 历史数据与长期证明保持原缺口；12 月 1 日自然分配结果届时验收，不提前关闭。
 - 决策：[生产验收与阶段归档边界](./decisions/Binance_quantitative_trading-20261128-release-acceptance-archive-boundary.md)；[当日变更](./changelog/2026-11-28.md)。

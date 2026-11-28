@@ -1,0 +1,146 @@
+{
+  "source": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+  "from_utc": "2026-11-27T23:41:06.785048+00:00",
+  "completed_at": 1795823047.9718268,
+  "window_seconds": 180,
+  "services": [
+    {
+      "container": "ai-tuner",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "ai-tuner-funding-schedule",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "ai-tuner-snapshot",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "dashboard-api",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "data-backend",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-aggtrade-collector",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-btc_eth",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-btc_eth_aggressive",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-execution-facts",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-grid",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-grid-dashboard-exporter",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-grid-executor",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-grid-notifier",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-grid-pg-projector",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-grid-realtime",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-hrs",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-hrs-acceptance",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-kline",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-kline-monitor",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-market-cap",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-mtcps-xau-calibrated-shadow",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-mtcps-xau-shadow",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    },
+    {
+      "container": "trading_system-new_coin",
+      "markers": 0,
+      "healthy": true,
+      "restarts": 0
+    }
+  ]
+}

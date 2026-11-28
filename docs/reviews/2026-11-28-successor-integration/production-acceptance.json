@@ -1,0 +1,729 @@
+{
+  "source": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+  "observed_at": 1795822947.7051804,
+  "engineering_status": "accepted_with_known_history_limitations",
+  "all_business_restored": false,
+  "checks": [
+    {
+      "container": "trading_system-btc_eth",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 174
+    },
+    {
+      "container": "trading_system-mtcps-xau-shadow",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 174
+    },
+    {
+      "container": "trading_system-mtcps-xau-calibrated-shadow",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 174
+    },
+    {
+      "container": "trading_system-btc_eth_aggressive",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 149
+    },
+    {
+      "container": "trading_system-new_coin",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 161
+    },
+    {
+      "container": "trading_system-grid",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-executor",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-dashboard-exporter",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-pg-projector",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-notifier",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-realtime",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-hrs",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 617
+    },
+    {
+      "container": "trading_system-hrs-acceptance",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 617
+    },
+    {
+      "container": "trading_system-execution-facts",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 617
+    },
+    {
+      "container": "trading_system-market-cap",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 617
+    },
+    {
+      "container": "ai-tuner",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 337
+    },
+    {
+      "container": "ai-tuner-snapshot",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 337
+    },
+    {
+      "container": "ai-tuner-funding-schedule",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 337
+    },
+    {
+      "container": "data-backend",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 86
+    },
+    {
+      "container": "dashboard-api",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 617
+    },
+    {
+      "container": "trading_system-kline",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 23
+    },
+    {
+      "container": "trading_system-kline-monitor",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 2
+    },
+    {
+      "container": "trading_system-aggtrade-collector",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 8
+    },
+    {
+      "container": "trading_system-hrs-research-observer",
+      "preserved": true
+    },
+    {
+      "container": "trading_system-mtpcs-direction-shadow",
+      "preserved": true
+    }
+  ],
+  "permissions": {
+    "checked_at": "2026-11-27T23:41:35.904143+00:00",
+    "issues": [],
+    "manifest_sha256": "62513735d6954615158f466f8561c1325567efdf3011f6899f75af30849137c1",
+    "mode": "audit",
+    "objects_checked": 1355,
+    "ok": true
+  },
+  "business": {
+    "ai_risk_ready": true,
+    "attribution_ready": true,
+    "current_coverage_complete": true,
+    "history_status": "ACCEPTED_GAPS",
+    "hrs_allowed": true,
+    "hrs_ready": true,
+    "original_economics_preserved": true,
+    "original_history_complete": false
+  },
+  "main_exchange": {
+    "account_mode": "classic",
+    "algo_orders": null,
+    "grid_state": null,
+    "journal_net": null,
+    "observed_at": 1795822921.9975617,
+    "ordinary_orders": null,
+    "protected_positions": 1,
+    "reconciled": null,
+    "request_count": 5,
+    "sha256": "fb32f2a59c7c6836518ce413bb33333043f7c7e3a9a451d80f3fa15210fee6be",
+    "waiting_for_new_signal": false
+  },
+  "grid_exchange": {
+    "account_mode": "classic",
+    "algo_orders": 0,
+    "grid_state": "FLAT",
+    "journal_net": "0.000",
+    "observed_at": 1795822923.9594622,
+    "ordinary_orders": 0,
+    "protected_positions": null,
+    "reconciled": true,
+    "request_count": 21,
+    "sha256": "38c5cef21084504a0fadecb8f68a3591c9f0b7b2d1820d85b2779e7bb070f0d8",
+    "waiting_for_new_signal": true
+  },
+  "runtime": [
+    {
+      "name": "ai-tuner",
+      "id": "6ff0ec5b09b279a8f6f75060a7fd618e5db5044d8882cb396a650180b92eabcf",
+      "image": "sha256:9a0d850ee6479560c28d03d87c3fd22a9fca04bf5c0117a9ca9495547589015f",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:28:25.311873019Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "ai-tuner-funding-schedule",
+      "id": "c849134ebdcf087c1c5330098552104e3b5dddc153b2ecbca7604da6b24f536a",
+      "image": "sha256:9a0d850ee6479560c28d03d87c3fd22a9fca04bf5c0117a9ca9495547589015f",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:32:00.810372813Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "ai-tuner-snapshot",
+      "id": "d2f68e37648b9d6fb1c4d16651ae2708b35ba1f7203cf86dec7c7a5eadbb4bd8",
+      "image": "sha256:9a0d850ee6479560c28d03d87c3fd22a9fca04bf5c0117a9ca9495547589015f",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:30:29.789830289Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "dashboard-api",
+      "id": "6107eb9edd188b065d940280562e482481b4880ff40358bbad2d2895972e1539",
+      "image": "sha256:2d108cc950d098a1379505497c8d4439224304bc230d23190d00adca8c881de1",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:33:42.662841626Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "data-backend",
+      "id": "0aaa86634e861b3853a9eddce71c39892bb81d9ab240624aea28f644e445900a",
+      "image": "sha256:b2bfb0236d6c8478581421a3ae7af1cdc3dfe25e6ba5530c804a90a107fe93c8",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:32:44.236444593Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-aggtrade-collector",
+      "id": "538602324ca916a7fe95fcb2a1026c1cd091859d55520d7039e86b7675946cde",
+      "image": "sha256:b47a1c934a50c1e697f49593a6d7ec554265505fcb281cf493377b80bcfb9bd3",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:38:04.050908114Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-btc_eth",
+      "id": "f085b691674bf6cff0413a4cc9e1c7112f55835beb12451874f4d22a4e6ee89d",
+      "image": "sha256:9d68bde5982c14770368ba714a2e87760d8d56a138954aabfac92badf0a2cc65",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:10:52.5320625Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-btc_eth_aggressive",
+      "id": "e38605fd13a85ee743be71d18eeb8b90f4f577b7a547589d8132d50bcd5c744e",
+      "image": "sha256:31011b9f45e12f3e75049eebb337d1358e70c721fbea61fce58f8796977411db",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:14:49.436880501Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-execution-facts",
+      "id": "3e219fe5fd7d800634477d21bfa879d59b4643cd7501031f23293cd90559aa90",
+      "image": "sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:26:58.713269127Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-grid",
+      "id": "193f83d5b6091824860e84972182f7c9ab172239b7b672a27c84dcb0481d938f",
+      "image": "sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:17:28.669161519Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-grid-dashboard-exporter",
+      "id": "620753bc0c688e0ece7e6e4c136d718a94a5d164269b3bda41531b662764f7af",
+      "image": "sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:19:14.020548383Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-grid-executor",
+      "id": "82ce0e0607af8239e1975e2e6b68cbc0da9994947b5730da83138706c5d1a4c3",
+      "image": "sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:40:09.179448054Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-grid-notifier",
+      "id": "14bd9d89f4e9bf2498f3f5d23d54621b13cdf06630c86e08cd643ccd6bcfe344",
+      "image": "sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:21:44.270177491Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-grid-pg-projector",
+      "id": "b3fc0d00bcc20fd3fd6ff1532408a3e7866156a3e0cb05042aa79b4ddd6c7daf",
+      "image": "sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:20:28.884171171Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-grid-realtime",
+      "id": "736ca803f357e23a3c0da574ada5db273755116be229242ff93c44c6623091a7",
+      "image": "sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:23:09.568473588Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-hrs",
+      "id": "847a204481e36ef8963a949ecaaa239502ad3d6381d52239834aba547e7368bd",
+      "image": "sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:24:24.645481485Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-hrs-acceptance",
+      "id": "a060d48ebd4972b83222dccd26e85d72d141e82b860e2a7bbf085f819110042a",
+      "image": "sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:25:39.771883711Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-kline",
+      "id": "97b7c0094049bb23014df43495104d40c5a7cebd85b96433790cc16d44df2a2d",
+      "image": "sha256:251196d15639db1aa080c2589c259ef6714d42f8a43c747cb8aef979e71d54de",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:34:49.370187774Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-kline-monitor",
+      "id": "226075f5ccd1ecb0058dc19744afb4ce630bb72fd8f7a431482fdeebf2dc8fd2",
+      "image": "sha256:2c96a11b4a68fccb0ad6c9a7ef64fc9f398a4c2920241fb289a90bb09dbb507e",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:36:43.278792733Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-market-cap",
+      "id": "5c0e0298b4230b537186574dffc4f110c469efcc9b45a39debf04ef998af699e",
+      "image": "sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:27:18.573754413Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-mtcps-xau-calibrated-shadow",
+      "id": "779a9f2e124466625652cd5161d5f7d4593ed427a0eda861f78d4e4b938343c7",
+      "image": "sha256:9d68bde5982c14770368ba714a2e87760d8d56a138954aabfac92badf0a2cc65",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:13:32.840417487Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-mtcps-xau-shadow",
+      "id": "2d0e997fd4e3cec34240cd4116f37b61f79d0abd2f9245c35b4e1b54f726eaad",
+      "image": "sha256:9d68bde5982c14770368ba714a2e87760d8d56a138954aabfac92badf0a2cc65",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:12:16.437169942Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    },
+    {
+      "name": "trading_system-new_coin",
+      "id": "57c4e6f35c6a6f126769312a9890ac52ae4fbad0f9154a54ae526c275dd0f320",
+      "image": "sha256:58cd5bbc25cb1ea1e3339ba53215a2ebc405bf42bf0a1d933e6e4c03744ceff4",
+      "health": "healthy",
+      "restarts": 0,
+      "started_at": "2026-11-27T23:16:14.713102354Z",
+      "version": {
+        "GIT_SHA": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+        "DEPLOY_ID": "00000701",
+        "BUILD_RUN_ID": "46080192145",
+        "BUILD_RUN_ATTEMPT": "1"
+      }
+    }
+  ],
+  "grid_handoff": {
+    "status": "active",
+    "ready_for_writer": true,
+    "samples": [
+      {
+        "observed_at": 1795822803.0425673,
+        "flat": true,
+        "protected": true,
+        "position": "0",
+        "journal_net": "0.000",
+        "ordinary_orders": 0,
+        "algo_orders": 0,
+        "journal_active_orders": 0,
+        "journal_active_protections": 0
+      },
+      {
+        "observed_at": 1795822808.2788942,
+        "flat": true,
+        "protected": true,
+        "position": "0",
+        "journal_net": "0.000",
+        "ordinary_orders": 0,
+        "algo_orders": 0,
+        "journal_active_orders": 0,
+        "journal_active_protections": 0
+      }
+    ],
+    "exchange_requests": 333,
+    "all_exchange_requests_get": true
+  },
+  "rollout": {
+    "completed_at": 1795822841.9529264,
+    "targets": 23,
+    "activations": [
+      {
+        "at": 1795821059.5144885,
+        "target": "trading_system-btc_eth",
+        "container_id": "f085b691674bf6cff0413a4cc9e1c7112f55835beb12451874f4d22a4e6ee89d"
+      },
+      {
+        "at": 1795821143.0636163,
+        "target": "trading_system-mtcps-xau-shadow",
+        "container_id": "2d0e997fd4e3cec34240cd4116f37b61f79d0abd2f9245c35b4e1b54f726eaad"
+      },
+      {
+        "at": 1795821219.3607838,
+        "target": "trading_system-mtcps-xau-calibrated-shadow",
+        "container_id": "779a9f2e124466625652cd5161d5f7d4593ed427a0eda861f78d4e4b938343c7"
+      },
+      {
+        "at": 1795821296.0187962,
+        "target": "trading_system-btc_eth_aggressive",
+        "container_id": "e38605fd13a85ee743be71d18eeb8b90f4f577b7a547589d8132d50bcd5c744e"
+      },
+      {
+        "at": 1795821381.3436882,
+        "target": "trading_system-new_coin",
+        "container_id": "57c4e6f35c6a6f126769312a9890ac52ae4fbad0f9154a54ae526c275dd0f320"
+      },
+      {
+        "at": 1795821479.6841433,
+        "target": "trading_system-grid",
+        "container_id": "193f83d5b6091824860e84972182f7c9ab172239b7b672a27c84dcb0481d938f"
+      },
+      {
+        "at": 1795821561.0894792,
+        "target": "trading_system-grid-dashboard-exporter",
+        "container_id": "620753bc0c688e0ece7e6e4c136d718a94a5d164269b3bda41531b662764f7af"
+      },
+      {
+        "at": 1795821635.3521402,
+        "target": "trading_system-grid-pg-projector",
+        "container_id": "b3fc0d00bcc20fd3fd6ff1532408a3e7866156a3e0cb05042aa79b4ddd6c7daf"
+      },
+      {
+        "at": 1795821710.794829,
+        "target": "trading_system-grid-notifier",
+        "container_id": "14bd9d89f4e9bf2498f3f5d23d54621b13cdf06630c86e08cd643ccd6bcfe344"
+      },
+      {
+        "at": 1795821796.153205,
+        "target": "trading_system-grid-realtime",
+        "container_id": "736ca803f357e23a3c0da574ada5db273755116be229242ff93c44c6623091a7"
+      },
+      {
+        "at": 1795821871.4522262,
+        "target": "trading_system-hrs",
+        "container_id": "847a204481e36ef8963a949ecaaa239502ad3d6381d52239834aba547e7368bd"
+      },
+      {
+        "at": 1795821947.6269093,
+        "target": "trading_system-hrs-acceptance",
+        "container_id": "a060d48ebd4972b83222dccd26e85d72d141e82b860e2a7bbf085f819110042a"
+      },
+      {
+        "at": 1795822029.5722358,
+        "target": "trading_system-execution-facts",
+        "container_id": "3e219fe5fd7d800634477d21bfa879d59b4643cd7501031f23293cd90559aa90"
+      },
+      {
+        "at": 1795822045.4410636,
+        "target": "trading_system-market-cap",
+        "container_id": "5c0e0298b4230b537186574dffc4f110c469efcc9b45a39debf04ef998af699e"
+      },
+      {
+        "at": 1795822112.119677,
+        "target": "ai-tuner",
+        "container_id": "6ff0ec5b09b279a8f6f75060a7fd618e5db5044d8882cb396a650180b92eabcf"
+      },
+      {
+        "at": 1795822237.5929563,
+        "target": "ai-tuner-snapshot",
+        "container_id": "d2f68e37648b9d6fb1c4d16651ae2708b35ba1f7203cf86dec7c7a5eadbb4bd8"
+      },
+      {
+        "at": 1795822331.1230872,
+        "target": "ai-tuner-funding-schedule",
+        "container_id": "c849134ebdcf087c1c5330098552104e3b5dddc153b2ecbca7604da6b24f536a"
+      },
+      {
+        "at": 1795822371.3517473,
+        "target": "data-backend",
+        "container_id": "0aaa86634e861b3853a9eddce71c39892bb81d9ab240624aea28f644e445900a"
+      },
+      {
+        "at": 1795822430.3051622,
+        "target": "dashboard-api",
+        "container_id": "6107eb9edd188b065d940280562e482481b4880ff40358bbad2d2895972e1539"
+      },
+      {
+        "at": 1795822496.655828,
+        "target": "trading_system-kline",
+        "container_id": "97b7c0094049bb23014df43495104d40c5a7cebd85b96433790cc16d44df2a2d"
+      },
+      {
+        "at": 1795822609.9251032,
+        "target": "trading_system-kline-monitor",
+        "container_id": "226075f5ccd1ecb0058dc19744afb4ce630bb72fd8f7a431482fdeebf2dc8fd2"
+      },
+      {
+        "at": 1795822691.3760078,
+        "target": "trading_system-aggtrade-collector",
+        "container_id": "538602324ca916a7fe95fcb2a1026c1cd091859d55520d7039e86b7675946cde"
+      },
+      {
+        "at": 1795822841.9528673,
+        "target": "trading_system-grid-executor",
+        "container_id": "82ce0e0607af8239e1975e2e6b68cbc0da9994947b5730da83138706c5d1a4c3"
+      }
+    ]
+  },
+  "log_review": {
+    "classification": "known_historical_anchor_gap",
+    "container": "ai-tuner",
+    "event_at": "2026-11-28T07:34:00+08:00",
+    "events": 1,
+    "scanner_markers": 2,
+    "reason": "profit extraction reminder cannot calculate without authenticated PM final and Classic opening equity anchors",
+    "current_trading_admission_affected": false,
+    "resolved": false
+  }
+}
