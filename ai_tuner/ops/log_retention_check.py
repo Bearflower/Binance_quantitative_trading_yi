@@ -149,8 +149,11 @@ def collect(project_dir: Path, now: dt.datetime, registry_path: Path | None = No
             history_first, history_last = journal_range("CONTAINER_NAME", name)
         except LOG_QUERY_ERRORS:
             history_error = True
+        service = labels.get("com.docker.compose.service") or expected_names.get(name, name.removeprefix(project + "-"))
+        canonical_name = configured.get(service, {}).get("container_name")
         rows.append({
-            "service": labels.get("com.docker.compose.service") or expected_names.get(name, name.removeprefix(project + "-")),
+            "service": name if canonical_name and canonical_name != name else service,
+            "container_name": name,
             "state": container["State"]["Status"],
             "health": health["Status"] if health else "no-healthcheck",
             "driver": driver,
@@ -192,6 +195,8 @@ def evaluate(data: dict) -> list[str]:
         issues.append("缺少容器: " + ", ".join(missing))
     for row in rows:
         service = row["service"]
+        if row.get("container_name") and row["container_name"] != service:
+            service = f"{service} ({row['container_name']})"
         if row["state"] != "running" or row["health"] != "healthy":
             issues.append(f"{service} 状态 {row['state']}/{row['health']}")
         if row["driver"] != "journald":
@@ -200,9 +205,9 @@ def evaluate(data: dict) -> list[str]:
             issues.append(f"{service} 当前实例日志查询失败")
         elif row["last"] is None:
             issues.append(f"{service} 当前实例无日志")
-        elif now - row["last"] > dt.timedelta(days=1) and service != "dashboard-api":
+        elif now - row["last"] > dt.timedelta(days=1) and row["service"] != "dashboard-api":
             issues.append(f"{service} 当前实例超过 24 小时无新日志")
-        start = LATER.get(service, BASELINE)
+        start = LATER.get(row["service"], BASELINE)
         if row["history_error"]:
             issues.append(f"{service} 服务 journal 查询失败")
         elif row["history_first"] and now.date() >= start and now - row["history_first"] < dt.timedelta(days=14):
