@@ -1,0 +1,133 @@
+{
+  "checked_at": "2026-11-28T01:42:00.066864+00:00",
+  "source": "513ca815ba4f3c0b9d1bd5eff395ad034f44ecdc",
+  "activation": {
+    "source": "513ca815ba4f3c0b9d1bd5eff395ad034f44ecdc",
+    "status": "complete",
+    "targets": [
+      {
+        "image": "sha256:870f00b549e86f03d5c290da89a68dbed8954d655ce595d7eeb6580d091546f0",
+        "name": "ai-tuner",
+        "new_id": "f1a68f4edc7888706901229d0455aa1ce676caf785b6d3fe433c8aa4a4adcf49",
+        "old_id": "70564e814edbbb466f2d773108ffe1732ebd2b208ae0caad11da241d409d3028",
+        "phase": "healthy",
+        "started": "2026-11-28T01:36:31.168376295Z"
+      },
+      {
+        "image": "sha256:a0c4ea2df541e9068b713585f5283987d617b1f2694f89ce3fd922b62310309f",
+        "name": "hrs-acceptance",
+        "new_id": "5690502e8dd8000cf93625c365258bff9ab28d8a3f6eaf153b1e1ffedf9540d7",
+        "old_id": "a060d48ebd4972b83222dccd26e85d72d141e82b860e2a7bbf085f819110042a",
+        "phase": "healthy",
+        "started": "2026-11-28T01:37:40.313792675Z"
+      }
+    ]
+  },
+  "protected_containers_verified": 30,
+  "targets": [
+    {
+      "name": "ai-tuner",
+      "id": "f1a68f4edc7888706901229d0455aa1ce676caf785b6d3fe433c8aa4a4adcf49",
+      "image": "sha256:870f00b549e86f03d5c290da89a68dbed8954d655ce595d7eeb6580d091546f0",
+      "health": "healthy",
+      "restarts": 0,
+      "oom": false,
+      "version": "GIT_SHA=513ca815ba4f3c0b9d1bd5eff395ad034f44ecdc\nDEPLOY_ID=00000201\nBUILD_RUN_ID=46093510787\n",
+      "file": "ai_tuner/reconciler/nightly_exit.py",
+      "sha256": "9828b2008150d35c38b951ef67b8399ac81467217dea14548b9d0d0e350d90ea",
+      "md5": "2a4fe81198c3e48d114a8a53de9dcc5d",
+      "runtime_error_lines": 0
+    },
+    {
+      "name": "trading_system-hrs-acceptance",
+      "id": "5690502e8dd8000cf93625c365258bff9ab28d8a3f6eaf153b1e1ffedf9540d7",
+      "image": "sha256:a0c4ea2df541e9068b713585f5283987d617b1f2694f89ce3fd922b62310309f",
+      "health": "healthy",
+      "restarts": 0,
+      "oom": false,
+      "version": "GIT_SHA=513ca815ba4f3c0b9d1bd5eff395ad034f44ecdc\nDEPLOY_ID=00000201\nBUILD_RUN_ID=46093510787\n",
+      "file": "strategies/hrs/acceptance_report.py",
+      "sha256": "8cd8a280c86aeff35f3a06209fbc9615dbb2c0db0166ed10b80e7599ce26f24c",
+      "md5": "fcb5b97f4287ed19460665a36b15b99e",
+      "runtime_error_lines": 0
+    }
+  ],
+  "stage-permissions": {
+    "checked_at": "2026-11-28T01:33:02.654143+00:00",
+    "issues": [],
+    "manifest_sha256": "62513735d6954615158f466f8561c1325567efdf3011f6899f75af30849137c1",
+    "mode": "audit",
+    "objects_checked": 1355,
+    "ok": true
+  },
+  "activation-permissions": {
+    "checked_at": "2026-11-28T01:36:30.031618+00:00",
+    "issues": [],
+    "manifest_sha256": "62513735d6954615158f466f8561c1325567efdf3011f6899f75af30849137c1",
+    "mode": "audit",
+    "objects_checked": 1355,
+    "ok": true
+  },
+  "report-probe": {
+    "database_snapshot_coherent": true,
+    "rss_kib": 137692,
+    "source_error_code": null,
+    "source_error_type": null,
+    "status": "PENDING"
+  },
+  "report-live": {
+    "database_snapshot_coherent": true,
+    "generated_at": "2026-11-28T01:37:42.547463+00:00",
+    "source_error_code": null,
+    "source_error_type": null
+  },
+  "retirement-registry-applied": {
+    "added": [
+      "70564e814edbbb466f2d773108ffe1732ebd2b208ae0caad11da241d409d3028",
+      "a060d48ebd4972b83222dccd26e85d72d141e82b860e2a7bbf085f819110042a"
+    ],
+    "sha256": "456ded83a7bfb8ac2803359fa95dec8af99ca1c2caea1b687b5f3b4966a15c0b"
+  },
+  "inventory": {
+    "active_count": 33,
+    "retired_count": 63,
+    "historical_failure_count": 1
+  },
+  "source_check": "HRS 验收来源读取正常，业务验收状态：PENDING",
+  "disk": {
+    "total": 64356331520,
+    "used": 50937516032,
+    "free": 13418815488,
+    "percent": 79.15
+  },
+  "report": {
+    "generated_at": "2026-11-28T01:37:42.547463+00:00",
+    "status": "PENDING",
+    "database_snapshot_coherent": true,
+    "source_error_type": null,
+    "source_error_code": null,
+    "technical": {
+      "status": "NOT_READY",
+      "required_complete_hours": 24,
+      "consecutive_complete_hours": 0,
+      "coverage_threshold": 0.95,
+      "coverage_caliber": "captured_requested_scan_batch_only",
+      "incomplete_slot_reasons": [
+        "fresh_coverage_below_95_percent",
+        "hour_has_no_complete_scan",
+        "market_cap_batch_missing",
+        "scan_account_unproven",
+        "scan_incomplete",
+        "scan_scope_missing",
+        "scan_start_unproven"
+      ]
+    },
+    "financial": {
+      "status": "PENDING",
+      "reasons": [
+        "fill_owner_unproven",
+        "income_or_fill_reconciliation_incomplete"
+      ]
+    }
+  }
+}

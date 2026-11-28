@@ -1,0 +1,14 @@
+{
+  "checked_at": "2026-11-28T01:43:45.816866+00:00",
+  "active_count": 32,
+  "retired_count": 64,
+  "historical_failure_count": 1,
+  "running": 32,
+  "healthy": 31,
+  "no_healthcheck": [
+    "/trading_system-hrs-research-observer"
+  ],
+  "restart_count": 0,
+  "disk_percent": 79.15,
+  "disk_free_bytes": 13418692608
+}

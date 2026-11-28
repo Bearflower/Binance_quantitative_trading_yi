@@ -1,5 +1,7 @@
 # 巡检修复发布审阅单
 
+> 已完成：用户随后明确授权 Git 操作，运行版本 `513ca815` 已上线。本文保留发布前审阅内容；实际结果和剩余历史告警见 [deployment-result.md](deployment-result.md)。
+
 日期：2026-11-28；基线 b52f442a；独立分支 `codex/server-inspection-fix-20261128`。
 
 ## 已完成的在线维护

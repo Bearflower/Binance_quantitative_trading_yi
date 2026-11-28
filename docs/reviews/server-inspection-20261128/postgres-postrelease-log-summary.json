@@ -1,0 +1,23 @@
+{
+  "checked_at": "2026-11-28T01:44:20.739012+00:00",
+  "since": "2026-11-28T01:37:40Z",
+  "new_error_count": 0,
+  "new_error_lines": [],
+  "historical_window_records": [
+    {
+      "time": "2026-11-27T01:50:46.918Z",
+      "kind": "unrecognized configuration parameter schema",
+      "scope": "single historical connection startup error"
+    },
+    {
+      "time": "2026-11-28T01:29:01.295Z",
+      "kind": "canceling statement due to user request",
+      "scope": "first activation rollback window"
+    },
+    {
+      "time": "2026-11-28T01:31:43.799Z",
+      "kind": "permission denied for schema research",
+      "scope": "HRS readonly role queried research.shadow_decision_events xau_calibrated coverage; no grant applied"
+    }
+  ]
+}

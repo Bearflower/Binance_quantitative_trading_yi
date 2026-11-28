@@ -1,0 +1,102 @@
+检查项目运行状态...
+✅ Docker 容器运行正常：ai-tuner
+✅ 容器 ai-tuner 内进程运行正常
+✅ Docker 容器运行正常：trading_system-hrs-acceptance
+✅ 容器 trading_system-hrs-acceptance 内进程运行正常
+✅ Docker 容器运行正常：ai-tuner-funding-schedule
+✅ 容器 ai-tuner-funding-schedule 内进程运行正常
+✅ Docker 容器运行正常：ai-tuner-snapshot
+✅ 容器 ai-tuner-snapshot 内进程运行正常
+✅ Docker 容器运行正常：trading_system-aggtrade-collector
+✅ 容器 trading_system-aggtrade-collector 内进程运行正常
+✅ Docker 容器运行正常：trading_system-kline-monitor
+✅ 容器 trading_system-kline-monitor 内进程运行正常
+✅ Docker 容器运行正常：trading_system-kline
+✅ 容器 trading_system-kline 内进程运行正常
+✅ Docker 容器运行正常：dashboard-api
+✅ 容器 dashboard-api 内进程运行正常
+✅ Docker 容器运行正常：data-backend
+✅ 容器 data-backend 内进程运行正常
+✅ Docker 容器运行正常：trading_system-market-cap
+✅ 容器 trading_system-market-cap 内进程运行正常
+✅ Docker 容器运行正常：trading_system-execution-facts
+✅ 容器 trading_system-execution-facts 内进程运行正常
+✅ Docker 容器运行正常：trading_system-hrs
+✅ 容器 trading_system-hrs 内进程运行正常
+✅ Docker 容器运行正常：trading_system-grid-realtime
+✅ 容器 trading_system-grid-realtime 内进程运行正常
+✅ Docker 容器运行正常：trading_system-grid-notifier
+✅ 容器 trading_system-grid-notifier 内进程运行正常
+✅ Docker 容器运行正常：trading_system-grid-pg-projector
+✅ 容器 trading_system-grid-pg-projector 内进程运行正常
+✅ Docker 容器运行正常：trading_system-grid-dashboard-exporter
+✅ 容器 trading_system-grid-dashboard-exporter 内进程运行正常
+✅ Docker 容器运行正常：trading_system-grid
+✅ 容器 trading_system-grid 内进程运行正常
+✅ Docker 容器运行正常：trading_system-new_coin
+✅ 容器 trading_system-new_coin 内进程运行正常
+✅ Docker 容器运行正常：trading_system-btc_eth_aggressive
+✅ 容器 trading_system-btc_eth_aggressive 内进程运行正常
+✅ Docker 容器运行正常：trading_system-mtcps-xau-calibrated-shadow
+✅ 容器 trading_system-mtcps-xau-calibrated-shadow 内进程运行正常
+✅ Docker 容器运行正常：trading_system-mtcps-xau-shadow
+✅ 容器 trading_system-mtcps-xau-shadow 内进程运行正常
+✅ Docker 容器运行正常：trading_system-btc_eth
+✅ 容器 trading_system-btc_eth 内进程运行正常
+✅ Docker 容器运行正常：trading_system-grid-executor
+✅ 容器 trading_system-grid-executor 内进程运行正常
+✅ Docker 容器运行正常：stockfilter-obpc
+✅ 容器 stockfilter-obpc 内进程运行正常
+✅ Docker 容器运行正常：stockfilter-eadvisor
+✅ 容器 stockfilter-eadvisor 内进程运行正常
+✅ Docker 容器运行正常：stockfilter-yili
+✅ 容器 stockfilter-yili 内进程运行正常
+✅ Docker 容器运行正常：stockfilter-kline
+✅ 容器 stockfilter-kline 内进程运行正常
+✅ Docker 容器运行正常：trading_system-mtpcs-direction-shadow
+✅ 容器 trading_system-mtpcs-direction-shadow 内进程运行正常
+✅ HRS 盘口观察器读库心跳正常：trading_system-hrs-research-observer
+✅ 容器 trading_system-hrs-research-observer 内进程运行正常
+✅ Docker 容器运行正常：trading_system-postgres
+✅ 容器 trading_system-postgres 内进程运行正常
+✅ Docker 容器运行正常：common_service_postgres
+✅ 容器 common_service_postgres 内进程运行正常
+✅ Docker 容器运行正常：common_service_redis
+✅ 容器 common_service_redis 内进程运行正常
+✅ HRS 验收来源读取正常，业务验收状态：PENDING
+⚠️ 历史一次性任务失败已归档（非当前宕机）：1 项；history-tolerance-hrs-preflight-1c7c99cf：2026-11-27 预检两次缺少 apscheduler；最终退出码0不覆盖前序失败，正式HRS已由后续发布接替
+检查 Docker 日志错误...
+✅ 容器 ai-tuner 日志无错误
+✅ 容器 trading_system-hrs-acceptance 日志无错误
+✅ 容器 ai-tuner-funding-schedule 日志无错误
+✅ 容器 ai-tuner-snapshot 日志无错误
+✅ 容器 trading_system-aggtrade-collector 日志无错误
+✅ 容器 trading_system-kline-monitor 日志无错误
+✅ 容器 trading_system-kline 日志无错误
+✅ 容器 dashboard-api 日志无错误
+✅ 容器 data-backend 日志无错误
+✅ 容器 trading_system-market-cap 日志无错误
+✅ 容器 trading_system-execution-facts 日志无错误
+✅ 容器 trading_system-hrs 日志无错误
+✅ 容器 trading_system-grid-realtime 日志无错误
+✅ 容器 trading_system-grid-notifier 日志无错误
+✅ 容器 trading_system-grid-pg-projector 日志无错误
+✅ 容器 trading_system-grid-dashboard-exporter 日志无错误
+✅ 容器 trading_system-grid 日志无错误
+✅ 容器 trading_system-new_coin 日志无错误
+✅ 容器 trading_system-btc_eth_aggressive 日志无错误
+✅ 容器 trading_system-mtcps-xau-calibrated-shadow 日志无错误
+✅ 容器 trading_system-mtcps-xau-shadow 日志无错误
+✅ 容器 trading_system-btc_eth 日志无错误
+⚠️ 容器 trading_system-grid-executor 近24小时有 1 条警告（与错误分列）：WARNING:strategies.grid.execution.stream:grid user stream interrupted: stage=websocket_closed type=RuntimeError api_code=None ws_close_code=1006;
+✅ 容器 trading_system-grid-executor 日志候选 1 条；无 ERROR 级事件，警告已单独列出
+✅ 容器 stockfilter-obpc 日志无错误
+✅ 容器 stockfilter-eadvisor 日志无错误
+✅ 容器 stockfilter-yili 日志无错误
+✅ 容器 stockfilter-kline 日志无错误
+✅ 容器 trading_system-mtpcs-direction-shadow 日志无错误
+✅ 容器 trading_system-hrs-research-observer 日志无错误
+❌ 容器 trading_system-postgres 日志中发现 3 个错误(共15)：2026-11-27 01:50:46.918 UTC [1937563] trading_user@[unknown] 172.18.0.20(49230) FATAL:  unrecognized configuration parameter "schema";2026-11-28 01:29:01.295 UTC [2006706] trading_user@[unknown] 172.18.0.5(58214) ERROR:  canceling statement due to user request;2026-11-28 01:31:43.799 UTC [2006875] hrs_acceptance_reader@[unknown] 172.18.0.19(53286) ERROR:  permission denied for schema research at character 378;
+✅ 容器 common_service_postgres 日志无错误
+✅ 容器 common_service_redis 日志无错误
+CHECK_ERRORS=1

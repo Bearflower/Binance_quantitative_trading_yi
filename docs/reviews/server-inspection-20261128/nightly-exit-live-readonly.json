@@ -1,0 +1,12 @@
+{
+  "checked_at": "2026-11-28T01:37:48.245223+00:00",
+  "mode": "readonly_existing_tables_no_exchange",
+  "current_candidates": 0,
+  "current_unresolved": 0,
+  "historical_pending": 2,
+  "historical_status": "BLOCKED_DATA",
+  "inserted": 0,
+  "source": "513ca815ba4f3c0b9d1bd5eff395ad034f44ecdc",
+  "container_id": "f1a68f4edc7888706901229d0455aa1ce676caf785b6d3fe433c8aa4a4adcf49",
+  "note": "Executed deployed nightly_exit_repair with readonly DB adapter, existing-table assertions replacing DDL, and exchange access forbidden; not a scheduled financial write run."
+}
