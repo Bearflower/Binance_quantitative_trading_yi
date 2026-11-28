@@ -23,8 +23,17 @@ PLAN_PATH = Path('deployment/server-inspection/plan.json')
 AUDIT_FILES = ('scripts/database_permissions.py', 'database/postgres/permissions.json')
 INVENTORY_FILE = 'ai_tuner/ops/container_inventory.py'
 BUNDLE_FILES = (str(PLAN_PATH), 'scripts/server_inspection_release.py', INVENTORY_FILE, *AUDIT_FILES)
-TARGETS = {'hrs-acceptance': ('trading_system-hrs-acceptance', 'strategies/hrs/acceptance_report.py', 'ghcr.io/bearflower/trading-hrs'),
-           'ai-tuner': ('ai-tuner', 'ai_tuner/reconciler/nightly_exit.py', 'ghcr.io/bearflower/trading-ai-tuner')}
+TARGETS = {'hrs-acceptance': ('trading_system-hrs-acceptance', ('strategies/hrs/acceptance_report.py',), 'ghcr.io/bearflower/trading-hrs'),
+           'ai-tuner': ('ai-tuner', ('ai_tuner/reconciler/nightly_exit.py',), 'ghcr.io/bearflower/trading-ai-tuner')}
+
+
+def use_profit_anchor_plan():
+    global TARGETS, PLAN_PATH, BUNDLE_FILES
+    PLAN_PATH = Path('deployment/profit-anchors/plan.json')
+    paths = ('ai_tuner/allocation/profit_extraction_job.py', 'ai_tuner/reconciler/income_reconciler.py',
+             'shared/accounting/equity_bridge.py', 'ai_tuner/monitor/xau_shadow_patrol.py')
+    TARGETS = {'ai-tuner': ('ai-tuner', paths, 'ghcr.io/bearflower/trading-ai-tuner')}
+    BUNDLE_FILES = (str(PLAN_PATH), 'scripts/server_inspection_release.py', INVENTORY_FILE, *AUDIT_FILES)
 
 
 class ReleaseError(RuntimeError):
@@ -50,15 +59,15 @@ def valid_sha(value, length=64):
 
 def validate_plan(doc):
     require(doc.get('version') == 1 and isinstance(doc.get('targets'), list), 'invalid release plan')
-    require(len(doc['targets']) == 2 and {r.get('name') for r in doc['targets']} == set(TARGETS), 'target scope mismatch')
+    require(len(doc['targets']) == len(TARGETS) and {r.get('name') for r in doc['targets']} == set(TARGETS), 'target scope mismatch')
     for row in doc['targets']:
-        name, path, repository = TARGETS[row['name']]
-        require(row.get('container') == name and row.get('files') == [path] and row.get('repository') == repository, 'source scope mismatch')
+        name, paths, repository = TARGETS[row['name']]
+        require(row.get('container') == name and row.get('files') == list(paths) and row.get('repository') == repository, 'source scope mismatch')
         require(valid_sha(row.get('old_id')) and re.fullmatch(r'sha256:[a-f0-9]{64}', row.get('old_image', '')), 'invalid predecessor identity')
         require(row.get('base') == repository + '@' + row['old_image'], 'base must match pinned predecessor')
         expected = {'HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES': '8388608'} if row['name'] == 'hrs-acceptance' else {}
         require(row.get('environment') == expected, 'environment scope mismatch')
-        require(row.get('modules') == [path[:-3].replace('/', '.')], 'import scope mismatch')
+        require(row.get('modules') == [path[:-3].replace('/', '.') for path in paths], 'import scope mismatch')
     return doc
 
 
@@ -234,7 +243,7 @@ def finish_build(receipt_path, image):
 def bundle(receipts, output, source):
     plan = read_plan(ROOT / PLAN_PATH)
     rows = [json.loads(p.read_text()) for p in receipts.rglob('receipt.json')]
-    require(len(rows) == 2 and {r['name'] for r in rows} == set(TARGETS), 'incomplete build receipts')
+    require(len(rows) == len(TARGETS) and {r['name'] for r in rows} == set(TARGETS), 'incomplete build receipts')
     for row in rows:
         target = next(t for t in plan['targets'] if t['name'] == row['name'])
         require(all(row.get(k) == v for k, v in target.items()) and row['source'] == source, 'receipt plan mismatch')
@@ -261,7 +270,7 @@ class Release:
         require(sha256(__file__) == self.doc['files']['scripts/server_inspection_release.py'], 'executor mismatch')
         plan = read_plan(self.bundle / PLAN_PATH)
         self.rows = self.doc['targets']
-        require(len(self.rows) == 2 and {r['name'] for r in self.rows} == set(TARGETS), 'release target mismatch')
+        require(len(self.rows) == len(TARGETS) and {r['name'] for r in self.rows} == set(TARGETS), 'release target mismatch')
         for r in self.rows:
             t = next(t for t in plan['targets'] if t['name'] == r['name'])
             require(all(r.get(k) == v for k, v in t.items()) and r['source'] == source
@@ -430,7 +439,7 @@ class Release:
         require(restored['Id'] == row['old_id'] and restored['Image'] == row['old_image'], 'rollback identity mismatch')
 
     def verify_current(self, state):
-        require(state['source'] == self.source and len(state['targets']) == 2, 'incomplete active evidence')
+        require(state['source'] == self.source and len(state['targets']) == len(TARGETS), 'incomplete active evidence')
         protected = json.loads((self.state / 'protected.json').read_text())
         verify_protected(protected)
         for row in self.rows:
@@ -522,7 +531,10 @@ def main():
     parser.add_argument('--name'); parser.add_argument('--output', type=Path); parser.add_argument('--source')
     parser.add_argument('--deploy-id'); parser.add_argument('--receipt', type=Path); parser.add_argument('--image')
     parser.add_argument('--receipts', type=Path); parser.add_argument('--bundle', type=Path)
+    parser.add_argument('--profit-anchors', action='store_true', help='仅发布利润提取诊断到 ai-tuner')
     args = parser.parse_args()
+    if args.profit_anchors:
+        use_profit_anchor_plan()
     if args.action == 'matrix': print(json.dumps({'include': read_plan(ROOT/PLAN_PATH)['targets']}))
     elif args.action == 'prepare': prepare(args.name,args.output,args.source,args.deploy_id)
     elif args.action == 'finish-build': finish_build(args.receipt,args.image)

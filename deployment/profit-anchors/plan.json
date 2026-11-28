@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "targets": [
+    {
+      "name": "ai-tuner",
+      "container": "ai-tuner",
+      "old_id": "f1a68f4edc7888706901229d0455aa1ce676caf785b6d3fe433c8aa4a4adcf49",
+      "old_image": "sha256:870f00b549e86f03d5c290da89a68dbed8954d655ce595d7eeb6580d091546f0",
+      "base": "ghcr.io/bearflower/trading-ai-tuner@sha256:870f00b549e86f03d5c290da89a68dbed8954d655ce595d7eeb6580d091546f0",
+      "repository": "ghcr.io/bearflower/trading-ai-tuner",
+      "files": [
+        "ai_tuner/allocation/profit_extraction_job.py",
+        "ai_tuner/reconciler/income_reconciler.py",
+        "shared/accounting/equity_bridge.py",
+        "ai_tuner/monitor/xau_shadow_patrol.py"
+      ],
+      "modules": [
+        "ai_tuner.allocation.profit_extraction_job",
+        "ai_tuner.reconciler.income_reconciler",
+        "shared.accounting.equity_bridge",
+        "ai_tuner.monitor.xau_shadow_patrol"
+      ],
+      "environment": {}
+    }
+  ]
+}

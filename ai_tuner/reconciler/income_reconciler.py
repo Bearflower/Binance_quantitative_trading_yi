@@ -30,6 +30,7 @@ import os
 import structlog
 from asyncpg import Range
 from shared.accounting.account_cutover import account_cutover_ms
+from shared.accounting.equity_bridge import MissingCutoverAnchors
 from shared.binance_account_mode import verify_cutover_ledger
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -110,12 +111,7 @@ class IncomeReconciler:
             if not self.pm:
                 try:
                     await verify_cutover_ledger(self.binance, self.db)
-                except ValueError as exc:
-                    # Identity, signature and inconsistent evidence failures
-                    # remain errors. Only this known missing-anchor denial is
-                    # a pending-data state, before any cursor or PnL write.
-                    if str(exc) != "缺少有效的 PM 期末或经典期初权益":
-                        raise
+                except MissingCutoverAnchors as exc:
                     raise CutoverEvidencePending(str(exc)) from exc
             await self._ensure_state_table()
             last_ts = await self._get_last_reconciled_ts()

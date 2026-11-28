@@ -251,3 +251,20 @@ def test_active_clone_accepts_docker_update_null_oom_default_only():
         changed=copy.deepcopy(current);changed['HostConfig'][key]=value
         with pytest.raises(release.ReleaseError,match='host or mount drift'):
             r.verify_clone(previous,changed,body,active=True)
+
+
+
+def test_profit_plan_excludes_reporter_and_keeps_nightly_exit_base(monkeypatch):
+    for key in ('PLAN_PATH', 'TARGETS', 'BUNDLE_FILES'):
+        monkeypatch.setattr(release, key, getattr(release, key))
+    release.use_profit_anchor_plan()
+    document = release.read_plan(ROOT / release.PLAN_PATH)
+    row, = document['targets']
+    assert row['name'] == 'ai-tuner' and row['environment'] == {}
+    assert row['base'] == row['repository'] + '@' + row['old_image']
+    assert 'ai_tuner/reconciler/nightly_exit.py' not in row['files']
+    assert 'ai_tuner/monitor/xau_shadow_patrol.py' in row['files']
+    for changed in [dict(row, container='trading_system-hrs-acceptance'),
+                    dict(row, files=row['files'] + ['shared/binance_api.py'])]:
+        with pytest.raises(release.ReleaseError):
+            release.validate_plan(dict(version=1, targets=[changed]))

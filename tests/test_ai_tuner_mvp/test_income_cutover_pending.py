@@ -7,13 +7,13 @@ from ai_tuner.reconciler import income_reconciler as module
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reason,expected', [
-    ('缺少有效的 PM 期末或经典期初权益', True),
-    ('signed account identity mismatch', False),
+@pytest.mark.parametrize('error,expected', [
+    (module.MissingCutoverAnchors(['pm_final']), True),
+    (ValueError('signed account identity mismatch'), False),
 ])
-async def test_missing_cutover_evidence_preserves_cursor_and_identity_errors(monkeypatch, reason, expected):
+async def test_missing_cutover_evidence_preserves_cursor_and_identity_errors(monkeypatch, error, expected):
     monkeypatch.setattr(module, 'account_cutover_ms', lambda _: 1795000000000)
-    gate = AsyncMock(side_effect=ValueError(reason))
+    gate = AsyncMock(side_effect=error)
     monkeypatch.setattr(module, 'verify_cutover_ledger', gate)
     logger = Mock()
     monkeypatch.setattr(module, 'logger', logger)

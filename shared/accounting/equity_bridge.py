@@ -79,6 +79,13 @@ async def save_observation(db, observation, observed_at, total, available, count
     return dict(row)
 
 
+class MissingCutoverAnchors(ValueError):
+    def __init__(self, missing):
+        self.missing = missing
+        labels = {"pm_final": "PM 期末", "classic_open": "经典期初"}
+        super().__init__("缺少" + "、".join(labels[key] for key in missing) + "权益凭据")
+
+
 async def read_anchors(db, cutover, expected_uid=None):
     rows = await db.fetch_all(
         "SELECT observation,total_equity,exchange_uid_sha256 FROM trading.account_mode_equity "
@@ -86,11 +93,18 @@ async def read_anchors(db, cutover, expected_uid=None):
         main_account(), cutover,
     )
     anchors = {row["observation"]: money(row["total_equity"]) for row in rows}
-    if set(anchors) != {"pm_final", "classic_open"} or min(anchors.values()) <= 0:
-        raise ValueError("缺少有效的 PM 期末或经典期初权益")
+    required = ("pm_final", "classic_open")
+    if any(key not in required or value <= 0 for key, value in anchors.items()):
+        raise ValueError("切换权益锚点类型或金额无效")
     identities = {row.get("exchange_uid_sha256") for row in rows}
-    if len(identities) != 1 or None in identities or (expected_uid is not None and expected_uid not in identities):
+    if rows and (
+        len(identities) != 1 or None in identities
+        or (expected_uid is not None and expected_uid not in identities)
+    ):
         raise ValueError("切换权益锚点与 Binance UID 不符")
+    missing = [key for key in required if key not in anchors]
+    if missing:
+        raise MissingCutoverAnchors(missing)
     return anchors["pm_final"], anchors["classic_open"]
 
 

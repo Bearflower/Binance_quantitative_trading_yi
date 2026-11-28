@@ -32,6 +32,8 @@ class FakeDB:
     async def fetch_one(self, query, *args):
         self.queries.append(query)
         self.calls.append((query, args))
+        if "generate_series" in query:
+            return {"n": 6, "recent_gaps": 0}
         if "registered_symbols" in query:
             return dict(expires_at=(self.now + timedelta(days=6)).replace(tzinfo=None), status="active", intervals=["1h", "4h", "1d"])
         if "kline_xauusdt_" in query:
@@ -99,4 +101,28 @@ async def test_daily_patrol_checks_current_due_hour():
     notifier.send.return_value = True
     await XAUShadowPatrol(db, notifier, now=lambda: now).run_once()
     gap_call = next(call for call in db.calls if "generate_series" in call[0])
-    assert gap_call[1][-1] == now.replace(minute=0)
+    assert gap_call[1][1] == now.replace(minute=0)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recent", [0, 1])
+async def test_reports_historical_gaps_without_repeated_new_alerts(recent, monkeypatch):
+    from ai_tuner.monitor import xau_shadow_patrol as patrol
+    monkeypatch.setattr(patrol, "digest_outbox", None)
+    monkeypatch.setattr(patrol, "runtime_issues", lambda now: [])
+    now = datetime(2026, 11, 28, 1, 10, tzinfo=UTC)
+    db = FakeDB(now)
+    fetch_one = db.fetch_one
+
+    async def facts(query, *args):
+        if "generate_series" in query:
+            assert "FILTER (WHERE slot.scheduled_at >= $3)" in query
+            assert args[1] == datetime(2026, 11, 28, 0, tzinfo=UTC)
+            assert args[2] == args[1] - timedelta(hours=23)
+            return {"n": 6 + recent, "recent_gaps": recent}
+        return await fetch_one(query, *args)
+
+    db.fetch_one = facts
+    result = await XAUShadowPatrol(db, AsyncMock(), now=lambda: now).run_once()
+    assert f"累计 {6 + recent}，近24小时 {recent}" in result["message"]
+    assert ("近24小时存在校准版小时缺口" in result["message"]) == bool(recent)
+    assert result["ok"] == (recent == 0)

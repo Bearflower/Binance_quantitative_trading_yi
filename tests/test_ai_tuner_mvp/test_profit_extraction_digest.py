@@ -142,27 +142,33 @@ def test_classic_opening_wallet_change_does_not_trigger_profit_or_overwrite_pm_p
     assert job.db_manager.execute.await_args.args[1].startswith("ath_balance:classic:")
 
 
-def test_classic_missing_cutover_anchors_skips_advice_without_error(tmp_path, monkeypatch):
+def test_classic_anchor_diagnostics_preserve_ath(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
 
     monkeypatch.setenv("BINANCE_CLASSIC_CUTOVER_MS", "1000")
-    monkeypatch.setenv("TRADE_ACCOUNT_ID", "main")
+    monkeypatch.setattr("shared.accounting.equity_bridge.signed_spot_uid_sha256", AsyncMock(return_value="signed"))
     job = _job(tmp_path, monkeypatch)
     job.binance.use_unified_account = False
     job.binance.get_account_info = AsyncMock(return_value={"totalMarginBalance": "2100"})
     job.db_manager.execute = AsyncMock()
-    monkeypatch.setattr("shared.accounting.equity_bridge.signed_spot_uid_sha256",
-                        AsyncMock(return_value="signed"))
-    monkeypatch.setattr("shared.accounting.equity_bridge.read_anchors",
-                        AsyncMock(side_effect=ValueError("缺少有效的 PM 期末或经典期初权益")))
-
-    assert asyncio.run(job.run_daily_check()) == {
-        "action": "skip", "reason": "classic_equity_anchor_missing"}
-    published = _published(tmp_path)
-    assert published["status"] == "skip"
-    assert "证据" in published["summary"]
-    assert "不计算" in published["text"]
+    job.db_manager.fetch_one = AsyncMock()
+    row = {"observation": "classic_open", "total_equity": "2000", "exchange_uid_sha256": "signed"}
+    for rows, expected in [([], ["pm_final", "classic_open"]), ([row], ["pm_final"])]:
+        job.db_manager.fetch_all = AsyncMock(return_value=rows)
+        result = asyncio.run(job.run_daily_check())
+        assert result == {"action": "blocked", "reason": "classic_equity_anchor_missing", "missing": expected}
+        published = _published(tmp_path)
+        assert published["status"] == "warn"
+        assert published["summary"] == "待补切换权益凭据"
+        assert "PM 期末" in published["text"]
+        assert ("经典期初" in published["text"]) == ("classic_open" in expected)
+    for invalid in [dict(row, total_equity="0"), dict(row, exchange_uid_sha256="other")]:
+        job.db_manager.fetch_all = AsyncMock(return_value=[invalid])
+        assert asyncio.run(job.run_daily_check())["action"] == "error"
+        assert _published(tmp_path)["summary"] == "检查异常"
     job.db_manager.execute.assert_not_awaited()
+    job.db_manager.fetch_one.assert_not_awaited()
+    assert job.notification_client.messages == []
 
 
 def test_classic_anchor_identity_mismatch_remains_error(tmp_path, monkeypatch):

@@ -38,7 +38,8 @@ class XAUShadowPatrol:
 
     async def run_once(self):
         now = self.now().astimezone(UTC)
-        expected = min(now.replace(minute=0, second=0, microsecond=0), OBSERVATION_END - timedelta(hours=1))
+        last_due = (now - timedelta(minutes=20)).replace(minute=0, second=0, microsecond=0)
+        expected = min(last_due, OBSERVATION_END - timedelta(hours=1))
         issues = runtime_issues(now)
         lines = [f"【XAU 影子巡检】{now:%Y-%m-%d %H:%M} UTC（每日巡检）"]
 
@@ -146,18 +147,21 @@ class XAUShadowPatrol:
         if dup > 6:
             issues.append("新增跨 run 重复事件")
         gap_row = await self.db.fetch_one(
-            "SELECT COUNT(*) AS n FROM generate_series($1::timestamptz, $2::timestamptz, "
+            "SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE slot.scheduled_at >= $3) AS recent_gaps "
+            "FROM generate_series($1::timestamptz, $2::timestamptz, "
             "interval '1 hour') AS slot(scheduled_at) "
             "WHERE NOT EXISTS (SELECT 1 FROM research.shadow_decision_events e "
             "WHERE e.profile_id = 'xau_calibrated' AND e.symbol = 'XAUUSDT' "
             "AND e.scheduled_at = slot.scheduled_at)",
             OBSERVATION_START,
             expected,
+            last_due - timedelta(hours=23),
         )
-        gaps = int((gap_row or {}).get("n") or 0)
-        lines.append(f"校准版小时缺口: {gaps}（历史基线 4）")
-        if gaps > 4:
-            issues.append("新增校准版小时缺口")
+        gaps = int(gap_row["n"])
+        recent_gaps = int(gap_row["recent_gaps"])
+        lines.append(f"校准版小时缺口：累计 {gaps}，近24小时 {recent_gaps}")
+        if recent_gaps:
+            issues.append(f"近24小时存在校准版小时缺口 {recent_gaps} 个")
 
         for table, column in (
             ("trade_records", "strategy"),
