@@ -1,3 +1,4 @@
+import pytest
 import datetime as dt
 
 from ai_tuner.ops.log_retention_check import TZ, render
@@ -132,7 +133,8 @@ def test_docker_log_range_uses_full_id_and_reads_both_streams(monkeypatch):
     assert last == dt.datetime(2026, 11, 20, 8, 23, 57, 123456, tzinfo=TZ)
 
 
-def test_collect_replaced_label_does_not_hide_unlabelled_live_instance(monkeypatch, tmp_path):
+@pytest.mark.parametrize("configured", [True, False])
+def test_collect_replaced_label_does_not_hide_unlabelled_live_instance(monkeypatch, tmp_path, configured):
     import json
     from ai_tuner.ops import log_retention_check as check
 
@@ -150,7 +152,7 @@ def test_collect_replaced_label_does_not_hide_unlabelled_live_instance(monkeypat
     def fake_run(*args):
         if args[-1] == '--profiles': return ''
         if args[-2:] == ('--format', 'json'):
-            return json.dumps({"name": "trading_system", "services": {"hrs": {"container_name": "hrs"}}})
+            return json.dumps({"name": "trading_system", "services": {"hrs": {"container_name": "hrs"}} if configured else {}})
         if args[:3] == ('docker', 'ps', '-aq'): return old['Id']
         if args[:3] == ('docker', 'ps', '-a'): return 'hrs\nhrs-before-release'
         if args == ('docker', 'inspect', 'hrs'): return json.dumps([live])

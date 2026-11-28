@@ -79,6 +79,7 @@ def docker_log_range(container_id: str) -> tuple[dt.datetime | None, dt.datetime
     first = last = None
     for line in output.splitlines():
         prefix = line.partition(" ")[0]
+        prefix = re.sub(r"(\.\d{6})\d+(?=Z|[+-])", r"\1", prefix)
         try:
             timestamp = dt.datetime.fromisoformat(prefix.replace("Z", "+00:00"))
         except ValueError:
@@ -114,15 +115,19 @@ def collect(project_dir: Path, now: dt.datetime, registry_path: Path | None = No
         if settings.get("container_name")
     }
     # Restricted releases may replace a Compose container directly through Docker.
-    if expected_names:
+    registry = container_inventory.read_registry(registry_path or project_dir / ".ops/container_retirements.json")
+    inventory_names = set(expected_names)
+    for entry in registry["entries"]:
+        inventory_names.update((entry["name"], entry["successor"]))
+    if inventory_names:
         actual_names = run("docker", "ps", "-a", "--format", "{{.Names}}").splitlines()
         present_names = {c["Name"].lstrip("/") for c in containers}
-        candidates = sorted((expected_names.keys() & set(actual_names)) - present_names)
+        candidates = sorted((inventory_names & set(actual_names)) - present_names)
         if candidates:
             for container in json.loads(run("docker", "inspect", *candidates)):
                 containers.append(container)
     containers, retired, inventory_issues = container_inventory.partition(
-        containers, container_inventory.read_registry(registry_path or project_dir / ".ops/container_retirements.json")
+        containers, registry
     )
     rows = []
     for container in containers:
@@ -145,7 +150,7 @@ def collect(project_dir: Path, now: dt.datetime, registry_path: Path | None = No
         except LOG_QUERY_ERRORS:
             history_error = True
         rows.append({
-            "service": labels.get("com.docker.compose.service") or expected_names.get(name, "?"),
+            "service": labels.get("com.docker.compose.service") or expected_names.get(name, name.removeprefix(project + "-")),
             "state": container["State"]["Status"],
             "health": health["Status"] if health else "no-healthcheck",
             "driver": driver,
