@@ -1,4 +1,5 @@
 from decimal import Decimal as D
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,12 +9,12 @@ from ai_tuner.reconciler.nightly_exit import repair_order, verify_fill
 
 ORDER = dict(symbol='ARIAUSDT', orderId=123, side='BUY', status='FILLED', executedQty='3')
 ROW = dict(side='BUY', qty=D(1), price=D(2), realized_pnl=D('0.5'), incomes=[D('0.5')],
-           commission_asset='USDT', commission=D('.01'), trade_time_utc=1)
+           commission_asset='USDT', commission=D('.01'), trade_time_utc=datetime(2026, 11, 26, tzinfo=timezone.utc))
 
 
 def test_partial_fills_are_summed_once():
     values = verify_fill(ORDER, [ROW, dict(ROW, qty=D(2), price=D(5))], 'ARIAUSDT', 'BUY', 123)
-    assert values == (3, 4, D('-.02'), 1, 1)
+    assert values == (3, 4, D('-.02'), 1, ROW['trade_time_utc'])
 
 
 @pytest.mark.parametrize('change', [dict(qty=D(2)), dict(incomes=[]), dict(incomes=[D(1)]),
@@ -26,9 +27,10 @@ def test_incomplete_evidence_blocks_insert(change):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('duplicate,conflict', [(False, False), (True, False), (False, True)])
 async def test_exact_parent_and_duplicate_guard(duplicate, conflict):
-    rec = MagicMock(account_id='default', excluded_strategies=[])
+    rec = MagicMock(account_id='default', excluded_strategies=[], pm=True, cutover=None)
+    rec.binance.use_unified_account = True
     owner = dict(strategy='hrs', algo_id='1', side='BUY')
-    rec.db.fetch_all = AsyncMock(return_value=[owner])
+    rec.db.fetch_all = AsyncMock(side_effect=[[dict(ROW, qty=D(3))], [owner]])
     rec.binance.get_algo_order = AsyncMock(return_value=dict(actualOrderId='123', symbol='ARIAUSDT',
         side='BUY', algoStatus='FINISHED', orderType='TAKE_PROFIT_MARKET'))
     rec.binance.get_order = AsyncMock(return_value=ORDER)

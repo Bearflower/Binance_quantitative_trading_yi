@@ -1,0 +1,17 @@
+{
+  "snapshot_at": "2026-11-28T00:53:16.364693+00:00",
+  "requires_operator_review_before_apply": true,
+  "requests": {
+    "completed_task": 28,
+    "retired": 30,
+    "standby": 2,
+    "archived_failed_task": 1
+  },
+  "active": 32,
+  "excluded": 61,
+  "issues": [],
+  "still_monitored_nonrunning": [],
+  "historical_failures": [
+    "history-tolerance-hrs-preflight-1c7c99cf"
+  ]
+}

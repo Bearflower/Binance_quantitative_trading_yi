@@ -1,0 +1,637 @@
+[
+  {
+    "id": "39c1d9f3de7867d01dfe6e3a3540c008b22c1aa611d4f0050a9ff4937296227f",
+    "name": "grid-release-probe-1795823748805873848",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795823748805873848;logs_sha256=76b0d0dc2a494b9f6e8e2235c98e862dd1aeb9ee205a0d5a26411a60425caae2",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "76b0d0dc2a494b9f6e8e2235c98e862dd1aeb9ee205a0d5a26411a60425caae2"
+    }
+  },
+  {
+    "id": "c0c2926991efcc5cf79dfd103385f96dee43b2ccee1f1b287bdf9601d369200e",
+    "name": "grid-release-probe-1795823673844583415",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795823673844583415;logs_sha256=74b120289bf596540667a3b74224f2052a6a9623d5fcf0cf803f59fe73fa6824",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "74b120289bf596540667a3b74224f2052a6a9623d5fcf0cf803f59fe73fa6824"
+    }
+  },
+  {
+    "id": "badf58e05aaebe5a9a6fef1cb023d79559d054b71532e9962ae13482f2756460",
+    "name": "grid-release-probe-1795823608837310983",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795823608837310983;logs_sha256=13a2dab302da17a8dc956cae5ba6860747caa90e34e4b46cb1da7a9ed16f1d08",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "13a2dab302da17a8dc956cae5ba6860747caa90e34e4b46cb1da7a9ed16f1d08"
+    }
+  },
+  {
+    "id": "59af076c31769fdf78ac9d2b48a2b1e8fde46fd78d47e7d1dcdcd32d0ed9d450",
+    "name": "grid-release-maintenance-1795822713783270968",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-maintenance-1795822713783270968;logs_sha256=a24b8ee8624d5a102b98f2c0cf920e6d168d94921754c213d8a5c44fc7e03443",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "a24b8ee8624d5a102b98f2c0cf920e6d168d94921754c213d8a5c44fc7e03443"
+    }
+  },
+  {
+    "id": "96c02b1ab0c4ad695e60d31cf0d6703199a465d706d1204981c82d7f12d55d9d",
+    "name": "grid-release-probe-1795822691865509265",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822691865509265;logs_sha256=09b2f7ec6bab28d8527074f558d76dfb4a9e2c6d7344e5c2c992daa529c53d0f",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "09b2f7ec6bab28d8527074f558d76dfb4a9e2c6d7344e5c2c992daa529c53d0f"
+    }
+  },
+  {
+    "id": "2b1ec166720cf12341de0918d6fdc8ac9c3dc54f27371665f1819945bd674550",
+    "name": "grid-release-probe-1795822610354251421",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822610354251421;logs_sha256=3ea3baf0f53dec7fae07d49c3570626223a83c0919be0841fb11b40b4ed65396",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "3ea3baf0f53dec7fae07d49c3570626223a83c0919be0841fb11b40b4ed65396"
+    }
+  },
+  {
+    "id": "cc55f30adba6197c3123f0286345f3cb1763082f2a8cbb229f871ceec1cb0e80",
+    "name": "grid-release-probe-1795822527416437806",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822527416437806;logs_sha256=9092aa26acb7339b82c021b7864bb13c858f61c9fbc407185827b113731f509b",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "9092aa26acb7339b82c021b7864bb13c858f61c9fbc407185827b113731f509b"
+    }
+  },
+  {
+    "id": "fb73963c9cc77a848823a87c984b7b6b8417c2db83d1e64512c77e205e35e30f",
+    "name": "grid-release-probe-1795822462450697894",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822462450697894;logs_sha256=2159c6743e0ee57fbb936839c3aea3b6590126e8123efc4434c2edd94486f5ec",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "2159c6743e0ee57fbb936839c3aea3b6590126e8123efc4434c2edd94486f5ec"
+    }
+  },
+  {
+    "id": "3ed8dd86c9df01ddc424633ac276a7efd9c48de0c8578b83a41581b08d80e3f1",
+    "name": "grid-release-probe-1795822396960643249",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822396960643249;logs_sha256=b8e69bfdf93e9093e5f74a0f64e4b0eb7ba0b5183f4c1ca8154f7f84cb5209ba",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "b8e69bfdf93e9093e5f74a0f64e4b0eb7ba0b5183f4c1ca8154f7f84cb5209ba"
+    }
+  },
+  {
+    "id": "e6c5f05239746d3af911cf8e51fefe93dfcefae422af8a2838381b8de7a08487",
+    "name": "grid-release-probe-1795822331814871009",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822331814871009;logs_sha256=5cc2675f6a8cdf3a17bfd0fc7734831c2daa95ede2d10a320c963e3b20d83ed5",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "5cc2675f6a8cdf3a17bfd0fc7734831c2daa95ede2d10a320c963e3b20d83ed5"
+    }
+  },
+  {
+    "id": "e0cb5887adf5c39e400ddefa1fff9019fe605d23a7437253fca3bd50a733e6aa",
+    "name": "grid-release-probe-1795822238198146627",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822238198146627;logs_sha256=b2cf2d88bac7a10b7e2479b0c659485a5c7be4b56e1f2281e0e85037e60e4fee",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "b2cf2d88bac7a10b7e2479b0c659485a5c7be4b56e1f2281e0e85037e60e4fee"
+    }
+  },
+  {
+    "id": "2af092007066bd412fba18783ae49c55a44337874820daee09394bd52eae0283",
+    "name": "grid-release-probe-1795822160224283011",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822160224283011;logs_sha256=8ec8d89466a5dd362620d4b997830350c11a9052b6b58d341ba1530cf1dafe52",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "8ec8d89466a5dd362620d4b997830350c11a9052b6b58d341ba1530cf1dafe52"
+    }
+  },
+  {
+    "id": "30eeb200752b077f0ae8f4928731d798d9532c8ff0d94451007b8ebb4c14ce46",
+    "name": "grid-release-probe-1795822095164106641",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822095164106641;logs_sha256=26965c278cd2bfcd8f0e4326e26db588d20c97867bdd913b741e2bb9efb21739",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "26965c278cd2bfcd8f0e4326e26db588d20c97867bdd913b741e2bb9efb21739"
+    }
+  },
+  {
+    "id": "115355c94ca00d1cadc2274e40b9e33c031f1761493d0f0c597c382c8083569a",
+    "name": "grid-release-probe-1795822029987386436",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795822029987386436;logs_sha256=31f52c008f00f15ea0ed8ee03a7dbd57682d5ae0e12caf5d21aba9fff2064cb5",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "31f52c008f00f15ea0ed8ee03a7dbd57682d5ae0e12caf5d21aba9fff2064cb5"
+    }
+  },
+  {
+    "id": "2400fc8d54df247fe3751d7b1b722242977c428f96c74b5df6128eb981c17b56",
+    "name": "grid-release-probe-1795821948172404126",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821948172404126;logs_sha256=4e34b9031f1141255f0456d6c37ff050522a455ea89c25cbdbbf2337cfd6cf27",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "4e34b9031f1141255f0456d6c37ff050522a455ea89c25cbdbbf2337cfd6cf27"
+    }
+  },
+  {
+    "id": "6dcb269c74389221fbe9d21a6801398184d3291290f135e77e3054e42f08beee",
+    "name": "grid-release-probe-1795821871785006173",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821871785006173;logs_sha256=0ce0d1946ab44b225c5b82c484d93f2a096e12cee07f11a7c7eaf9d2e73ef2d4",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "0ce0d1946ab44b225c5b82c484d93f2a096e12cee07f11a7c7eaf9d2e73ef2d4"
+    }
+  },
+  {
+    "id": "45eab76278e89c8ee089397210385101abb0de00bfddd59780c4e72e0a14cc06",
+    "name": "grid-release-probe-1795821796421065958",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821796421065958;logs_sha256=130eeea0c6647e4814decbd1b08c06ad3b4ce240d010c2e6394257680c6a7464",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "130eeea0c6647e4814decbd1b08c06ad3b4ce240d010c2e6394257680c6a7464"
+    }
+  },
+  {
+    "id": "2dae9b210875efcf02fc97072d2b8cf44094d71ad1acbcbc53ccb3078c21a488",
+    "name": "grid-release-probe-1795821721309814248",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821721309814248;logs_sha256=c5ecfd22757f2a5059930d643e2af069c49bc24749b996b5e1361623add2cbb3",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "c5ecfd22757f2a5059930d643e2af069c49bc24749b996b5e1361623add2cbb3"
+    }
+  },
+  {
+    "id": "a9ce4fb5c393230b7b4f57c126bf1cd8b9ff738fe86d1ff8a5fa30240b2a62d3",
+    "name": "grid-release-probe-1795821635657426736",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821635657426736;logs_sha256=9995a5829fe8cb99dbf42617384364a53fa51784c0f37d91fc5d4a09a289fed6",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "9995a5829fe8cb99dbf42617384364a53fa51784c0f37d91fc5d4a09a289fed6"
+    }
+  },
+  {
+    "id": "f62e4c36ce4ab15da385b131ee77a920c920beee9344fcd6b077a9ef7b339707",
+    "name": "grid-release-probe-1795821561584712436",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821561584712436;logs_sha256=a7dafc261d61a0cd08dbebf3fc4061c0f26e93d7c4c548efd21af0a934ca60c1",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "a7dafc261d61a0cd08dbebf3fc4061c0f26e93d7c4c548efd21af0a934ca60c1"
+    }
+  },
+  {
+    "id": "af72b49245644f7913f0845bc67da93d1d2f2361c05969168620262c7c18738c",
+    "name": "grid-release-probe-1795821485110873517",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821485110873517;logs_sha256=51c5ad49f2ad5051e7da156f5a6863a01371bfb35006e0781a2a5f7f9a4ef5ca",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "51c5ad49f2ad5051e7da156f5a6863a01371bfb35006e0781a2a5f7f9a4ef5ca"
+    }
+  },
+  {
+    "id": "650ad4266822c72ccee23e057b57fae3d5a197a0a5a9d72cd0c6a7fb2d5c8ea9",
+    "name": "grid-release-probe-1795821381766605919",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821381766605919;logs_sha256=7abcf51966139e6c5b57a1b9f293b9d58eca0fd7a65f6d3a48270c4f9b8b443f",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "7abcf51966139e6c5b57a1b9f293b9d58eca0fd7a65f6d3a48270c4f9b8b443f"
+    }
+  },
+  {
+    "id": "df4909f36e99cd7f1d19cb35bec0d207ab31642a63304506d2206713db512c59",
+    "name": "grid-release-probe-1795821301851240625",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821301851240625;logs_sha256=9c68cdc542c44b3142426b11086c803f5e3d6541c957e074b70700224e3c7670",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "9c68cdc542c44b3142426b11086c803f5e3d6541c957e074b70700224e3c7670"
+    }
+  },
+  {
+    "id": "2696e9e8202045f27d51286b350de4deb7452630ff09462caaf2e7ad0f9da93e",
+    "name": "grid-release-probe-1795821219656572660",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821219656572660;logs_sha256=b08c8d13d4778f3b251fc357a4c2c3ff5011bf7474abeeb6b962ed57209a8cbe",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "b08c8d13d4778f3b251fc357a4c2c3ff5011bf7474abeeb6b962ed57209a8cbe"
+    }
+  },
+  {
+    "id": "53260842dca705e2e6e2ecfbeefbfd7cd704f7856ea40cdccaed25102ad101bc",
+    "name": "grid-release-probe-1795821143354002668",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821143354002668;logs_sha256=07aa57c21af768fd8b5bd13a0af69e401455823e3bccb622554d3a047dc9afe5",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "07aa57c21af768fd8b5bd13a0af69e401455823e3bccb622554d3a047dc9afe5"
+    }
+  },
+  {
+    "id": "b724a09b35f84294460d312a2e03f7b142d32adc8c5bf4461214cb873fa600fa",
+    "name": "grid-release-probe-1795821065243093634",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795821065243093634;logs_sha256=a9fd4873b46ea486a09ac6c31778e094b16d0a5bdce8cfdc7f215dfee470a7bd",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "a9fd4873b46ea486a09ac6c31778e094b16d0a5bdce8cfdc7f215dfee470a7bd"
+    }
+  },
+  {
+    "id": "beb20e771ae14e2ffe33c0c5f83c8060f0856cd59d7c155956aff0c2462d0f77",
+    "name": "grid-release-probe-1795820979047933982",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-probe-1795820979047933982;logs_sha256=a49ee7c15246939a645d3af8c5219ee97dda2215aebfd96b064036f13d557c3f",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "a49ee7c15246939a645d3af8c5219ee97dda2215aebfd96b064036f13d557c3f"
+    }
+  },
+  {
+    "id": "c849134ebdcf087c1c5330098552104e3b5dddc153b2ecbca7604da6b24f536a",
+    "name": "ai-tuner-funding-schedule-before-full-5b57d130",
+    "successor": "ai-tuner-funding-schedule",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#ai-tuner-funding-schedule-before-full-5b57d130"
+  },
+  {
+    "id": "d2f68e37648b9d6fb1c4d16651ae2708b35ba1f7203cf86dec7c7a5eadbb4bd8",
+    "name": "ai-tuner-snapshot-before-full-5b57d130",
+    "successor": "ai-tuner-snapshot",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#ai-tuner-snapshot-before-full-5b57d130"
+  },
+  {
+    "id": "6ff0ec5b09b279a8f6f75060a7fd618e5db5044d8882cb396a650180b92eabcf",
+    "name": "ai-tuner-before-full-5b57d130",
+    "successor": "ai-tuner",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#ai-tuner-before-full-5b57d130"
+  },
+  {
+    "id": "ffe8b99dc11e9f7ba476e96fe2d3ceb89b82007f02481572ba2a40e56b213b41",
+    "name": "trading_system-hrs-before-full-46fa983c",
+    "successor": "trading_system-hrs",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-hrs-before-full-46fa983c"
+  },
+  {
+    "id": "8b9fa9051e4f35947cc61404312cc7f71d2ff6f399fe3d250f56cc949c5d88e4",
+    "name": "trading_system-hrs-acceptance-before-full-46fa983c",
+    "successor": "trading_system-hrs-acceptance",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-hrs-acceptance-before-full-46fa983c"
+  },
+  {
+    "id": "5a04ef611c8fa198af491a7603e09b0165b38d8d11309e5dd6bb5bc5da5902b8",
+    "name": "dashboard-api-before-full-46fa983c",
+    "successor": "dashboard-api",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#dashboard-api-before-full-46fa983c"
+  },
+  {
+    "id": "3e8ba0e2b11853cc74a9e21d4429e0156eafd0198221bc0c479a725fc40c697e",
+    "name": "trading_system-mtcps-xau-calibrated-shadow-before-full-46fa983c",
+    "successor": "trading_system-mtcps-xau-calibrated-shadow",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-mtcps-xau-calibrated-shadow-before-full-46fa983c"
+  },
+  {
+    "id": "300a004d72db932cddf154eadad0a38e7a6fd8365e9bfe1932d61b3936b75395",
+    "name": "trading_system-mtcps-xau-shadow-before-full-46fa983c",
+    "successor": "trading_system-mtcps-xau-shadow",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-mtcps-xau-shadow-before-full-46fa983c"
+  },
+  {
+    "id": "36c870f0be3f1a5bb983756e81b22d7e367c5ee881caaea4df91b5c2e6988829",
+    "name": "trading_system-mtcps-xau-shadow-before-full-acee4c82",
+    "successor": "trading_system-mtcps-xau-shadow",
+    "lifecycle": "standby",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-mtcps-xau-shadow-before-full-acee4c82"
+  },
+  {
+    "id": "b0947495c86201eafba03bb85e234f3dfd04146486918ac771029f77663305ec",
+    "name": "trading_system-mtcps-xau-shadow-before-xau-d402ad0c",
+    "successor": "trading_system-mtcps-xau-shadow",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-mtcps-xau-shadow-before-xau-d402ad0c"
+  },
+  {
+    "id": "60fcd193fb99703ddfa5d88f50a96b5253fb42314642987a2542614762d6fb0c",
+    "name": "trading_system-hrs-acceptance-before-runtime-71384375",
+    "successor": "trading_system-hrs-acceptance",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-hrs-acceptance-before-runtime-71384375"
+  },
+  {
+    "id": "3a302ddbec4e389dcf318cae66c6c019bf727844c046656df652edb801ec80c6",
+    "name": "trading_system-hrs-before-runtime-71384375",
+    "successor": "trading_system-hrs",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-hrs-before-runtime-71384375"
+  },
+  {
+    "id": "6d50369a80a59f38690f0d5117c8c1082feb22986a067eda56ade44ac6014982",
+    "name": "grid-release-maintenance-1795777452110226077",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "completed_task",
+    "reason": "2026-11-28 已核验一次性网格发布任务成功；保留日志和回滚证据",
+    "evidence": "task-and-image-review.json#grid-release-maintenance-1795777452110226077;logs_sha256=b4ea8842aee35fb047f944d04013aa296dab9efb5b3f76004c58d2950ab024b2",
+    "result": {
+      "success": true,
+      "error_count": 0,
+      "logs_sha256": "b4ea8842aee35fb047f944d04013aa296dab9efb5b3f76004c58d2950ab024b2"
+    }
+  },
+  {
+    "id": "57b1e5441472db3495e2817a0dfc3e84f8b9907f463f4fd7a231dc70d17f21fc",
+    "name": "trading_system-aggtrade-collector-before-full-46fa983c",
+    "successor": "trading_system-aggtrade-collector",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-aggtrade-collector-before-full-46fa983c"
+  },
+  {
+    "id": "71aa5d6217f9deb50df780f3eb8d94919a11c9be938da26280ceba898f85cc26",
+    "name": "trading_system-kline-monitor-before-full-46fa983c",
+    "successor": "trading_system-kline-monitor",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-kline-monitor-before-full-46fa983c"
+  },
+  {
+    "id": "c20f9cbd9a290ff6b28ae1a25eadfd29c0a319e3bd54b5f9dd4b4f6430aacdd4",
+    "name": "trading_system-kline-before-full-46fa983c",
+    "successor": "trading_system-kline",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-kline-before-full-46fa983c"
+  },
+  {
+    "id": "56fd7f4a3417377b7ac5817a02196a14e8bb4a5fb04e176714a2cdbda976e513",
+    "name": "dashboard-api-before-classic-92b637a0",
+    "successor": "dashboard-api",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#dashboard-api-before-classic-92b637a0"
+  },
+  {
+    "id": "85d2b82f3cccb022e249794a0c6965d20ac6570bf57ae0380f4795d1bd59b2e9",
+    "name": "data-backend-before-full-46fa983c",
+    "successor": "data-backend",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#data-backend-before-full-46fa983c"
+  },
+  {
+    "id": "f4bceb171f85e42cc6d3cfab940aed61c304c1571a5ef7cf2763098dd674f5d3",
+    "name": "ai-tuner-snapshot-before-runtime-71384375",
+    "successor": "ai-tuner-snapshot",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#ai-tuner-snapshot-before-runtime-71384375"
+  },
+  {
+    "id": "bd7d4aff353f13fe04083d7b8fe57f1ac37c8d23a701add53ad63840d9e3312d",
+    "name": "ai-tuner-before-runtime-71384375",
+    "successor": "ai-tuner",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#ai-tuner-before-runtime-71384375"
+  },
+  {
+    "id": "5066067b019bd07ed09a96cede3072cbcda630f0f2a5c70eed153dc1e7c0c4e4",
+    "name": "trading_system-market-cap-before-full-46fa983c",
+    "successor": "trading_system-market-cap",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-market-cap-before-full-46fa983c"
+  },
+  {
+    "id": "9b7726186091af5bf353496d54b1a89558c67d6c8163ce9e1a30a84ed881daaa",
+    "name": "trading_system-execution-facts-before-full-46fa983c",
+    "successor": "trading_system-execution-facts",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-execution-facts-before-full-46fa983c"
+  },
+  {
+    "id": "6649f50b2334e971fde936fa8020367d20a63b5d56a2f844e09eb766aa7dad97",
+    "name": "trading_system-grid-realtime-before-full-46fa983c",
+    "successor": "trading_system-grid-realtime",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-grid-realtime-before-full-46fa983c"
+  },
+  {
+    "id": "377d1638953d6514a3f73b3d4ecc49d57b800a2233939a61e10cb6840b4870e9",
+    "name": "trading_system-grid-notifier-before-full-46fa983c",
+    "successor": "trading_system-grid-notifier",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-grid-notifier-before-full-46fa983c"
+  },
+  {
+    "id": "775e597ebc5c187a6cd140a00116cda7f3a94833c8d5477dc749a189cb7af278",
+    "name": "trading_system-grid-pg-projector-before-full-46fa983c",
+    "successor": "trading_system-grid-pg-projector",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-grid-pg-projector-before-full-46fa983c"
+  },
+  {
+    "id": "616cbad60f8aa8121bd735d4c00fbe93a2c0f220926e6c482e0d06d55f44547a",
+    "name": "trading_system-grid-dashboard-exporter-before-full-46fa983c",
+    "successor": "trading_system-grid-dashboard-exporter",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-grid-dashboard-exporter-before-full-46fa983c"
+  },
+  {
+    "id": "1ebde839970fc2702a9f5ef0ac7ba7bd47bec4b35ad65e88171c8b8e14e25929",
+    "name": "trading_system-grid-before-full-46fa983c",
+    "successor": "trading_system-grid",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-grid-before-full-46fa983c"
+  },
+  {
+    "id": "c0ff34fe42c3dace54fa588f1ce652394936f15c456478624d83996625bb2d84",
+    "name": "trading_system-new_coin-before-full-46fa983c",
+    "successor": "trading_system-new_coin",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-new_coin-before-full-46fa983c"
+  },
+  {
+    "id": "bbc6d072727e2e6de901cdd56643ef532c1c166393c89b218dc92039e67ac5b9",
+    "name": "trading_system-btc_eth_aggressive-before-full-46fa983c",
+    "successor": "trading_system-btc_eth_aggressive",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-btc_eth_aggressive-before-full-46fa983c"
+  },
+  {
+    "id": "d96a6453836dd5de9448dd1f886e7bbddebabf256bf1543e744c946fb55fbc99",
+    "name": "trading_system-mtcps-xau-calibrated-shadow-before-xau-d402ad0c",
+    "successor": "trading_system-mtcps-xau-calibrated-shadow",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-mtcps-xau-calibrated-shadow-before-xau-d402ad0c"
+  },
+  {
+    "id": "a1a068869bc69622863e6cadab27304a8959993d91c19f10700059d8f11e9453",
+    "name": "trading_system-btc_eth-before-full-46fa983c",
+    "successor": "trading_system-btc_eth",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-btc_eth-before-full-46fa983c"
+  },
+  {
+    "id": "b54754453725b77b52d7b0e752759baf7e6690d94dfc26677a69b2e798518df4",
+    "name": "trading_system-grid-executor-before-full-46fa983c",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "retired",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-grid-executor-before-full-46fa983c"
+  },
+  {
+    "id": "2046080956d6a4bd85b76363c742d70c01e7347cf42b66018d0415745f0cb5ec",
+    "name": "trading_system-grid-executor-ready-acee4c82",
+    "successor": "trading_system-grid-executor",
+    "lifecycle": "standby",
+    "reason": "2026-11-28 已核验发布接替实例健康；旧版或未激活备用保留回滚",
+    "evidence": "container-snapshot.json#trading_system-grid-executor-ready-acee4c82"
+  },
+  {
+    "id": "64aa20a70d4c9d7d0db4d755a342dffb1a12abfad3de840b51c3f5909128d97a",
+    "name": "history-tolerance-hrs-preflight-1c7c99cf",
+    "successor": "trading_system-hrs",
+    "lifecycle": "archived_failed_task",
+    "reason": "2026-11-28 旧版一次性预检已结束；归档失败历史，不作为当前在役宕机或成功任务",
+    "evidence": "task-and-image-review.json#history-tolerance-hrs-preflight-1c7c99cf",
+    "result": {
+      "success": false,
+      "error_count": 2,
+      "logs_sha256": "11b04da2f5262a2766e427a0daacdd9407321ad781887f2567bca7e254bd32b2"
+    },
+    "failure_summary": "2026-11-27 预检两次缺少 apscheduler；最终退出码0不覆盖前序失败，正式HRS已由后续发布接替",
+    "failure_observed_at": "2026-11-27T09:04:30.416319+00:00"
+  }
+]

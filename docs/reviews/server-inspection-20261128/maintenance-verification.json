@@ -1,0 +1,241 @@
+{
+  "observed_at": "2026-11-28T01:13:20.844159+00:00",
+  "disk": {
+    "total_bytes": 64356331520,
+    "used_bytes": 50924224512,
+    "available_bytes": 13432107008,
+    "usage_percent": 79.13
+  },
+  "containers": [
+    {
+      "name": "ai-tuner-funding-schedule",
+      "id": "c046598497224ff675bcf8c8d271b61df69d2bde754506f2956667b4806ba7b9",
+      "started": "2026-11-27T23:56:58.442486101Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "ai-tuner-snapshot",
+      "id": "253a1872d32e6a594799d0858f6cb7ee4ce8e7b4dce380b5ebc83c6f39fa4326",
+      "started": "2026-11-27T23:55:41.614903238Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "ai-tuner",
+      "id": "70564e814edbbb466f2d773108ffe1732ebd2b208ae0caad11da241d409d3028",
+      "started": "2026-11-27T23:53:38.342840407Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-aggtrade-collector",
+      "id": "538602324ca916a7fe95fcb2a1026c1cd091859d55520d7039e86b7675946cde",
+      "started": "2026-11-27T23:38:04.050908114Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-kline-monitor",
+      "id": "226075f5ccd1ecb0058dc19744afb4ce630bb72fd8f7a431482fdeebf2dc8fd2",
+      "started": "2026-11-27T23:36:43.278792733Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-kline",
+      "id": "97b7c0094049bb23014df43495104d40c5a7cebd85b96433790cc16d44df2a2d",
+      "started": "2026-11-27T23:34:49.370187774Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "dashboard-api",
+      "id": "6107eb9edd188b065d940280562e482481b4880ff40358bbad2d2895972e1539",
+      "started": "2026-11-27T23:33:42.662841626Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "data-backend",
+      "id": "0aaa86634e861b3853a9eddce71c39892bb81d9ab240624aea28f644e445900a",
+      "started": "2026-11-27T23:32:44.236444593Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-market-cap",
+      "id": "5c0e0298b4230b537186574dffc4f110c469efcc9b45a39debf04ef998af699e",
+      "started": "2026-11-27T23:27:18.573754413Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-execution-facts",
+      "id": "3e219fe5fd7d800634477d21bfa879d59b4643cd7501031f23293cd90559aa90",
+      "started": "2026-11-27T23:26:58.713269127Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-hrs-acceptance",
+      "id": "a060d48ebd4972b83222dccd26e85d72d141e82b860e2a7bbf085f819110042a",
+      "started": "2026-11-27T23:25:39.771883711Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-hrs",
+      "id": "847a204481e36ef8963a949ecaaa239502ad3d6381d52239834aba547e7368bd",
+      "started": "2026-11-27T23:24:24.645481485Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-grid-realtime",
+      "id": "736ca803f357e23a3c0da574ada5db273755116be229242ff93c44c6623091a7",
+      "started": "2026-11-27T23:23:09.568473588Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-grid-notifier",
+      "id": "14bd9d89f4e9bf2498f3f5d23d54621b13cdf06630c86e08cd643ccd6bcfe344",
+      "started": "2026-11-27T23:21:44.270177491Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-grid-pg-projector",
+      "id": "b3fc0d00bcc20fd3fd6ff1532408a3e7866156a3e0cb05042aa79b4ddd6c7daf",
+      "started": "2026-11-27T23:20:28.884171171Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-grid-dashboard-exporter",
+      "id": "620753bc0c688e0ece7e6e4c136d718a94a5d164269b3bda41531b662764f7af",
+      "started": "2026-11-27T23:19:14.020548383Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-grid",
+      "id": "193f83d5b6091824860e84972182f7c9ab172239b7b672a27c84dcb0481d938f",
+      "started": "2026-11-27T23:17:28.669161519Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-new_coin",
+      "id": "57c4e6f35c6a6f126769312a9890ac52ae4fbad0f9154a54ae526c275dd0f320",
+      "started": "2026-11-27T23:16:14.713102354Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-btc_eth_aggressive",
+      "id": "e38605fd13a85ee743be71d18eeb8b90f4f577b7a547589d8132d50bcd5c744e",
+      "started": "2026-11-27T23:14:49.436880501Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-mtcps-xau-calibrated-shadow",
+      "id": "779a9f2e124466625652cd5161d5f7d4593ed427a0eda861f78d4e4b938343c7",
+      "started": "2026-11-27T23:13:32.840417487Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-mtcps-xau-shadow",
+      "id": "2d0e997fd4e3cec34240cd4116f37b61f79d0abd2f9245c35b4e1b54f726eaad",
+      "started": "2026-11-27T23:12:16.437169942Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-btc_eth",
+      "id": "f085b691674bf6cff0413a4cc9e1c7112f55835beb12451874f4d22a4e6ee89d",
+      "started": "2026-11-27T23:10:52.5320625Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-grid-executor",
+      "id": "82ce0e0607af8239e1975e2e6b68cbc0da9994947b5730da83138706c5d1a4c3",
+      "started": "2026-11-27T23:40:09.179448054Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "stockfilter-obpc",
+      "id": "f4c3886d9e1f70a07cfa6cdce3361113918cd10dbea498ef83ead78645c2740c",
+      "started": "2026-11-26T13:11:18.342949324Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "stockfilter-eadvisor",
+      "id": "838004711b516655ff1105d2134be5571d0f2aa2508e1be75b07837fedc14e3c",
+      "started": "2026-11-26T13:11:17.734372802Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "stockfilter-yili",
+      "id": "9f0caff2504e8a6ae5f5c91bafe0617a2830b9f2aeb6ee61994c1373861f9716",
+      "started": "2026-11-26T13:11:17.745289255Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "stockfilter-kline",
+      "id": "3b220f1d27f43420fd79a0e9f4ed2b449819fd715f3da7e4faa5ec009f47524e",
+      "started": "2026-11-26T13:11:17.741889439Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-mtpcs-direction-shadow",
+      "id": "6cadb63107416f9e9abf6dc72581f5138e8d48a6424b76c19cbdcc10d930bb68",
+      "started": "2026-11-25T13:26:58.95689424Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-hrs-research-observer",
+      "id": "72243462b5691fce2f2300a7e715023da808dde2cb974c85b93130a2dddf53f7",
+      "started": "2026-11-25T13:26:49.637052702Z",
+      "health": null,
+      "restarts": 0
+    },
+    {
+      "name": "trading_system-postgres",
+      "id": "7b5e188e6a57e1c3aafa2134a7cd941c7d17b51d2b11a32e61dbd0bd77239b35",
+      "started": "2026-10-28T07:02:09.719787952Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "common_service_postgres",
+      "id": "9798587947b110a30fb4deb204f893831a7cd8014511b4fafc73914a50d54dda",
+      "started": "2026-10-15T00:15:30.532477805Z",
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "common_service_redis",
+      "id": "cd2ecb664b661b8fbf0a3cab0b26fa55d34ff86a29d925a63ef1c3e5580c0405",
+      "started": "2026-10-15T00:15:30.512910481Z",
+      "health": "healthy",
+      "restarts": 0
+    }
+  ],
+  "archive": {
+    "removed_source_files": 2862,
+    "removed_cache_files": 600,
+    "applied_at": "2026-11-28T01:12:23.037065+00:00",
+    "archive_sha256": "9ff0b13bfd19f89a2098f366e028bd73b083659b102fedd26dc296f991824d27"
+  }
+}

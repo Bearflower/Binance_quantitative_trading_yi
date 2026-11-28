@@ -23,13 +23,14 @@ from decimal import Decimal
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from types import SimpleNamespace
 
 from shared.accounting.account_cutover import account_cutover_ms, order_epoch
 from shared.accounting.income_integrity import require_income_integrity
 from shared.accounting.report_reader import read_monthly_economic_report
-from .decision_capture import canonical_payload
+from .decision_capture import canonical_payload, _normalize
 from .equity_evidence import (
     attribute_funding_from_inventory, canonical, order_key, order_owners, owned_fill_positions, prove_positions,
 )
@@ -43,6 +44,10 @@ DEFAULT_OUTPUT = '/app/logs/hrs-acceptance.json'
 # Reporter has a 256 MiB container. Reject oversized sources before JSON decode;
 # these are availability limits, never permission to omit a source and qualify.
 MAX_SOURCE_PAYLOAD_BYTES = 4 * 1024 * 1024
+# 只有经过完整报告内存验证的配置才允许扩大单条读取预算。
+MAX_CONFIGURED_SOURCE_PAYLOAD_BYTES = 8 * 1024 * 1024
+# 字节限制不能约束小对象数量；解析前额外限制结构复杂度。
+MAX_SOURCE_STRUCTURE_TOKENS = 250_000
 MAX_RETAINED_EVIDENCE_BYTES = 8 * 1024 * 1024
 MAX_PARENT_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_ROWS = 20000
@@ -77,10 +82,37 @@ def _audit_time(value):
 
 
 def _object(value):
+    if isinstance(value, str):
+        _check_source_structure(value)
     result = json.loads(value) if isinstance(value, str) else value
     if not isinstance(result, dict):
         raise ValueError('object_unproven')
     return result
+
+
+def _check_source_structure(value):
+    """只计字符串外的结构符号，避免解码高密度 JSON 时先耗尽内存。"""
+    count = 0
+    position = 0
+    token = re.compile(r'["{\[,:]')
+    while match := token.search(value, position):
+        position = match.end()
+        if match.group() == '"':
+            # 用 C 层字符串查找跳过大段文本，避免逐字符 Python 扫描。
+            while True:
+                end = value.find('"', position)
+                if end < 0:
+                    return  # 语法有效性仍由后续 JSON 解码器判定。
+                slash = end - 1
+                while slash >= position and value[slash] == '\\':
+                    slash -= 1
+                position = end + 1
+                if (end - slash - 1) % 2 == 0:
+                    break
+        else:
+            count += 1
+            if count > MAX_SOURCE_STRUCTURE_TOKENS:
+                raise ReportEvidenceLimitExceeded('report_source_structure_budget_exceeded')
 
 
 def _number(value):
@@ -888,21 +920,51 @@ class _Reader:
         return await self.connection.fetch(sql, *args)
 
 
+def _source_payload_limit():
+    raw = os.getenv('HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES')
+    if raw is None:
+        return MAX_SOURCE_PAYLOAD_BYTES
+    if not raw.isascii() or not raw.isdecimal() or not 0 < int(raw) <= MAX_CONFIGURED_SOURCE_PAYLOAD_BYTES:
+        raise ValueError('report_source_budget_configuration_invalid')
+    return int(raw)
+
+
+def _source_digest(payload):
+    """沿用原始规范化契约，增量校验，避免完整编码字符串和字节副本。"""
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(sort_keys=True, separators=(',', ':'),
+                               allow_nan=False, ensure_ascii=False)
+    for chunk in encoder.iterencode(_normalize(payload)):
+        digest.update(chunk.encode('utf-8'))
+    return digest.hexdigest()
+
+
+def _source_error_code(exc):
+    # 只输出内部固定诊断码；数据库异常文本可能携带连接或业务信息。
+    known = {'report_source_budget_configuration_invalid',
+             'report_source_payload_budget_exceeded', 'report_source_row_budget_exceeded',
+             'report_retained_evidence_budget_exceeded', 'report_parent_payload_budget_exceeded',
+             'report_source_structure_budget_exceeded'}
+    code = exc.args[0] if exc.args else None
+    return code if isinstance(code, str) and code in known else None
+
+
 def _source_payload_bytes(row):
+    limit = _source_payload_limit()
     size = row.get('source_payload_bytes')
     if type(size) is int:
-        if size < 0 or size > MAX_SOURCE_PAYLOAD_BYTES:
+        if size < 0 or size > limit:
             raise ReportEvidenceLimitExceeded('report_source_payload_budget_exceeded')
         return size
     payload = row['payload']
     if isinstance(payload, str):
         # A cheap character check precedes UTF-8 encoding of unexpected adapters.
-        if len(payload) > MAX_SOURCE_PAYLOAD_BYTES:
+        if len(payload) > limit:
             raise ReportEvidenceLimitExceeded('report_source_payload_budget_exceeded')
         size = len(payload.encode('utf-8'))
     else:
         size = len(canonical_payload(payload)[0].encode('utf-8'))
-    if size > MAX_SOURCE_PAYLOAD_BYTES:
+    if size > limit:
         raise ReportEvidenceLimitExceeded('report_source_payload_budget_exceeded')
     return size
 
@@ -916,7 +978,7 @@ async def _bounded_source_rows(connection, sql, *args, columns, recorded_at=Fals
     selection = ','.join('report_source.' + field for field in fields)
     size = 'octet_length(report_source.payload::text)'
     bounded = f"""SELECT {selection},
-        CASE WHEN {size} <= {MAX_SOURCE_PAYLOAD_BYTES} THEN report_source.payload ELSE NULL END AS payload,
+        CASE WHEN {size} <= {_source_payload_limit()} THEN report_source.payload ELSE NULL END AS payload,
         {size} AS source_payload_bytes FROM ({sql}) AS report_source"""
     if order_by:
         bounded += ' ORDER BY ' + order_by
@@ -935,7 +997,7 @@ def _compact_record(raw):
     row = dict(raw)
     _source_payload_bytes(row)
     payload = _object(row['payload'])
-    valid = canonical_payload(payload)[1] == row['payload_sha256']
+    valid = _source_digest(payload) == row['payload_sha256']
     row['source_payload_sha256'] = row['payload_sha256']
     if row.get('kind') == 'scan_start':
         # Both technical and lifecycle consumers use the complete entry policy;
@@ -1171,6 +1233,9 @@ async def build_report(db, *, as_of=None, account_id=None):
                 result['database_snapshot_coherent'] = True
     except Exception as exc:
         result['source_error_type'] = type(exc).__name__
+        code = _source_error_code(exc)
+        if code:
+            result['source_error_code'] = code
         # Never retain stale passing financial evidence after a failed snapshot.
         financial = reconcile_lifecycles([], [], [], {}, account_id=account, inception=now, through=now)
     if technical is None:

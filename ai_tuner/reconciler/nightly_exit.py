@@ -1,7 +1,9 @@
 """Recover missing protective exits using signed exchange order identities."""
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from asyncpg import Range
 import structlog
 
 log = structlog.get_logger()
@@ -9,33 +11,69 @@ log = structlog.get_logger()
 GAPS = """
 SELECT DISTINCT i.symbol, f.order_id, f.side
 FROM trading.execution_fact_income i
-LEFT JOIN trading.execution_fact_fill f USING (account_id,symbol,trade_id)
+LEFT JOIN trading.execution_fact_fill f ON (f.account_id=i.account_id AND f.symbol=i.symbol
+    AND f.trade_id=i.trade_id AND f.trade_time_utc <@ $3::tstzrange)
 WHERE i.account_id=$1 AND i.income_type='REALIZED_PNL'
+AND i.event_time_utc <@ $3::tstzrange
 AND i.event_time_utc >= least(now()-interval '7 days',
     coalesce((SELECT to_timestamp(nullif(last_reconciled_ts,0)/1000.0)
-              FROM {state_table} WHERE account_id=$1), now()),
+              FROM {state_table} WHERE account_id=$2), now()),
     coalesce((SELECT to_timestamp(min(event_ms)/1000.0)
-              FROM {state_table}_gaps WHERE account_id=$1), now()))
+              FROM {state_table}_gaps WHERE account_id=$2), now()))
 AND NOT EXISTS (SELECT 1 FROM trading.trade_records t WHERE t.account_id=i.account_id
-                AND t.symbol=i.symbol AND t.order_id=f.order_id::text AND t.order_type<>'PNL_SUMMARY')
+                AND t.symbol=i.symbol AND t.order_id=f.order_id::text AND t.order_type<>'PNL_SUMMARY'
+                AND t.executed_at <@ $4::tsrange)
 """
 OWNERS = """
 SELECT strategy, algo_id, side FROM trading.trade_records
 WHERE account_id=$1 AND symbol=$2 AND order_type='CONDITIONAL_ORDER' AND algo_id IS NOT NULL
+AND executed_at <@ $5::tsrange
 AND executed_at <= (SELECT max(trade_time_utc) AT TIME ZONE 'Asia/Shanghai'
-                    FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND order_id=$3)
+                    FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND order_id=$3
+                    AND trade_time_utc <@ $4::tstzrange)
 AND executed_at >= (SELECT min(trade_time_utc) AT TIME ZONE 'Asia/Shanghai' - interval '30 days'
-                    FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND order_id=$3)
+                    FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND order_id=$3
+                    AND trade_time_utc <@ $4::tstzrange)
 ORDER BY executed_at DESC
 """
 FILLS = """
 SELECT f.*, ARRAY(SELECT i.income FROM trading.execution_fact_income i
  WHERE i.account_id=f.account_id AND i.symbol=f.symbol AND i.trade_id=f.trade_id
- AND i.asset='USDT' AND i.income_type='REALIZED_PNL') AS incomes
+ AND i.asset='USDT' AND i.income_type='REALIZED_PNL'
+ AND i.event_time_utc <@ $4::tstzrange) AS incomes
 FROM trading.execution_fact_fill f WHERE account_id=$1 AND symbol=$2 AND order_id=$3
+AND trade_time_utc <@ $4::tstzrange
 """
 REASONS = {'STOP': 'STOP_LOSS', 'STOP_MARKET': 'STOP_LOSS',
            'TAKE_PROFIT': 'TAKE_PROFIT', 'TAKE_PROFIT_MARKET': 'TAKE_PROFIT'}
+
+
+def _account_scope(rec):
+    """复用收益校准器的切点语义，禁止用另一模式的签名接口补历史单。"""
+    if type(rec.pm) is not bool or rec.binance.use_unified_account is not rec.pm:
+        raise ValueError('收益校准器与交易客户端账户模式不一致')
+    cutover = rec.cutover
+    if cutover is not None and (type(cutover) is not int or not 0 < cutover < 253402300800000):
+        raise ValueError('账户模式切换时间无效')
+    if not rec.pm and cutover is None:
+        raise ValueError('经典账户成交补录缺少模式切换时间')
+    boundary = datetime.fromtimestamp(cutover / 1000, timezone.utc) if cutover else None
+    local = boundary.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None) if boundary else None
+    return (Range(None, boundary) if rec.pm else Range(boundary, None),
+            Range(None, local) if rec.pm else Range(local, None),
+            rec.account_id if rec.pm else f'classic:{cutover}:{rec.account_id}')
+
+
+def _require_current_fills(rows, epoch):
+    """接口调用前校验来源，事务内再次检查，不能仅依赖上游候选查询。"""
+    if not rows:
+        raise ValueError('缺少当前账户模式的成交事实')
+    for row in rows:
+        stamp = row['trade_time_utc']
+        if (not isinstance(stamp, datetime) or stamp.tzinfo is None
+                or (epoch.lower is not None and stamp < epoch.lower)
+                or (epoch.upper is not None and stamp >= epoch.upper)):
+            raise ValueError('成交事实不属于当前账户模式')
 
 
 def verify_fill(order, rows, symbol, side, order_id):
@@ -57,12 +95,14 @@ def verify_fill(order, rows, symbol, side, order_id):
 
 
 async def repair_order(rec, gap):
+    fact_epoch, record_epoch, _ = _account_scope(rec)
     symbol, oid, side = gap['symbol'], gap['order_id'], gap['side']
     if not oid:
         raise ValueError('missing execution fact')
     args = (rec.account_id, symbol, oid)
+    _require_current_fills(await rec.db.fetch_all(FILLS, *args, fact_epoch), fact_epoch)
     owners = defaultdict(set)
-    for row in await rec.db.fetch_all(OWNERS, *args):
+    for row in await rec.db.fetch_all(OWNERS, *args, fact_epoch, record_epoch):
         owners[str(row['algo_id'])].add((row['strategy'], row['side']))
     matches = []
     for aid, claims in owners.items():
@@ -87,14 +127,18 @@ async def repair_order(rec, gap):
         await conn.execute('LOCK TABLE trading.trade_records IN SHARE ROW EXCLUSIVE MODE')
         current = await conn.fetch("SELECT DISTINCT strategy,side FROM trading.trade_records "
                                    "WHERE account_id=$1 AND symbol=$2 AND algo_id=$3 "
-                                   "AND order_type='CONDITIONAL_ORDER'", rec.account_id, symbol, aid)
+                                   "AND order_type='CONDITIONAL_ORDER' AND executed_at <@ $4::tsrange",
+                                   rec.account_id, symbol, aid, record_epoch)
         if {(r['strategy'], r['side']) for r in current} != {(strategy, side)}:
             raise ValueError('protective order ownership changed')
         if await conn.fetchval("""SELECT count(*) FROM trading.trade_records WHERE symbol=$1
-                AND order_id=$2 AND (account_id=$3 OR account_id IS NULL)""",
-                               symbol, str(oid), rec.account_id):
+                AND order_id=$2 AND (account_id=$3 OR account_id IS NULL)
+                AND (executed_at <@ $4::tsrange OR executed_at IS NULL)""",
+                               symbol, str(oid), rec.account_id, record_epoch):
             return False
-        values = verify_fill(order, await conn.fetch(FILLS, *args), symbol, side, oid)
+        fills = await conn.fetch(FILLS, *args, fact_epoch)
+        _require_current_fills(fills, fact_epoch)
+        values = verify_fill(order, fills, symbol, side, oid)
         await conn.execute("""INSERT INTO trading.trade_records
             (account_id,strategy,symbol,order_id,side,order_type,status,close_reason,
              quantity,price,commission,realized_pnl,executed_at,pnl_source)
@@ -105,13 +149,22 @@ async def repair_order(rec, gap):
 
 
 async def nightly_exit_repair(rec):
+    fact_epoch, record_epoch, progress_id = _account_scope(rec)
     inserted = unresolved = 0
     await rec._ensure_state_table()
     query = GAPS.format(state_table=f"{rec.state_schema}.{rec.state_table}")
-    for gap in await rec.db.fetch_all(query, rec.account_id):
+    for gap in await rec.db.fetch_all(query, rec.account_id, progress_id, fact_epoch, record_epoch):
         try:
             inserted += await repair_order(rec, gap)
         except Exception as exc:
             unresolved += 1
             log.warning('条件单成交待核实', symbol=gap['symbol'], order_id=gap['order_id'], error=str(exc))
-    log.info('凌晨成交补录完成', inserted=inserted, unresolved=unresolved)
+    historical_pending = 0
+    if not rec.pm:
+        # 历史缺口仍显式汇总；不调用经典接口、补写归属或推进 PM 游标。
+        history = await rec.db.fetch_all(query, rec.account_id, rec.account_id,
+                                        Range(None, fact_epoch.lower), Range(None, record_epoch.lower))
+        historical_pending = len(history)
+        if historical_pending:
+            log.warning('历史 PM 成交归属待补证据', historical_pending=historical_pending, status='BLOCKED_DATA')
+    log.info('凌晨成交补录完成', inserted=inserted, unresolved=unresolved, historical_pending=historical_pending)

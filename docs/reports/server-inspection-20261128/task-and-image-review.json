@@ -1,0 +1,1653 @@
+{
+  "observed_at": "2026-11-28T00:55:40.834653+00:00",
+  "tasks": [
+    {
+      "name": "grid-release-probe-1795823748805873848",
+      "id": "39c1d9f3de7867d01dfe6e3a3540c008b22c1aa611d4f0050a9ff4937296227f",
+      "exit_code": 0,
+      "logs_sha256": "76b0d0dc2a494b9f6e8e2235c98e862dd1aeb9ee205a0d5a26411a60425caae2",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795823673844583415",
+      "id": "c0c2926991efcc5cf79dfd103385f96dee43b2ccee1f1b287bdf9601d369200e",
+      "exit_code": 0,
+      "logs_sha256": "74b120289bf596540667a3b74224f2052a6a9623d5fcf0cf803f59fe73fa6824",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795823608837310983",
+      "id": "badf58e05aaebe5a9a6fef1cb023d79559d054b71532e9962ae13482f2756460",
+      "exit_code": 0,
+      "logs_sha256": "13a2dab302da17a8dc956cae5ba6860747caa90e34e4b46cb1da7a9ed16f1d08",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-maintenance-1795822713783270968",
+      "id": "59af076c31769fdf78ac9d2b48a2b1e8fde46fd78d47e7d1dcdcd32d0ed9d450",
+      "exit_code": 0,
+      "logs_sha256": "a24b8ee8624d5a102b98f2c0cf920e6d168d94921754c213d8a5c44fc7e03443",
+      "error_lines": [],
+      "results": [
+        {
+          "protected": true,
+          "flat": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": []
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822691865509265",
+      "id": "96c02b1ab0c4ad695e60d31cf0d6703199a465d706d1204981c82d7f12d55d9d",
+      "exit_code": 0,
+      "logs_sha256": "09b2f7ec6bab28d8527074f558d76dfb4a9e2c6d7344e5c2c992daa529c53d0f",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822610354251421",
+      "id": "2b1ec166720cf12341de0918d6fdc8ac9c3dc54f27371665f1819945bd674550",
+      "exit_code": 0,
+      "logs_sha256": "3ea3baf0f53dec7fae07d49c3570626223a83c0919be0841fb11b40b4ed65396",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822527416437806",
+      "id": "cc55f30adba6197c3123f0286345f3cb1763082f2a8cbb229f871ceec1cb0e80",
+      "exit_code": 0,
+      "logs_sha256": "9092aa26acb7339b82c021b7864bb13c858f61c9fbc407185827b113731f509b",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822462450697894",
+      "id": "fb73963c9cc77a848823a87c984b7b6b8417c2db83d1e64512c77e205e35e30f",
+      "exit_code": 0,
+      "logs_sha256": "2159c6743e0ee57fbb936839c3aea3b6590126e8123efc4434c2edd94486f5ec",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822396960643249",
+      "id": "3ed8dd86c9df01ddc424633ac276a7efd9c48de0c8578b83a41581b08d80e3f1",
+      "exit_code": 0,
+      "logs_sha256": "b8e69bfdf93e9093e5f74a0f64e4b0eb7ba0b5183f4c1ca8154f7f84cb5209ba",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822331814871009",
+      "id": "e6c5f05239746d3af911cf8e51fefe93dfcefae422af8a2838381b8de7a08487",
+      "exit_code": 0,
+      "logs_sha256": "5cc2675f6a8cdf3a17bfd0fc7734831c2daa95ede2d10a320c963e3b20d83ed5",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822238198146627",
+      "id": "e0cb5887adf5c39e400ddefa1fff9019fe605d23a7437253fca3bd50a733e6aa",
+      "exit_code": 0,
+      "logs_sha256": "b2cf2d88bac7a10b7e2479b0c659485a5c7be4b56e1f2281e0e85037e60e4fee",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822160224283011",
+      "id": "2af092007066bd412fba18783ae49c55a44337874820daee09394bd52eae0283",
+      "exit_code": 0,
+      "logs_sha256": "8ec8d89466a5dd362620d4b997830350c11a9052b6b58d341ba1530cf1dafe52",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822095164106641",
+      "id": "30eeb200752b077f0ae8f4928731d798d9532c8ff0d94451007b8ebb4c14ce46",
+      "exit_code": 0,
+      "logs_sha256": "26965c278cd2bfcd8f0e4326e26db588d20c97867bdd913b741e2bb9efb21739",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795822029987386436",
+      "id": "115355c94ca00d1cadc2274e40b9e33c031f1761493d0f0c597c382c8083569a",
+      "exit_code": 0,
+      "logs_sha256": "31f52c008f00f15ea0ed8ee03a7dbd57682d5ae0e12caf5d21aba9fff2064cb5",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821948172404126",
+      "id": "2400fc8d54df247fe3751d7b1b722242977c428f96c74b5df6128eb981c17b56",
+      "exit_code": 0,
+      "logs_sha256": "4e34b9031f1141255f0456d6c37ff050522a455ea89c25cbdbbf2337cfd6cf27",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821871785006173",
+      "id": "6dcb269c74389221fbe9d21a6801398184d3291290f135e77e3054e42f08beee",
+      "exit_code": 0,
+      "logs_sha256": "0ce0d1946ab44b225c5b82c484d93f2a096e12cee07f11a7c7eaf9d2e73ef2d4",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821796421065958",
+      "id": "45eab76278e89c8ee089397210385101abb0de00bfddd59780c4e72e0a14cc06",
+      "exit_code": 0,
+      "logs_sha256": "130eeea0c6647e4814decbd1b08c06ad3b4ce240d010c2e6394257680c6a7464",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821721309814248",
+      "id": "2dae9b210875efcf02fc97072d2b8cf44094d71ad1acbcbc53ccb3078c21a488",
+      "exit_code": 0,
+      "logs_sha256": "c5ecfd22757f2a5059930d643e2af069c49bc24749b996b5e1361623add2cbb3",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821635657426736",
+      "id": "a9ce4fb5c393230b7b4f57c126bf1cd8b9ff738fe86d1ff8a5fa30240b2a62d3",
+      "exit_code": 0,
+      "logs_sha256": "9995a5829fe8cb99dbf42617384364a53fa51784c0f37d91fc5d4a09a289fed6",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821561584712436",
+      "id": "f62e4c36ce4ab15da385b131ee77a920c920beee9344fcd6b077a9ef7b339707",
+      "exit_code": 0,
+      "logs_sha256": "a7dafc261d61a0cd08dbebf3fc4061c0f26e93d7c4c548efd21af0a934ca60c1",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821485110873517",
+      "id": "af72b49245644f7913f0845bc67da93d1d2f2361c05969168620262c7c18738c",
+      "exit_code": 0,
+      "logs_sha256": "51c5ad49f2ad5051e7da156f5a6863a01371bfb35006e0781a2a5f7f9a4ef5ca",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821381766605919",
+      "id": "650ad4266822c72ccee23e057b57fae3d5a197a0a5a9d72cd0c6a7fb2d5c8ea9",
+      "exit_code": 0,
+      "logs_sha256": "7abcf51966139e6c5b57a1b9f293b9d58eca0fd7a65f6d3a48270c4f9b8b443f",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821301851240625",
+      "id": "df4909f36e99cd7f1d19cb35bec0d207ab31642a63304506d2206713db512c59",
+      "exit_code": 0,
+      "logs_sha256": "9c68cdc542c44b3142426b11086c803f5e3d6541c957e074b70700224e3c7670",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821219656572660",
+      "id": "2696e9e8202045f27d51286b350de4deb7452630ff09462caaf2e7ad0f9da93e",
+      "exit_code": 0,
+      "logs_sha256": "b08c8d13d4778f3b251fc357a4c2c3ff5011bf7474abeeb6b962ed57209a8cbe",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821143354002668",
+      "id": "53260842dca705e2e6e2ecfbeefbfd7cd704f7856ea40cdccaed25102ad101bc",
+      "exit_code": 0,
+      "logs_sha256": "07aa57c21af768fd8b5bd13a0af69e401455823e3bccb622554d3a047dc9afe5",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795821065243093634",
+      "id": "b724a09b35f84294460d312a2e03f7b142d32adc8c5bf4461214cb873fa600fa",
+      "exit_code": 0,
+      "logs_sha256": "a9fd4873b46ea486a09ac6c31778e094b16d0a5bdce8cfdc7f215dfee470a7bd",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-probe-1795820979047933982",
+      "id": "beb20e771ae14e2ffe33c0c5f83c8060f0856cd59d7c155956aff0c2462d0f77",
+      "exit_code": 0,
+      "logs_sha256": "a49ee7c15246939a645d3af8c5219ee97dda2215aebfd96b064036f13d557c3f",
+      "error_lines": [],
+      "results": [
+        {
+          "read_only": true,
+          "reconciled": true,
+          "protected": true,
+          "flat": true,
+          "stream_ready": true,
+          "heartbeat_fresh": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": [],
+          "live_journal_untouched": true,
+          "snapshot_stable": true
+        }
+      ]
+    },
+    {
+      "name": "grid-release-maintenance-1795777452110226077",
+      "id": "6d50369a80a59f38690f0d5117c8c1082feb22986a067eda56ade44ac6014982",
+      "exit_code": 0,
+      "logs_sha256": "b4ea8842aee35fb047f944d04013aa296dab9efb5b3f76004c58d2950ab024b2",
+      "error_lines": [],
+      "results": [
+        {
+          "protected": true,
+          "flat": true,
+          "risk_status": "ALLOW",
+          "risk_reasons": []
+        }
+      ]
+    },
+    {
+      "name": "history-tolerance-hrs-preflight-1c7c99cf",
+      "id": "64aa20a70d4c9d7d0db4d755a342dffb1a12abfad3de840b51c3f5909128d97a",
+      "exit_code": 0,
+      "logs_sha256": "11b04da2f5262a2766e427a0daacdd9407321ad781887f2567bca7e254bd32b2",
+      "error_lines": [
+        "Traceback (most recent call last):",
+        "ModuleNotFoundError: No module named 'apscheduler'",
+        "Traceback (most recent call last):",
+        "ModuleNotFoundError: No module named 'apscheduler'"
+      ],
+      "results": []
+    }
+  ],
+  "images": [
+    {
+      "id": "sha256:9e9956e8e9b47922a63d50269d7153d92cab4f80b03b05a3297a10af2d848e25",
+      "tags": [
+        "ghcr.io/bearflower/trading-ai-tuner@sha256:9e9956e8e9b47922a63d50269d7153d92cab4f80b03b05a3297a10af2d848e25"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-ai-tuner@sha256:9e9956e8e9b47922a63d50269d7153d92cab4f80b03b05a3297a10af2d848e25"
+      ],
+      "size": 174407915,
+      "created": "2026-11-27T23:48:00.195893963Z",
+      "containers": [
+        "ai-tuner-funding-schedule",
+        "ai-tuner-snapshot",
+        "ai-tuner"
+      ]
+    },
+    {
+      "id": "sha256:7820a67e630a728bf2812d6952cff11fd2ecf7faf6a80d3d1329a0ea8762ac70",
+      "tags": [
+        "ghcr.io/bearflower/trading-grid@sha256:7820a67e630a728bf2812d6952cff11fd2ecf7faf6a80d3d1329a0ea8762ac70"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-grid@sha256:7820a67e630a728bf2812d6952cff11fd2ecf7faf6a80d3d1329a0ea8762ac70"
+      ],
+      "size": 196565752,
+      "created": "2026-11-27T23:47:59.026347079Z",
+      "containers": [
+        "grid-release-probe-1795823748805873848",
+        "grid-release-probe-1795823673844583415",
+        "grid-release-probe-1795823608837310983"
+      ]
+    },
+    {
+      "id": "sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7",
+      "tags": [
+        "ghcr.io/bearflower/trading-hrs@sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-hrs@sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7"
+      ],
+      "size": 200026456,
+      "created": "2026-11-27T23:03:21.416206678Z",
+      "containers": [
+        "trading_system-market-cap",
+        "trading_system-execution-facts",
+        "trading_system-hrs-acceptance",
+        "trading_system-hrs"
+      ]
+    },
+    {
+      "id": "sha256:2d108cc950d098a1379505497c8d4439224304bc230d23190d00adca8c881de1",
+      "tags": [
+        "ghcr.io/bearflower/trading-dashboard-api@sha256:2d108cc950d098a1379505497c8d4439224304bc230d23190d00adca8c881de1"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-dashboard-api@sha256:2d108cc950d098a1379505497c8d4439224304bc230d23190d00adca8c881de1"
+      ],
+      "size": 208859308,
+      "created": "2026-11-27T23:03:13.783557252Z",
+      "containers": [
+        "dashboard-api"
+      ]
+    },
+    {
+      "id": "sha256:9d68bde5982c14770368ba714a2e87760d8d56a138954aabfac92badf0a2cc65",
+      "tags": [
+        "ghcr.io/bearflower/trading-btc-eth@sha256:9d68bde5982c14770368ba714a2e87760d8d56a138954aabfac92badf0a2cc65"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-btc-eth@sha256:9d68bde5982c14770368ba714a2e87760d8d56a138954aabfac92badf0a2cc65"
+      ],
+      "size": 197007439,
+      "created": "2026-11-27T23:03:12.800292867Z",
+      "containers": [
+        "trading_system-mtcps-xau-calibrated-shadow",
+        "trading_system-mtcps-xau-shadow",
+        "trading_system-btc_eth"
+      ]
+    },
+    {
+      "id": "sha256:251196d15639db1aa080c2589c259ef6714d42f8a43c747cb8aef979e71d54de",
+      "tags": [
+        "ghcr.io/bearflower/trading-kline-service@sha256:251196d15639db1aa080c2589c259ef6714d42f8a43c747cb8aef979e71d54de"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-kline-service@sha256:251196d15639db1aa080c2589c259ef6714d42f8a43c747cb8aef979e71d54de"
+      ],
+      "size": 175017483,
+      "created": "2026-11-27T23:03:10.929709201Z",
+      "containers": [
+        "trading_system-kline"
+      ]
+    },
+    {
+      "id": "sha256:b2bfb0236d6c8478581421a3ae7af1cdc3dfe25e6ba5530c804a90a107fe93c8",
+      "tags": [
+        "ghcr.io/bearflower/trading-data-backend@sha256:b2bfb0236d6c8478581421a3ae7af1cdc3dfe25e6ba5530c804a90a107fe93c8"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-data-backend@sha256:b2bfb0236d6c8478581421a3ae7af1cdc3dfe25e6ba5530c804a90a107fe93c8"
+      ],
+      "size": 206359126,
+      "created": "2026-11-27T23:03:10.810362627Z",
+      "containers": [
+        "data-backend"
+      ]
+    },
+    {
+      "id": "sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b",
+      "tags": [
+        "ghcr.io/bearflower/trading-grid@sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-grid@sha256:ac068fdb771007b0f89b96937d19f50f658e0c76e005a053de677064e189c34b"
+      ],
+      "size": 196564658,
+      "created": "2026-11-27T23:03:09.358714422Z",
+      "containers": [
+        "grid-release-maintenance-1795822713783270968",
+        "grid-release-probe-1795822691865509265",
+        "grid-release-probe-1795822610354251421",
+        "grid-release-probe-1795822527416437806",
+        "grid-release-probe-1795822462450697894",
+        "grid-release-probe-1795822396960643249",
+        "grid-release-probe-1795822331814871009",
+        "grid-release-probe-1795822238198146627",
+        "grid-release-probe-1795822160224283011",
+        "grid-release-probe-1795822095164106641",
+        "grid-release-probe-1795822029987386436",
+        "grid-release-probe-1795821948172404126",
+        "grid-release-probe-1795821871785006173",
+        "grid-release-probe-1795821796421065958",
+        "grid-release-probe-1795821721309814248",
+        "grid-release-probe-1795821635657426736",
+        "grid-release-probe-1795821561584712436",
+        "grid-release-probe-1795821485110873517",
+        "grid-release-probe-1795821381766605919",
+        "grid-release-probe-1795821301851240625",
+        "grid-release-probe-1795821219656572660",
+        "grid-release-probe-1795821143354002668",
+        "grid-release-probe-1795821065243093634",
+        "grid-release-probe-1795820979047933982",
+        "trading_system-grid-realtime",
+        "trading_system-grid-notifier",
+        "trading_system-grid-pg-projector",
+        "trading_system-grid-dashboard-exporter",
+        "trading_system-grid",
+        "trading_system-grid-executor"
+      ]
+    },
+    {
+      "id": "sha256:31011b9f45e12f3e75049eebb337d1358e70c721fbea61fce58f8796977411db",
+      "tags": [
+        "ghcr.io/bearflower/trading-btc-eth-aggr@sha256:31011b9f45e12f3e75049eebb337d1358e70c721fbea61fce58f8796977411db"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-btc-eth-aggr@sha256:31011b9f45e12f3e75049eebb337d1358e70c721fbea61fce58f8796977411db"
+      ],
+      "size": 196840682,
+      "created": "2026-11-27T23:03:08.871356195Z",
+      "containers": [
+        "trading_system-btc_eth_aggressive"
+      ]
+    },
+    {
+      "id": "sha256:58cd5bbc25cb1ea1e3339ba53215a2ebc405bf42bf0a1d933e6e4c03744ceff4",
+      "tags": [
+        "ghcr.io/bearflower/trading-new-coin@sha256:58cd5bbc25cb1ea1e3339ba53215a2ebc405bf42bf0a1d933e6e4c03744ceff4"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-new-coin@sha256:58cd5bbc25cb1ea1e3339ba53215a2ebc405bf42bf0a1d933e6e4c03744ceff4"
+      ],
+      "size": 196906132,
+      "created": "2026-11-27T23:03:07.376305258Z",
+      "containers": [
+        "trading_system-new_coin"
+      ]
+    },
+    {
+      "id": "sha256:9a0d850ee6479560c28d03d87c3fd22a9fca04bf5c0117a9ca9495547589015f",
+      "tags": [
+        "ghcr.io/bearflower/trading-ai-tuner@sha256:9a0d850ee6479560c28d03d87c3fd22a9fca04bf5c0117a9ca9495547589015f"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-ai-tuner@sha256:9a0d850ee6479560c28d03d87c3fd22a9fca04bf5c0117a9ca9495547589015f"
+      ],
+      "size": 174407426,
+      "created": "2026-11-27T23:03:04.520759306Z",
+      "containers": [
+        "ai-tuner-funding-schedule-before-full-5b57d130",
+        "ai-tuner-snapshot-before-full-5b57d130",
+        "ai-tuner-before-full-5b57d130"
+      ]
+    },
+    {
+      "id": "sha256:b47a1c934a50c1e697f49593a6d7ec554265505fcb281cf493377b80bcfb9bd3",
+      "tags": [
+        "ghcr.io/bearflower/trading-aggtrade-collector@sha256:b47a1c934a50c1e697f49593a6d7ec554265505fcb281cf493377b80bcfb9bd3"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-aggtrade-collector@sha256:b47a1c934a50c1e697f49593a6d7ec554265505fcb281cf493377b80bcfb9bd3"
+      ],
+      "size": 53659487,
+      "created": "2026-11-27T23:03:04.470930981Z",
+      "containers": [
+        "trading_system-aggtrade-collector"
+      ]
+    },
+    {
+      "id": "sha256:2c96a11b4a68fccb0ad6c9a7ef64fc9f398a4c2920241fb289a90bb09dbb507e",
+      "tags": [
+        "ghcr.io/bearflower/trading-kline-monitor@sha256:2c96a11b4a68fccb0ad6c9a7ef64fc9f398a4c2920241fb289a90bb09dbb507e"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-kline-monitor@sha256:2c96a11b4a68fccb0ad6c9a7ef64fc9f398a4c2920241fb289a90bb09dbb507e"
+      ],
+      "size": 53959734,
+      "created": "2026-11-27T23:03:04.285194613Z",
+      "containers": [
+        "trading_system-kline-monitor"
+      ]
+    },
+    {
+      "id": "sha256:e2803f248ed15ac0283b90a817e6138cf391e5e598ec939f8d3f80453e17ef41",
+      "tags": [
+        "ghcr.io/bearflower/trading-hrs@sha256:e2803f248ed15ac0283b90a817e6138cf391e5e598ec939f8d3f80453e17ef41"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-hrs@sha256:e2803f248ed15ac0283b90a817e6138cf391e5e598ec939f8d3f80453e17ef41"
+      ],
+      "size": 200059820,
+      "created": "2026-11-27T15:14:53.096145699Z",
+      "containers": [
+        "trading_system-hrs-before-full-46fa983c",
+        "trading_system-hrs-acceptance-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:577aa5bfe1fe5a953857e04f9b4457e9d1097ea0d9c00bd1c580f1eeead5f8ab",
+      "tags": [
+        "ghcr.io/bearflower/trading-dashboard-api@sha256:577aa5bfe1fe5a953857e04f9b4457e9d1097ea0d9c00bd1c580f1eeead5f8ab"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-dashboard-api@sha256:577aa5bfe1fe5a953857e04f9b4457e9d1097ea0d9c00bd1c580f1eeead5f8ab"
+      ],
+      "size": 208846265,
+      "created": "2026-11-27T14:22:45.502108034Z",
+      "containers": [
+        "dashboard-api-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:be6d38aebe8b6008742bb5c559b9dd777fc7af9ade79daeedfe9bacb36820237",
+      "tags": [
+        "ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:be6d38aebe8b6008742bb5c559b9dd777fc7af9ade79daeedfe9bacb36820237"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:be6d38aebe8b6008742bb5c559b9dd777fc7af9ade79daeedfe9bacb36820237"
+      ],
+      "size": 197020981,
+      "created": "2026-11-27T14:18:05.776916253Z",
+      "containers": [
+        "trading_system-mtcps-xau-calibrated-shadow-before-full-46fa983c",
+        "trading_system-mtcps-xau-shadow-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:167894aef590791a0568ee7ddb4c3ab62eb37db9c72b15a5ea20b6d32c9ae666",
+      "tags": [
+        "ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:167894aef590791a0568ee7ddb4c3ab62eb37db9c72b15a5ea20b6d32c9ae666"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:167894aef590791a0568ee7ddb4c3ab62eb37db9c72b15a5ea20b6d32c9ae666"
+      ],
+      "size": 197020981,
+      "created": "2026-11-27T13:54:08.2514499Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:7b54d1d0f5af55567bcd6b92ff473999389342a813a7d8aee9fef7079e96a0e9",
+      "tags": [
+        "ghcr.io/bearflower/trading-hrs@sha256:7b54d1d0f5af55567bcd6b92ff473999389342a813a7d8aee9fef7079e96a0e9"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-hrs@sha256:7b54d1d0f5af55567bcd6b92ff473999389342a813a7d8aee9fef7079e96a0e9"
+      ],
+      "size": 200022458,
+      "created": "2026-11-27T13:41:56.11264383Z",
+      "containers": [
+        "trading_system-hrs-acceptance-before-runtime-71384375",
+        "trading_system-hrs-before-runtime-71384375"
+      ]
+    },
+    {
+      "id": "sha256:884b07aed50726d47b537ebf53da10aa58047c24d31f83153ec0aae35c9a7aff",
+      "tags": [
+        "ghcr.io/bearflower/trading-hrs@sha256:884b07aed50726d47b537ebf53da10aa58047c24d31f83153ec0aae35c9a7aff"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-hrs@sha256:884b07aed50726d47b537ebf53da10aa58047c24d31f83153ec0aae35c9a7aff"
+      ],
+      "size": 200014286,
+      "created": "2026-11-27T10:20:52.010388298Z",
+      "containers": [
+        "trading_system-market-cap-before-full-46fa983c",
+        "trading_system-execution-facts-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:0a203cf86005667fcb89e54f231dff42e429a81fad33994b6f6c0e6cdf808db4",
+      "tags": [
+        "ghcr.io/bearflower/trading-dashboard-api@sha256:0a203cf86005667fcb89e54f231dff42e429a81fad33994b6f6c0e6cdf808db4"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-dashboard-api@sha256:0a203cf86005667fcb89e54f231dff42e429a81fad33994b6f6c0e6cdf808db4"
+      ],
+      "size": 208846932,
+      "created": "2026-11-27T10:20:50.190632338Z",
+      "containers": [
+        "dashboard-api-before-classic-92b637a0"
+      ]
+    },
+    {
+      "id": "sha256:c1e36e582531a68bb3462eb11c5d8dd9044c3f9a3b8c2f3b7dc4bcbcf44b9a71",
+      "tags": [
+        "ghcr.io/bearflower/trading-ai-tuner@sha256:c1e36e582531a68bb3462eb11c5d8dd9044c3f9a3b8c2f3b7dc4bcbcf44b9a71"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-ai-tuner@sha256:c1e36e582531a68bb3462eb11c5d8dd9044c3f9a3b8c2f3b7dc4bcbcf44b9a71"
+      ],
+      "size": 174396851,
+      "created": "2026-11-27T10:20:46.280726618Z",
+      "containers": [
+        "ai-tuner-snapshot-before-runtime-71384375",
+        "ai-tuner-before-runtime-71384375"
+      ]
+    },
+    {
+      "id": "sha256:1dba5c05c57cba9b0304590fb1ec717fcabf28cb042acc5b76d2d89fa91b57b1",
+      "tags": [
+        "ghcr.io/bearflower/trading-grid@sha256:1dba5c05c57cba9b0304590fb1ec717fcabf28cb042acc5b76d2d89fa91b57b1"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-grid@sha256:1dba5c05c57cba9b0304590fb1ec717fcabf28cb042acc5b76d2d89fa91b57b1"
+      ],
+      "size": 196564605,
+      "created": "2026-11-27T10:20:40.395685828Z",
+      "containers": [
+        "grid-release-maintenance-1795777452110226077",
+        "trading_system-grid-realtime-before-full-46fa983c",
+        "trading_system-grid-notifier-before-full-46fa983c",
+        "trading_system-grid-pg-projector-before-full-46fa983c",
+        "trading_system-grid-dashboard-exporter-before-full-46fa983c",
+        "trading_system-grid-before-full-46fa983c",
+        "trading_system-grid-executor-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:80a5d2fc78f768f659f9ba5855013704ea3628f691d2afe9c48ed6550488962c",
+      "tags": [
+        "ghcr.io/bearflower/trading-btc-eth@sha256:80a5d2fc78f768f659f9ba5855013704ea3628f691d2afe9c48ed6550488962c"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-btc-eth@sha256:80a5d2fc78f768f659f9ba5855013704ea3628f691d2afe9c48ed6550488962c"
+      ],
+      "size": 197003390,
+      "created": "2026-11-27T10:20:39.312095871Z",
+      "containers": [
+        "trading_system-mtcps-xau-shadow-before-xau-d402ad0c",
+        "trading_system-mtcps-xau-calibrated-shadow-before-xau-d402ad0c",
+        "trading_system-btc_eth-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:4f264436b34582d1b8984e6ac3be1c54b62bcc922dcb0ff232a913839240693e",
+      "tags": [
+        "ghcr.io/bearflower/trading-btc-eth-aggr@sha256:4f264436b34582d1b8984e6ac3be1c54b62bcc922dcb0ff232a913839240693e"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-btc-eth-aggr@sha256:4f264436b34582d1b8984e6ac3be1c54b62bcc922dcb0ff232a913839240693e"
+      ],
+      "size": 196836746,
+      "created": "2026-11-27T10:20:38.151833631Z",
+      "containers": [
+        "trading_system-btc_eth_aggressive-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:ffc1e406c4d7beae13166c1c47aa147ccc856e7669bdd7379143e72cf4f217e6",
+      "tags": [
+        "ghcr.io/bearflower/trading-new-coin@sha256:ffc1e406c4d7beae13166c1c47aa147ccc856e7669bdd7379143e72cf4f217e6"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-new-coin@sha256:ffc1e406c4d7beae13166c1c47aa147ccc856e7669bdd7379143e72cf4f217e6"
+      ],
+      "size": 196902220,
+      "created": "2026-11-27T10:20:37.592344129Z",
+      "containers": [
+        "trading_system-new_coin-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:24619097d1d26d5fac3f409ef3331b33961a16320d51ab230b449183c499fa87",
+      "tags": [
+        "ghcr.io/bearflower/trading-data-backend@sha256:24619097d1d26d5fac3f409ef3331b33961a16320d51ab230b449183c499fa87"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-data-backend@sha256:24619097d1d26d5fac3f409ef3331b33961a16320d51ab230b449183c499fa87"
+      ],
+      "size": 206358568,
+      "created": "2026-11-27T10:20:34.739424026Z",
+      "containers": [
+        "data-backend-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:fbcc95a6a80be2960fda82cc04d8d0afea8c043bdd02d93a48f88f9b23252784",
+      "tags": [
+        "ghcr.io/bearflower/trading-kline-service@sha256:fbcc95a6a80be2960fda82cc04d8d0afea8c043bdd02d93a48f88f9b23252784"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-kline-service@sha256:fbcc95a6a80be2960fda82cc04d8d0afea8c043bdd02d93a48f88f9b23252784"
+      ],
+      "size": 175017481,
+      "created": "2026-11-27T10:20:34.931892643Z",
+      "containers": [
+        "trading_system-kline-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:3f60b2cff93665a2523a9f4ad1558a562e5b1a3299738cca72612f51d33dd5bf",
+      "tags": [
+        "ghcr.io/bearflower/trading-aggtrade-collector@sha256:3f60b2cff93665a2523a9f4ad1558a562e5b1a3299738cca72612f51d33dd5bf"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-aggtrade-collector@sha256:3f60b2cff93665a2523a9f4ad1558a562e5b1a3299738cca72612f51d33dd5bf"
+      ],
+      "size": 53659485,
+      "created": "2026-11-27T10:20:30.068420338Z",
+      "containers": [
+        "trading_system-aggtrade-collector-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:004213fbc888123f042b09c9b59a9070f9fdb21b7464232f20b798d6305e8d41",
+      "tags": [
+        "ghcr.io/bearflower/trading-kline-monitor@sha256:004213fbc888123f042b09c9b59a9070f9fdb21b7464232f20b798d6305e8d41"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-kline-monitor@sha256:004213fbc888123f042b09c9b59a9070f9fdb21b7464232f20b798d6305e8d41"
+      ],
+      "size": 53959733,
+      "created": "2026-11-27T10:20:29.673574502Z",
+      "containers": [
+        "trading_system-kline-monitor-before-full-46fa983c"
+      ]
+    },
+    {
+      "id": "sha256:0d905dcc15ab176f489bb35daebe70142bf8a0b3d154090c8fc439a4e8821305",
+      "tags": [
+        "ghcr.io/bearflower/trading-hrs@sha256:0d905dcc15ab176f489bb35daebe70142bf8a0b3d154090c8fc439a4e8821305"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-hrs@sha256:0d905dcc15ab176f489bb35daebe70142bf8a0b3d154090c8fc439a4e8821305"
+      ],
+      "size": 200097409,
+      "created": "2026-11-27T08:55:16.612765521Z",
+      "containers": [
+        "history-tolerance-hrs-preflight-1c7c99cf"
+      ]
+    },
+    {
+      "id": "sha256:ff3f9b88a15b5ee8566e63d9a8c61d1f93832a267b22cf06b44e3bb03c2275c6",
+      "tags": [
+        "ghcr.io/bearflower/trading-grid@sha256:ff3f9b88a15b5ee8566e63d9a8c61d1f93832a267b22cf06b44e3bb03c2275c6"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-grid@sha256:ff3f9b88a15b5ee8566e63d9a8c61d1f93832a267b22cf06b44e3bb03c2275c6"
+      ],
+      "size": 196558582,
+      "created": "2026-11-27T02:36:51.925211835Z",
+      "containers": [
+        "trading_system-grid-executor-ready-acee4c82"
+      ]
+    },
+    {
+      "id": "sha256:fdf6cf49498ca2e47c4bb86332fd250d96169e567e5a50529bad7197d184c913",
+      "tags": [
+        "ghcr.io/bearflower/trading-xau-attribution-funding:inspection-funding-a74901f429762820e6ffdd77329a1caeb337f294-r45925850198-1"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-xau-attribution-funding@sha256:fdf6cf49498ca2e47c4bb86332fd250d96169e567e5a50529bad7197d184c913"
+      ],
+      "size": 172111313,
+      "created": "2026-11-27T02:01:36.108493735Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:a76b7038db6fff5827923399fa3a5e22c36c1cf0ae9c6e223e9c2d4d5b6a5d1a",
+      "tags": [
+        "local/grid-executor-exit-cancel:81f0a59b"
+      ],
+      "digests": [
+        "local/grid-executor-exit-cancel@sha256:a76b7038db6fff5827923399fa3a5e22c36c1cf0ae9c6e223e9c2d4d5b6a5d1a"
+      ],
+      "size": 196694000,
+      "created": "2026-11-27T09:46:53.936757533+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:0ed01fd9e7becba2620b0f27796763fa7c3d6b9da576b3c6684f0e2dd703e630",
+      "tags": [
+        "local/grid-executor-exit-cancel-base:81f0a59b",
+        "ghcr.io/bearflower/trading-grid:joint-executor-bf01d948cdac85bbc4af14037a6c225e58ac801d-r45833238925-1"
+      ],
+      "digests": [
+        "local/grid-executor-exit-cancel-base@sha256:0ed01fd9e7becba2620b0f27796763fa7c3d6b9da576b3c6684f0e2dd703e630",
+        "ghcr.io/bearflower/trading-grid@sha256:0ed01fd9e7becba2620b0f27796763fa7c3d6b9da576b3c6684f0e2dd703e630"
+      ],
+      "size": 196680969,
+      "created": "2026-11-26T13:51:55.181732446Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:7a80b4cbbd7445be0d62207e33dfd75b92b59bc6dc85d8dc236e40e28a1ee4d9",
+      "tags": [
+        "stockfilter-yili:review-repairs-20261126-8a1794f0c6ae"
+      ],
+      "digests": [
+        "stockfilter-yili@sha256:7a80b4cbbd7445be0d62207e33dfd75b92b59bc6dc85d8dc236e40e28a1ee4d9"
+      ],
+      "size": 349758192,
+      "created": "2026-11-26T21:06:34.933814544+08:00",
+      "containers": [
+        "stockfilter-yili"
+      ]
+    },
+    {
+      "id": "sha256:b5826ee2f4ab6c479f3154af24b53d2181ecd70e6aa96dd5620890acae9bc4c3",
+      "tags": [
+        "stockfilter-eadvisor:review-repairs-20261126-8a1794f0c6ae"
+      ],
+      "digests": [
+        "stockfilter-eadvisor@sha256:b5826ee2f4ab6c479f3154af24b53d2181ecd70e6aa96dd5620890acae9bc4c3"
+      ],
+      "size": 437478077,
+      "created": "2026-11-26T21:06:34.120402278+08:00",
+      "containers": [
+        "stockfilter-eadvisor"
+      ]
+    },
+    {
+      "id": "sha256:f3257de48581b5374aa6280ac8ce0f4b28d5136bc28ded75557a13a08c879165",
+      "tags": [
+        "stockfilter-obpc:review-repairs-20261126-8a1794f0c6ae"
+      ],
+      "digests": [
+        "stockfilter-obpc@sha256:f3257de48581b5374aa6280ac8ce0f4b28d5136bc28ded75557a13a08c879165"
+      ],
+      "size": 349752353,
+      "created": "2026-11-26T21:06:32.659135564+08:00",
+      "containers": [
+        "stockfilter-obpc"
+      ]
+    },
+    {
+      "id": "sha256:a300316c5a2e3d2a417ba297621f35056e67d4cadd125e58c0f23c980bb4382a",
+      "tags": [
+        "stockfilter-kline:review-repairs-20261126-8a1794f0c6ae"
+      ],
+      "digests": [
+        "stockfilter-kline@sha256:a300316c5a2e3d2a417ba297621f35056e67d4cadd125e58c0f23c980bb4382a"
+      ],
+      "size": 348581905,
+      "created": "2026-11-26T21:06:31.859131075+08:00",
+      "containers": [
+        "stockfilter-kline"
+      ]
+    },
+    {
+      "id": "sha256:1cf565a97bdaa9fbe69f9cc4405eab84de37e2411deae21473b11621bcd2622c",
+      "tags": [
+        "stockfilter-yili:review-repairs-20261126-10e59004ca4b"
+      ],
+      "digests": [
+        "stockfilter-yili@sha256:1cf565a97bdaa9fbe69f9cc4405eab84de37e2411deae21473b11621bcd2622c"
+      ],
+      "size": 349758188,
+      "created": "2026-11-26T20:59:39.110136631+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:c7ee6fec482d3f7426e7c30658b0069974e5d9446a9ee5df0cadfb8388246aa1",
+      "tags": [
+        "stockfilter-eadvisor:review-repairs-20261126-10e59004ca4b"
+      ],
+      "digests": [
+        "stockfilter-eadvisor@sha256:c7ee6fec482d3f7426e7c30658b0069974e5d9446a9ee5df0cadfb8388246aa1"
+      ],
+      "size": 437478073,
+      "created": "2026-11-26T20:59:38.217905939+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:36931194efcab6369282702365570143b5ebb2561df490882dccd88af6d56350",
+      "tags": [
+        "stockfilter-obpc:review-repairs-20261126-10e59004ca4b"
+      ],
+      "digests": [
+        "stockfilter-obpc@sha256:36931194efcab6369282702365570143b5ebb2561df490882dccd88af6d56350"
+      ],
+      "size": 349752349,
+      "created": "2026-11-26T20:59:36.940092346+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:c0f96739a7e838df7160cec1497b7de31c7c4e44f76698fa97f0e880133173d2",
+      "tags": [
+        "stockfilter-kline:review-repairs-20261126-10e59004ca4b"
+      ],
+      "digests": [
+        "stockfilter-kline@sha256:c0f96739a7e838df7160cec1497b7de31c7c4e44f76698fa97f0e880133173d2"
+      ],
+      "size": 348581901,
+      "created": "2026-11-26T20:59:35.707293346+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:77c9bc19ad66dba06d5ab1e34f3e1a9f4ed9070c88a58baf6a81cf8d71970949",
+      "tags": [
+        "stockfilter-yili:review-repairs-20261126-93e8ce7cecd4"
+      ],
+      "digests": [
+        "stockfilter-yili@sha256:77c9bc19ad66dba06d5ab1e34f3e1a9f4ed9070c88a58baf6a81cf8d71970949"
+      ],
+      "size": 349753531,
+      "created": "2026-11-26T20:39:48.273891645+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:c5f7b1a88876da02387780888157667a505a79c6b047e1b4b97f59651f0229ca",
+      "tags": [
+        "stockfilter-eadvisor:review-repairs-20261126-93e8ce7cecd4"
+      ],
+      "digests": [
+        "stockfilter-eadvisor@sha256:c5f7b1a88876da02387780888157667a505a79c6b047e1b4b97f59651f0229ca"
+      ],
+      "size": 437473383,
+      "created": "2026-11-26T20:39:47.443255702+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:0a1d30060ca18a35a4a64158fef3635a4b0d6b5bf4f315493c9b274cd45754ef",
+      "tags": [
+        "stockfilter-obpc:review-repairs-20261126-93e8ce7cecd4"
+      ],
+      "digests": [
+        "stockfilter-obpc@sha256:0a1d30060ca18a35a4a64158fef3635a4b0d6b5bf4f315493c9b274cd45754ef"
+      ],
+      "size": 349747692,
+      "created": "2026-11-26T20:39:45.851766279+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:b8013f74516c0302680736fc046f4956bb5de286a30587f7b86c8139a4592902",
+      "tags": [
+        "stockfilter-kline:review-repairs-20261126-93e8ce7cecd4"
+      ],
+      "digests": [
+        "stockfilter-kline@sha256:b8013f74516c0302680736fc046f4956bb5de286a30587f7b86c8139a4592902"
+      ],
+      "size": 348577244,
+      "created": "2026-11-26T20:39:44.944449857+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:81cb3adb4caeeb90f6a655b888fcc69bd40d4b4d1eafdba06997f96bbe4513d6",
+      "tags": [
+        "stockfilter-yili:review-repairs-20261126-9824d1064829"
+      ],
+      "digests": [
+        "stockfilter-yili@sha256:81cb3adb4caeeb90f6a655b888fcc69bd40d4b4d1eafdba06997f96bbe4513d6"
+      ],
+      "size": 349742092,
+      "created": "2026-11-26T20:36:49.348471802+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:ae613889522bb5f44adc6ce6e2bd3dc27e58a20c14b5b80a09b15d24fb519770",
+      "tags": [
+        "stockfilter-eadvisor:review-repairs-20261126-9824d1064829"
+      ],
+      "digests": [
+        "stockfilter-eadvisor@sha256:ae613889522bb5f44adc6ce6e2bd3dc27e58a20c14b5b80a09b15d24fb519770"
+      ],
+      "size": 437461944,
+      "created": "2026-11-26T20:36:48.346020797+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:42ad83a181343595eb991fb0339161d1ffea34297a0abbb61414e44b1d89c9f5",
+      "tags": [
+        "stockfilter-obpc:review-repairs-20261126-9824d1064829"
+      ],
+      "digests": [
+        "stockfilter-obpc@sha256:42ad83a181343595eb991fb0339161d1ffea34297a0abbb61414e44b1d89c9f5"
+      ],
+      "size": 349736253,
+      "created": "2026-11-26T20:36:47.071893603+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:345e68661989426fcdc10a623859fa2aa8f171d66f557acbac126124c04993d9",
+      "tags": [
+        "stockfilter-kline:review-repairs-20261126-9824d1064829"
+      ],
+      "digests": [
+        "stockfilter-kline@sha256:345e68661989426fcdc10a623859fa2aa8f171d66f557acbac126124c04993d9"
+      ],
+      "size": 348565805,
+      "created": "2026-11-26T20:36:44.976469422+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:4b2230fb25a0f5223e338bd2fd5a103c37fb312f345f957a3d7eb2d1d6fb1277",
+      "tags": [
+        "ghcr.io/bearflower/trading-xau-attribution-funding@sha256:4b2230fb25a0f5223e338bd2fd5a103c37fb312f345f957a3d7eb2d1d6fb1277"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-xau-attribution-funding@sha256:4b2230fb25a0f5223e338bd2fd5a103c37fb312f345f957a3d7eb2d1d6fb1277"
+      ],
+      "size": 172107432,
+      "created": "2026-11-26T01:41:34.111497207Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:1654e0b5bbc02936ffebfb80c367dfe233f4a94da389250e06cfa6d7034e9033",
+      "tags": [
+        "ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:1654e0b5bbc02936ffebfb80c367dfe233f4a94da389250e06cfa6d7034e9033"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:1654e0b5bbc02936ffebfb80c367dfe233f4a94da389250e06cfa6d7034e9033"
+      ],
+      "size": 196308543,
+      "created": "2026-11-26T01:41:23.08225279Z",
+      "containers": [
+        "trading_system-mtcps-xau-shadow-before-full-acee4c82"
+      ]
+    },
+    {
+      "id": "sha256:0a6ddf5f6be5735929c0fe575028429482603d1933090fac2e559f1b947c0eff",
+      "tags": [
+        "ghcr.io/bearflower/trading-grid:pm-89160896bf9cef194adefe74ed2383a47bc77aa6-r45543017818-1"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-grid@sha256:0a6ddf5f6be5735929c0fe575028429482603d1933090fac2e559f1b947c0eff"
+      ],
+      "size": 196517782,
+      "created": "2026-11-25T03:53:54.801504761Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:65ce532cdddff0d1ea01c69c7e2a8731ec538efeff3a533ff771976ce5d435bb",
+      "tags": [
+        "local/pm-rollback-trading-system-btc-eth:89160896",
+        "ghcr.io/bearflower/trading-btc-eth@sha256:65ce532cdddff0d1ea01c69c7e2a8731ec538efeff3a533ff771976ce5d435bb"
+      ],
+      "digests": [
+        "local/pm-rollback-trading-system-btc-eth@sha256:65ce532cdddff0d1ea01c69c7e2a8731ec538efeff3a533ff771976ce5d435bb",
+        "ghcr.io/bearflower/trading-btc-eth@sha256:65ce532cdddff0d1ea01c69c7e2a8731ec538efeff3a533ff771976ce5d435bb"
+      ],
+      "size": 198602819,
+      "created": "2026-11-23T06:41:41.596963071Z",
+      "containers": [
+        "trading_system-mtpcs-direction-shadow"
+      ]
+    },
+    {
+      "id": "sha256:e2a38b3e5a2e41d5592c427d0cb2cbb332cf1aff8aaaa1311f9e3d880eadf207",
+      "tags": [
+        "local/pm-rollback-trading-system-hrs:89160896",
+        "ghcr.io/bearflower/trading-hrs@sha256:e2a38b3e5a2e41d5592c427d0cb2cbb332cf1aff8aaaa1311f9e3d880eadf207"
+      ],
+      "digests": [
+        "local/pm-rollback-trading-system-hrs@sha256:e2a38b3e5a2e41d5592c427d0cb2cbb332cf1aff8aaaa1311f9e3d880eadf207",
+        "ghcr.io/bearflower/trading-hrs@sha256:e2a38b3e5a2e41d5592c427d0cb2cbb332cf1aff8aaaa1311f9e3d880eadf207"
+      ],
+      "size": 235233114,
+      "created": "2026-11-23T05:09:20.628119541Z",
+      "containers": [
+        "trading_system-hrs-research-observer"
+      ]
+    },
+    {
+      "id": "sha256:e6372a46c9308762a15bdb46160273aafd67a54367ea9ed1a9230790da129f70",
+      "tags": [
+        "stockfilter-yili:rollback-review-repairs-20261126-10e59004ca4b",
+        "stockfilter-yili:rollback-review-repairs-20261126-8a1794f0c6ae",
+        "stockfilter-yili:rollback-review-repairs-20261126-93e8ce7cecd4",
+        "stockfilter-yili:rollback-review-repairs-20261126-9824d1064829",
+        "stockfilter-yili:yili-text-20261116-caecbd7905c6"
+      ],
+      "digests": [
+        "stockfilter-yili@sha256:e6372a46c9308762a15bdb46160273aafd67a54367ea9ed1a9230790da129f70"
+      ],
+      "size": 349322399,
+      "created": "2026-11-16T09:31:31.850210784+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:fd90101504ef15b5f7c4bdc3c976b45d9804b9687afd0df6beb7b660f90c1de0",
+      "tags": [
+        "stockfilter-obpc:rollback-review-repairs-20261126-10e59004ca4b",
+        "stockfilter-obpc:rollback-review-repairs-20261126-8a1794f0c6ae",
+        "stockfilter-obpc:rollback-review-repairs-20261126-93e8ce7cecd4",
+        "stockfilter-obpc:rollback-review-repairs-20261126-9824d1064829",
+        "stockfilter-obpc:scan-timestamps-20261116-05e6503ec256"
+      ],
+      "digests": [
+        "stockfilter-obpc@sha256:fd90101504ef15b5f7c4bdc3c976b45d9804b9687afd0df6beb7b660f90c1de0"
+      ],
+      "size": 349316592,
+      "created": "2026-11-16T09:29:59.54188551+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:03743c0f6ba0e4228232ec180dafba1443b179819f4da0fe011da2bacc244c4f",
+      "tags": [
+        "stockfilter-eadvisor:candidate-repairs-20261114",
+        "stockfilter-eadvisor:rollback-review-repairs-20261126-10e59004ca4b",
+        "stockfilter-eadvisor:rollback-review-repairs-20261126-8a1794f0c6ae",
+        "stockfilter-eadvisor:rollback-review-repairs-20261126-93e8ce7cecd4",
+        "stockfilter-eadvisor:rollback-review-repairs-20261126-9824d1064829",
+        "ghcr.io/bearflower/stockfilter-eadvisor:latest"
+      ],
+      "digests": [
+        "stockfilter-eadvisor@sha256:03743c0f6ba0e4228232ec180dafba1443b179819f4da0fe011da2bacc244c4f",
+        "ghcr.io/bearflower/stockfilter-eadvisor@sha256:03743c0f6ba0e4228232ec180dafba1443b179819f4da0fe011da2bacc244c4f"
+      ],
+      "size": 437042251,
+      "created": "2026-11-14T19:03:50.692050596+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:0bc0fa89c5b5d73074aceb6ff93eb19a6b644962da4a4d685d47dfdead4eb685",
+      "tags": [
+        "stockfilter-yili:base-yili-text-20261116-caecbd7905c6",
+        "stockfilter-yili:yili-20261113-fb3be58c75d6"
+      ],
+      "digests": [
+        "stockfilter-yili@sha256:0bc0fa89c5b5d73074aceb6ff93eb19a6b644962da4a4d685d47dfdead4eb685"
+      ],
+      "size": 349316594,
+      "created": "2026-11-13T17:56:39.074630777+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:27c1538ec934502fa55b616c57f26309dfcb7692ea9771c8adaf3707ab9f9afc",
+      "tags": [
+        "stockfilter-eadvisor:base-repairs-20261114",
+        "stockfilter-eadvisor:logic-20261112",
+        "stockfilter-eadvisor:rollback-repairs-20261114"
+      ],
+      "digests": [
+        "stockfilter-eadvisor@sha256:27c1538ec934502fa55b616c57f26309dfcb7692ea9771c8adaf3707ab9f9afc"
+      ],
+      "size": 436881510,
+      "created": "2026-11-12T08:48:36.506862284+08:00",
+      "containers": []
+    },
+    {
+      "id": "sha256:b7375b754ea886dd98c30b96af0545e699db37cc16008e9ee6ff531c8c38d2eb",
+      "tags": [
+        "stockfilter-obpc:rollback-scan-timestamps-20261116",
+        "stockfilter-yili:base-yili-20261113-fb3be58c75d6",
+        "ghcr.io/bearflower/stockfilter-obpc:latest"
+      ],
+      "digests": [
+        "stockfilter-obpc@sha256:b7375b754ea886dd98c30b96af0545e699db37cc16008e9ee6ff531c8c38d2eb",
+        "stockfilter-yili@sha256:b7375b754ea886dd98c30b96af0545e699db37cc16008e9ee6ff531c8c38d2eb",
+        "ghcr.io/bearflower/stockfilter-obpc@sha256:b7375b754ea886dd98c30b96af0545e699db37cc16008e9ee6ff531c8c38d2eb"
+      ],
+      "size": 349303034,
+      "created": "2026-11-11T07:12:52.081912461Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:ed76b4904fef81da8b6dc905287bff866611073fdb88edc0b8e45f921cafdcb1",
+      "tags": [
+        "stockfilter-kline:rollback-review-repairs-20261126-10e59004ca4b",
+        "stockfilter-kline:rollback-review-repairs-20261126-8a1794f0c6ae",
+        "stockfilter-kline:rollback-review-repairs-20261126-93e8ce7cecd4",
+        "stockfilter-kline:rollback-review-repairs-20261126-9824d1064829",
+        "ghcr.io/bearflower/stockfilter-kline:latest"
+      ],
+      "digests": [
+        "stockfilter-kline@sha256:ed76b4904fef81da8b6dc905287bff866611073fdb88edc0b8e45f921cafdcb1",
+        "ghcr.io/bearflower/stockfilter-kline@sha256:ed76b4904fef81da8b6dc905287bff866611073fdb88edc0b8e45f921cafdcb1"
+      ],
+      "size": 348146140,
+      "created": "2026-11-11T07:12:51.210771201Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:87b227404b7538905d203992d88fdb243518bd4e8af7f5a5635f3dd86aa3ebf2",
+      "tags": [
+        "local/pm-rollback-trading-system-execution-facts:89160896",
+        "ghcr.io/bearflower/trading-hrs@sha256:87b227404b7538905d203992d88fdb243518bd4e8af7f5a5635f3dd86aa3ebf2"
+      ],
+      "digests": [
+        "local/pm-rollback-trading-system-execution-facts@sha256:87b227404b7538905d203992d88fdb243518bd4e8af7f5a5635f3dd86aa3ebf2",
+        "ghcr.io/bearflower/trading-hrs@sha256:87b227404b7538905d203992d88fdb243518bd4e8af7f5a5635f3dd86aa3ebf2"
+      ],
+      "size": 200148838,
+      "created": "2026-11-04T13:49:02.153011965Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:59f5a293f4df5793c3b33e7c036c3bc01957bd564a5e543bec70f144d09f1bf7",
+      "tags": [
+        "ghcr.io/bearflower/trading-hrs:latest"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-hrs@sha256:59f5a293f4df5793c3b33e7c036c3bc01957bd564a5e543bec70f144d09f1bf7"
+      ],
+      "size": 200070499,
+      "created": "2026-11-04T09:33:04.067610857Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:258102510cc883b299bcd4e5ee4f97c1c6c4a907e6d920bf644c18d60c6b1246",
+      "tags": [
+        "ghcr.io/bearflower/trading-kline-monitor:latest"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-kline-monitor@sha256:258102510cc883b299bcd4e5ee4f97c1c6c4a907e6d920bf644c18d60c6b1246"
+      ],
+      "size": 54977406,
+      "created": "2026-11-04T07:43:26.566455942Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:3489f179d573ab3e24913196f5a920af375a9ef17ef19c93afbd27ec0cf68bcf",
+      "tags": [
+        "ghcr.io/bearflower/trading-aggtrade-collector:latest"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-aggtrade-collector@sha256:3489f179d573ab3e24913196f5a920af375a9ef17ef19c93afbd27ec0cf68bcf"
+      ],
+      "size": 54673105,
+      "created": "2026-11-04T07:02:15.102686515Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:ec831eabd3d386c4121278753e77c8edfdd7ce52080ef40735f1d0a2a795a2b9",
+      "tags": [
+        "ghcr.io/bearflower/trading-ai-tuner:latest"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-ai-tuner@sha256:ec831eabd3d386c4121278753e77c8edfdd7ce52080ef40735f1d0a2a795a2b9"
+      ],
+      "size": 172090492,
+      "created": "2026-11-03T02:50:51.025928525Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:630ccb3a6077009dca25b078bf6c0b563d4add21c2c265d3bab5d8edd0b8b3e8",
+      "tags": [
+        "ghcr.io/bearflower/trading-btc-eth:latest"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-btc-eth@sha256:630ccb3a6077009dca25b078bf6c0b563d4add21c2c265d3bab5d8edd0b8b3e8"
+      ],
+      "size": 196695562,
+      "created": "2026-11-02T14:02:44.399203095Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:457d5bdbcdea74e2e327ef35dd91fcf421e3262c0d195a47af720ca9a5ccb52b",
+      "tags": [
+        "ghcr.io/bearflower/trading-btc-eth-aggr:latest"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-btc-eth-aggr@sha256:457d5bdbcdea74e2e327ef35dd91fcf421e3262c0d195a47af720ca9a5ccb52b"
+      ],
+      "size": 196527850,
+      "created": "2026-11-02T14:02:42.935888358Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:1d25347ba39309952e6bac9a9dcb1166dbf737185e59dcc9c6102457c25ae7bb",
+      "tags": [
+        "ghcr.io/bearflower/trading-new-coin:latest"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-new-coin@sha256:1d25347ba39309952e6bac9a9dcb1166dbf737185e59dcc9c6102457c25ae7bb"
+      ],
+      "size": 196594070,
+      "created": "2026-11-02T12:47:49.516539592Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:b75b2a867b6d35a2e1ce91d3762f1ebdf70dcd22012bd6cb72731c201065fda6",
+      "tags": [
+        "ghcr.io/bearflower/trading-kline-service:latest"
+      ],
+      "digests": [
+        "ghcr.io/bearflower/trading-kline-service@sha256:b75b2a867b6d35a2e1ce91d3762f1ebdf70dcd22012bd6cb72731c201065fda6"
+      ],
+      "size": 176012520,
+      "created": "2026-11-02T12:47:40.406158672Z",
+      "containers": []
+    },
+    {
+      "id": "sha256:54e0dd8e8cddcdbb9156c2486eed5a43eccb7214d7c6828097d41ce049fb3984",
+      "tags": [
+        "ledger-risk-rollback/postgres:d77c232881d75f65ae13ee4fcad33946b6c8413a",
+        "postgres:15-alpine"
+      ],
+      "digests": [
+        "ledger-risk-rollback/postgres@sha256:54e0dd8e8cddcdbb9156c2486eed5a43eccb7214d7c6828097d41ce049fb3984",
+        "postgres@sha256:54e0dd8e8cddcdbb9156c2486eed5a43eccb7214d7c6828097d41ce049fb3984"
+      ],
+      "size": 115263617,
+      "created": "2026-10-21T22:57:27.228360399Z",
+      "containers": [
+        "trading_system-postgres"
+      ]
+    },
+    {
+      "id": "sha256:727876d274666da0b92a445390ba093c84b8e9f8343e1c53cd4e9a7ab2d85310",
+      "tags": [
+        "postgres:14-alpine"
+      ],
+      "digests": [
+        "postgres@sha256:727876d274666da0b92a445390ba093c84b8e9f8343e1c53cd4e9a7ab2d85310"
+      ],
+      "size": 114646508,
+      "created": "2026-08-13T19:20:04.991057122Z",
+      "containers": [
+        "common_service_postgres"
+      ]
+    },
+    {
+      "id": "sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6",
+      "tags": [
+        "redis:7-alpine"
+      ],
+      "digests": [
+        "redis@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6"
+      ],
+      "size": 17256649,
+      "created": "2026-04-17T00:21:59.857043829Z",
+      "containers": [
+        "common_service_redis"
+      ]
+    }
+  ]
+}

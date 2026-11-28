@@ -985,3 +985,120 @@ async def test_technical_inventory_limit_rejects_before_loading_payloads(monkeyp
     with pytest.raises(ValueError, match='report_source_row_budget_exceeded'):
         await reporter._read_technical_slots(connection, START, NOW, ACCOUNT)
     assert not connection.queries
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "8.0", "8388609", "abc", ""])
+def test_source_budget_configuration_rejects_invalid_or_unverified_limits(monkeypatch, value):
+    from strategies.hrs import acceptance_report as reporter
+    monkeypatch.setenv("HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES", value)
+    with pytest.raises(ValueError, match="report_source_budget_configuration_invalid"):
+        reporter._source_payload_bytes({"payload": "{}"})
+
+
+def test_source_budget_default_and_configured_boundary(monkeypatch):
+    from strategies.hrs import acceptance_report as reporter
+    monkeypatch.delenv("HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES", raising=False)
+    row = {"payload": None, "source_payload_bytes": 4_354_977}
+    with pytest.raises(reporter.ReportEvidenceLimitExceeded):
+        reporter._source_payload_bytes(row)
+    monkeypatch.setenv("HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES", "8388608")
+    assert reporter._source_payload_bytes(row) == 4_354_977
+    assert reporter._source_payload_bytes(dict(row, source_payload_bytes=8388608)) == 8388608
+    with pytest.raises(reporter.ReportEvidenceLimitExceeded):
+        reporter._source_payload_bytes(dict(row, source_payload_bytes=8388609))
+
+
+@pytest.mark.asyncio
+async def test_configured_large_scans_verify_discarded_fields_without_retaining_history(monkeypatch):
+    from strategies.hrs import acceptance_report as reporter
+    monkeypatch.setenv("HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES", "8388608")
+    row = event("large", "scan_start", START, {
+        "financial_context": {"entry_policy": {"account_id": ACCOUNT},
+                              "equity_source_archives": [{"history": "汉" * 1_500_000}]}})
+    row["payload"] = json.dumps(row["payload"], ensure_ascii=False)
+    row["source_payload_bytes"] = len(row["payload"].encode())
+    assert 4194304 < row["source_payload_bytes"] < 8388608
+    connection = EvidenceCursorConnection([row])
+    result = await reporter._read_evidence(connection, "SELECT source")
+    assert "8388608" in connection.queries[0]
+    assert result[0]["source_payload_sha256"] == row["payload_sha256"]
+    assert result[0]["payload_sha256"] == canonical_payload(result[0]["payload"])[1]
+    assert len(json.dumps(result[0]["payload"])) < 256
+    changed = dict(row, payload=row["payload"].replace("汉", "字", 1))
+    tampered = await reporter._read_evidence(EvidenceCursorConnection([changed]), "SELECT source")
+    assert tampered[0]["payload_sha256"] == "source_payload_hash_mismatch"
+
+
+def test_incremental_source_digest_matches_original_canonical_contract():
+    from strategies.hrs import acceptance_report as reporter
+    payload = {"z": [None, True, 3, 0.1, "汉字"], "nested": {"password": "redact", "provider_asset_id": "x"}}
+    assert reporter._source_digest(payload) == canonical_payload(payload)[1]
+
+
+def test_source_error_code_does_not_expose_exception_text():
+    from strategies.hrs import acceptance_report as reporter
+    assert reporter._source_error_code(ValueError("password=example")) is None
+    assert reporter._source_error_code(reporter.ReportEvidenceLimitExceeded(
+        "report_source_payload_budget_exceeded")) == "report_source_payload_budget_exceeded"
+
+
+@pytest.mark.parametrize("payload", [
+    {"quote": "\\\"\n\t汉字", "float": 1e-20, "negative_zero": -0.0},
+    {"decimal": Decimal("1.200"), "time": NOW, "values": (1, 2)},
+    {"api-key": "masked", "nested": [{"private_key": "masked", "value": None}]},
+])
+def test_incremental_digest_preserves_extended_canonical_values(payload):
+    from strategies.hrs import acceptance_report as reporter
+    assert reporter._source_digest(payload) == canonical_payload(payload)[1]
+
+
+def test_incremental_digest_rejects_nonfinite_numbers():
+    from strategies.hrs import acceptance_report as reporter
+    for value in (float('nan'), float('inf'), Decimal('NaN')):
+        with pytest.raises(ValueError):
+            reporter._source_digest({'value': value})
+
+
+@pytest.mark.asyncio
+async def test_configured_large_nested_sources_remain_bounded_across_many_rows(monkeypatch):
+    import tracemalloc
+    from strategies.hrs import acceptance_report as reporter
+    monkeypatch.setenv("HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES", "8388608")
+    # 使用大量嵌套节点，防止仅用一个巨大字符串低估JSON对象内存。
+    history = [{'symbol': 'ETHUSDT', 'qty': str(i), 'details': {'note': 'x' * 512}} for i in range(13000)]
+    payload = {'financial_context': {'entry_policy': {'account_id': ACCOUNT}, 'equity_source_archives': history}}
+    encoded, digest = canonical_payload(payload)
+    assert 4194304 < len(encoded.encode()) < 8388608
+    def sources():
+        for i in range(40):
+            yield dict(evidence_id=str(i), run_id=str(i), kind='scan_start', symbol=None,
+                       event_time=START, available_at=START, payload=encoded,
+                       source_payload_bytes=len(encoded), payload_sha256=digest)
+    del history, payload
+    tracemalloc.start()
+    try:
+        rows = await reporter._read_evidence(EvidenceCursorConnection(sources()), 'SELECT source')
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(rows) == 40
+    assert sum(r['report_payload_bytes'] for r in rows) < 4096
+    assert peak < 96 * 1024 * 1024
+
+
+def test_dense_json_is_rejected_before_decoding(monkeypatch):
+    from strategies.hrs import acceptance_report as reporter
+    monkeypatch.setenv('HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES', '8388608')
+    raw = '{"financial_context":{"equity_source_archives":[' + '{},' * 1_699_999 + '{}]}}'
+    assert 4194304 < len(raw) < 8388608
+    def forbidden_decode(value):
+        raise AssertionError('高节点密度输入不能先完整解码')
+    monkeypatch.setattr(reporter.json, 'loads', forbidden_decode)
+    with pytest.raises(reporter.ReportEvidenceLimitExceeded, match='report_source_structure_budget_exceeded'):
+        reporter._object(raw)
+
+
+def test_json_structure_counter_ignores_escaped_string_content(monkeypatch):
+    from strategies.hrs import acceptance_report as reporter
+    raw = json.dumps({'text': '[{,:\\"' * 100000})
+    assert reporter._object(raw) == json.loads(raw)

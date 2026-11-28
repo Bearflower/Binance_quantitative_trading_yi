@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "targets": [
+    {
+      "name": "hrs-acceptance",
+      "container": "trading_system-hrs-acceptance",
+      "old_id": "a060d48ebd4972b83222dccd26e85d72d141e82b860e2a7bbf085f819110042a",
+      "old_image": "sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7",
+      "base": "ghcr.io/bearflower/trading-hrs@sha256:c09458d027b017ec3eb35a04dc8e04f20070d102713bee56ba04a9e8435e2ea7",
+      "repository": "ghcr.io/bearflower/trading-hrs",
+      "files": ["strategies/hrs/acceptance_report.py"],
+      "modules": ["strategies.hrs.acceptance_report"],
+      "environment": {"HRS_ACCEPTANCE_MAX_SOURCE_PAYLOAD_BYTES": "8388608"}
+    },
+    {
+      "name": "ai-tuner",
+      "container": "ai-tuner",
+      "old_id": "70564e814edbbb466f2d773108ffe1732ebd2b208ae0caad11da241d409d3028",
+      "old_image": "sha256:9e9956e8e9b47922a63d50269d7153d92cab4f80b03b05a3297a10af2d848e25",
+      "base": "ghcr.io/bearflower/trading-ai-tuner@sha256:9e9956e8e9b47922a63d50269d7153d92cab4f80b03b05a3297a10af2d848e25",
+      "repository": "ghcr.io/bearflower/trading-ai-tuner",
+      "files": ["ai_tuner/reconciler/nightly_exit.py"],
+      "modules": ["ai_tuner.reconciler.nightly_exit"],
+      "environment": {}
+    }
+  ]
+}

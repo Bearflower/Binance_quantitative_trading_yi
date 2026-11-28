@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "70627b5455fd9626ccf16629c735495274a77b71d3db70968280e6dc30e6a23e",
+      "name": "trading_system-grid-before-runtime-a8647e43",
+      "successor": "trading_system-grid",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "afbada6f887e119281139575a884ba9ef39d2296a98e40bef1d1bd125cbdf7d4",
+      "name": "trading_system-btc_eth_aggressive-before-runtime-a8647e43",
+      "successor": "trading_system-btc_eth_aggressive",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "f7b56b8918f96965bde839ac604af8d46193381302ccaabc90c75d2c4861e7aa",
+      "name": "trading_system-grid-claim-guard-probe-ca19a098",
+      "successor": "trading_system-grid",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "88e42b7f1f58cc5a6878a241a1fe73d2325ee57439b2c582b6f4b6433e244996",
+      "name": "trading_system-btc_eth_aggressive-claim-guard-probe-ca19a098",
+      "successor": "trading_system-btc_eth_aggressive",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "65de268fd6b1049c61ff210ed1850e74445f7aec0cc2d3da45c4f8f8987faffa",
+      "name": "data-backend-before-runtime-a8647e43",
+      "successor": "data-backend",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "8d782b91b35c9888b2fd36ddc2cf698e45e430e19e5ed3b145180727dcaf5d8d",
+      "name": "trading_system-hrs-before-runtime-a8647e43",
+      "successor": "trading_system-hrs",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "b8e3ebc85808eef934111d8f1829c45496b9bfeedfbddeaee720abd2f8599baa",
+      "name": "trading_system-hrs-tailfix-probe-532321e6",
+      "successor": "trading_system-hrs",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "29fcab6146cafb990553596938bdae9cd9fc72ffc21b7eeee14b1ff323c405be",
+      "name": "dashboard-api-tailfix-probe-532321e6",
+      "successor": "dashboard-api",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "1c364fbfedeb20f75a12060d4997aeabf144780fdc90463280a42e2a1bfcdfa4",
+      "name": "data-backend-tailfix-probe-532321e6",
+      "successor": "data-backend",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "8025b8c1ac3fc3481991383fbb2badc689cdd2802a6401646548c4f427b30c2c",
+      "name": "ai-tuner-before-runtime-a8647e43",
+      "successor": "ai-tuner",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "b988ed0b7f1fb0137d4e004d748ca265c00724e894f9765449d8f17b31d8419c",
+      "name": "dashboard-api-before-tailfix-532321e6",
+      "successor": "dashboard-api",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "85d4c97cad2129815e3d355f3516dfb4a8c5b22ed38e9dbd7fca237a158568b4",
+      "name": "data-backend-before-tailfix-532321e6",
+      "successor": "data-backend",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "88e0ae33307a61d9ace72ad7b62dd28542d76c7d194a384b7266abb0c8f47f52",
+      "name": "trading_system-new_coin-before-runtime-a8647e43",
+      "successor": "trading_system-new_coin",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "94da0b24da248ee086b09e9544708fe2e2eff37b9395e891a201ed262d5f913c",
+      "name": "trading_system-hrs-before-tailfix-532321e6",
+      "successor": "trading_system-hrs",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "6e6f0d684410663053a2bef4c5075e014d15726e973ea4d21fbb3edbaa2f78b5",
+      "name": "ai-tuner-before-logfix-be7484a7",
+      "successor": "ai-tuner",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "38aa5912c39c1231ccec79ee4389d711d2020ff8040dc83293c3f49e48b53cc8",
+      "name": "trading_system-new_coin-before-close-134e5fbf",
+      "successor": "trading_system-new_coin",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "701ef532a777eb928292cf9bb2d31f824c0c82ebef0db2696d7ef4224e6ea352",
+      "name": "trading_system-btc_eth-before-runtime-a8647e43",
+      "successor": "trading_system-btc_eth",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "da9a453f2211c42d55a48a792640cbb259f874e3d36129112c4b3dca66da2b8b",
+      "name": "trading_system-btc_eth_aggressive-before-claim-guard-ca19a098",
+      "successor": "trading_system-btc_eth_aggressive",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "fb790d44985f177ee28603fa1e84437679fcc4374df5a9eb44b1c30eb141a8e3",
+      "name": "trading_system-btc_eth_aggressive-before-bnb-reset-a54b348b",
+      "successor": "trading_system-btc_eth_aggressive",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "a5258434b1676452a97c765f8bb7c8cb240179ba550e966a42fe6628c9984811",
+      "name": "trading_system-grid-before-claim-guard-ca19a098",
+      "successor": "trading_system-grid",
+      "reason": "2026-11-25 发布替换或验证完成；保留回滚及日志证据"
+    },
+    {
+      "id": "031e39768b2660bcdcd98f23fe7fba9e99a30cf31b216b7a50dcbcf88028bb63",
+      "name": "trading_system-hrs-before-runtime-72cb3f73",
+      "successor": "trading_system-hrs",
+      "reason": "2026-11-26 HRS 扫描数据修复替换，保留回滚证据"
+    },
+    {
+      "id": "86f5b6585b03458b3255f2fdb7f54758af9b15f64eea265af47f135a594bc163",
+      "name": "trading_system-grid-executor-before-runtime-b315ea77",
+      "successor": "trading_system-grid-executor",
+      "reason": "2026-11-26 网格实际执行回执修复替换；保留回滚与日志证据"
+    },
+    {
+      "id": "0f8a305b9f988a39901d25c5db5323fd37639d05c85b0b031b30dfce7fb09eec",
+      "name": "trading_system-grid-before-runtime-b315ea77",
+      "successor": "trading_system-grid",
+      "reason": "2026-11-26 网格实际执行回执修复替换；保留回滚与日志证据"
+    },
+    {
+      "id": "266dfb3fc07004d41e17c4c8134649f4f14976c0ce438dfd7de304ce8828b307",
+      "name": "trading_system-grid-executor-before-runtime-30ab34fd",
+      "successor": "trading_system-grid-executor",
+      "reason": "2026-11-26 网格实际分配与限流恢复受控发布；保留回滚与日志证据"
+    },
+    {
+      "id": "c3624bf1d3b0ca6aacbc122213ecb7fea2e2bb05df1712ee9e3ff868a2b0a39c",
+      "name": "trading_system-grid-before-runtime-30ab34fd",
+      "successor": "trading_system-grid",
+      "reason": "2026-11-26 网格实际分配与限流恢复受控发布；保留回滚与日志证据"
+    },
+    {
+      "id": "4fd6798e4689030570e5c2796a902d796abf403bb5df42a208bd1a61bea89319",
+      "name": "trading_system-hrs-before-runtime-30ab34fd",
+      "successor": "trading_system-hrs",
+      "reason": "2026-11-26 网格实际分配与限流恢复受控发布；保留回滚与日志证据"
+    },
+    {
+      "id": "78d0370d0b972b402d73e6c23f56f8ae2f3fb6ecd46ed5bc05a845fa81bbf94c",
+      "name": "trading_system-grid-executor-before-runtime-bf01d948",
+      "successor": "trading_system-grid-executor",
+      "reason": "2026-11-26 网格整批请求额度与空仓模式查询修复；保留回滚与日志证据"
+    },
+    {
+      "id": "a80d75258f40fbf0c80c5ed30725b6295f1d37f98e7c5101dcb7513590c4cb7a",
+      "name": "trading_system-grid-before-runtime-bf01d948",
+      "successor": "trading_system-grid",
+      "reason": "2026-11-26 网格整批请求额度与空仓模式查询修复；保留回滚与日志证据"
+    },
+    {
+      "id": "3c15d949fb14607734e827dabef76d6d82efcbd411d55c4fd18345c6e943a433",
+      "name": "trading_system-hrs-before-runtime-bf01d948",
+      "successor": "trading_system-hrs",
+      "reason": "2026-11-26 网格整批请求额度与空仓模式查询修复；保留回滚与日志证据"
+    },
+    {
+      "id": "19f339903a209429cbcb64c86a827cdfc60aba0395e607d9a939414c3a2997f9",
+      "name": "ai-tuner-funding-schedule-before-runtime-a74901f4",
+      "successor": "ai-tuner-funding-schedule",
+      "reason": "2026-11-27 巡检诊断修复替换；保留回滚及日志证据"
+    },
+    {
+      "id": "6f1099ace09ab9ebcde0cbf944a887cf1e6f2099cfa5e9407b266f68d7d30c2f",
+      "name": "ai-tuner-before-runtime-a74901f4",
+      "successor": "ai-tuner",
+      "reason": "2026-11-27 巡检诊断修复替换；保留回滚及日志证据"
+    },
+    {
+      "id": "e09173a8e438f374ce6f8f3057736ecc3a2acfecf2350b4dc8abf58b2c1e4272",
+      "name": "trading_system-hrs-before-runtime-a74901f4",
+      "successor": "trading_system-hrs",
+      "reason": "2026-11-27 巡检诊断修复替换；保留回滚及日志证据"
+    },
+    {
+      "id": "61b61cc8dd7be9ad0acaddb0e34ec9365942fd5a5909f04be53c5dde228e7cad",
+      "name": "trading_system-grid-executor-before-runtime-3ba21646",
+      "successor": "trading_system-grid-executor",
+      "reason": "2026-11-27 网格启动恢复修复替换；保留回滚及日志证据"
+    },
+    {
+      "id": "0c0b41ccc52a2f1b28920b25ae1ed9f503a997bd3129b7293399be2ca0904b83",
+      "name": "trading_system-grid-before-runtime-3ba21646",
+      "successor": "trading_system-grid",
+      "reason": "2026-11-27 网格启动恢复修复替换；保留回滚及日志证据"
+    },
+    {
+      "id": "3336d411b6189ccdc210f6ddfb0326b082d4c5b8db063bb52567160f2bd2027c",
+      "name": "trading_system-hrs-before-runtime-3ba21646",
+      "successor": "trading_system-hrs",
+      "reason": "2026-11-27 网格启动恢复修复替换；保留回滚及日志证据"
+    }
+  ]
+}
