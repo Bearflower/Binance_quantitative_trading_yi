@@ -1,0 +1,51 @@
+{
+  "checked_at_bjt": "2026-11-28 09:08-09:10",
+  "scope": "read_only_classic_dashboard_and_new_coin",
+  "dashboard": {
+    "source": "GET /api/overview?type=weekly|monthly|yearly",
+    "http_status_each": 200,
+    "publication_status_each": "published",
+    "cutover_income_gap": {
+      "start_ms": 1795581301575,
+      "end_ms": 1795582464000
+    },
+    "verified_classic_income": {
+      "income_count_each": 47,
+      "unattributed_count_each": 0,
+      "net_usdt_each": "0.46432316",
+      "as_of_utc": "2026-11-28T01:08:20.725000+00:00"
+    },
+    "yearly": {
+      "unattributed_count": 1959,
+      "win_rate": 39.62,
+      "win_sample_partial": true,
+      "total_sharpe": null,
+      "total_max_drawdown": null
+    }
+  },
+  "new_coin": {
+    "source": "Classic UM signed positionRisk, UM account positions, ordinary open orders, conditional open algo orders",
+    "checked_at_utc": "2026-11-28T01:09:58.364801+00:00",
+    "runtime_revision": "46fa983cc2bc4d4d7d7ee121bfc78fd5b93f1f45",
+    "container_health": "healthy",
+    "restart_count": 0,
+    "symbols": {
+      "ETNUSDT": {
+        "position_risk_amt": "0.00",
+        "account_position_count": 0,
+        "ordinary_open_count": 0,
+        "conditional_open_count": 0
+      },
+      "IBITUSDT": {
+        "position_risk_amt": "0.00",
+        "account_position_count": 0,
+        "ordinary_open_count": 0,
+        "conditional_open_count": 0
+      }
+    }
+  },
+  "limitations": [
+    "Current Classic flat state does not prove the former PM tail lots' final fill and strategy exit chain.",
+    "Dashboard yearly metrics retain historical evidence gaps; the reported win rate is a partial verified sample."
+  ]
+}
