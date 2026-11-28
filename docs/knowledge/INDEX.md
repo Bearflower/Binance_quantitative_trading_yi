@@ -1,5 +1,7 @@
 # Binance_quantitative_trading 知识库索引
 
+> 对话收口（2026-11-28）：用户确认剩余问题将在其他项目继续处理，并明确要求完成知识沉淀后归档本对话。工程验收结论保留；历史数据阻塞、自然周期与长期观察不因对话归档而关闭。移交范围见[归档结论](../reports/successor-unified-production-acceptance-2026-11-28.md#对话归档与剩余事项移交)。
+
 > 2026-11-28 后继整合已完成：`46fa983c` 最新 9,696 项完整回归通过，OCR 21/21；23/23 统一发布及真实联调通过；利润提醒的历史锚点缺口与自然周期单独保留，见[本轮验收](../reports/successor-unified-production-acceptance-2026-11-28.md)。新问题：[补证范围](./issues/Binance_quantitative_trading-20261128-hrs-live-gap-symbol-scope.md)、[午夜父版本](./issues/Binance_quantitative_trading-20261128-hrs-midnight-parent-version.md)。早间报告为历史时点。
 
 > 2026-11-28 00:13 历史复核记录：[统一修复归档边界](./decisions/Binance_quantitative_trading-20261128-release-acceptance-archive-boundary.md)／[当时报告](../reports/unified-production-archive-readiness-2026-11-28.md)。原工程交付完成，后继组合及历史／自然周期验收保留；不把旧时点通过报告当作当前全量验收。

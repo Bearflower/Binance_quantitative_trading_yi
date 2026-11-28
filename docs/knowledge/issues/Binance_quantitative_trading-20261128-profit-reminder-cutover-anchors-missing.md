@@ -37,3 +37,7 @@ id: Binance_quantitative_trading-20261128-profit-reminder-cutover-anchors-missin
 - 源码：`ai_tuner/allocation/profit_extraction_job.py::run_daily_check`、`shared/accounting/equity_bridge.py::read_anchors`。
 
 复核：日志堆栈、实际运行源码、只读库查询与历史批准范围交叉核验。**AI 归纳，仅供参考：** 放行交易的有限历史批准不能自动变成其他功能所需的完整财务凭据。
+
+## 跟进归属更新（2026-11-28）
+
+用户确认本问题及其他剩余事项将在别的项目继续执行，并要求归档本对话。此条仍为待原始数据；本次只记录后续处理归属，不宣称已取得锚点或恢复利润提醒。接手项目／对话标识未指定，关闭条件与证据边界不变。
