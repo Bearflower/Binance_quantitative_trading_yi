@@ -34,7 +34,7 @@ async def query_user_trades(binance_client, symbol: str, start_time: int, end_ti
     for ws, we in split_into_windows(start_time, end_time, 7):
         try:
             trades = await binance_client._request(
-                "GET", "/papi/v1/um/userTrades",
+                "GET", "/fapi/v1/userTrades",
                 {"symbol": symbol, "startTime": ws, "endTime": we, "limit": 1000},
                 signed=True
             )
@@ -50,7 +50,6 @@ async def main():
         api_key=os.getenv("BINANCE_API_KEY"),
         api_secret=os.getenv("BINANCE_API_SECRET"),
         testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
-        use_unified_account=os.getenv("BINANCE_USE_PM", "true").lower() == "true"
     ) as binance_client:
 
         # 连接数据库以获取策略-订单ID映射

@@ -109,8 +109,8 @@ async def _apply_hrs_review(db, rows, account, start, end):
 
 async def _signed_history(exchange, symbol, left, right):
     params = dict(symbol=symbol, startTime=left, endTime=right - 1, limit=1000)
-    orders = await exchange._request('GET', '/papi/v1/um/allOrders', params, signed=True)
-    fills = await exchange._request('GET', '/papi/v1/um/userTrades', params, signed=True)
+    orders = await exchange._request('GET', '/fapi/v1/allOrders', params, signed=True)
+    fills = await exchange._request('GET', '/fapi/v1/userTrades', params, signed=True)
     for rows, identity in ((orders, 'orderId'), (fills, 'id')):
         if not isinstance(rows, list) or len(rows) >= 1000:
             raise ValueError('incomplete signed page')

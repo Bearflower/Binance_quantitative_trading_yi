@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import structlog
 
+from .condition_orders import cancel_strategy_algos
 from .api_retry_config import get_order_fill
 from .binance_api import BinanceAPIError, BinanceClient, UnknownOrderResultError
 from .order_fill_waiter import STATUS_UNKNOWN, OrderFillResult, wait_order_final_state
@@ -84,6 +85,8 @@ class _CloseParams:
     timeout_seconds: float
     confirm_retries: int
     confirm_interval: float
+    initial_position: Decimal
+    full_close_target: bool
 
 
 async def close_remaining(
@@ -162,11 +165,16 @@ async def close_remaining(
         timeout_seconds=float(timeout_seconds),
         confirm_retries=max(int(position_confirm_retries), 1),
         confirm_interval=float(position_confirm_interval),
+        initial_position=initial,
+        full_close_target=abs(target_qty) >= abs(initial),
     )
 
     # 目标量以「初始真实持仓」为上限，并按 stepSize 向下截断（R03-F5 / AC5 防反向）
     target = _floor_to_step(min(abs(target_qty), abs(initial)), step)
     if target <= 0:
+        if target_qty < abs(initial):
+            return CloseOutcome(CLOSE_FAILED, Decimal("0"), target, False,
+                                "部分减仓目标低于数量步长，不能扩大为全平")
         return await _zero_micro_position(client, params, initial)
     return await _close_loop(client, params, target)
 
@@ -212,7 +220,11 @@ async def _finalize_outcome(
 ) -> CloseOutcome:
     """成功语义收紧（R03-F5）：仅当达标且持仓对账通过才返回成功"""
     is_flat, current = await _confirm_flat(client, p.symbol, p.confirm_retries, p.confirm_interval)
-    if closed >= target and (is_flat or abs(current) <= p.step):
+    expected_remaining = abs(p.initial_position) - target
+    # 部分目标以初始持仓减去目标量核对；全平目标仍允许精度截断微仓。
+    allowed_remaining = max(expected_remaining, p.step) if p.full_close_target else expected_remaining
+    direction_verified = is_flat or current * p.initial_position > 0
+    if closed >= target and direction_verified and abs(current) <= allowed_remaining:
         return CloseOutcome(CLOSE_FILLED, closed, target, True,
                             f"减仓达标（closed={closed}, target={target}）", last_raw)
     if closed > 0:
@@ -272,8 +284,8 @@ async def _handle_reduce_only_rejection(client: BinanceClient, p: _CloseParams) 
     if not p.cancel_conditional_on_reject:
         return
     try:
-        await client.cancel_all_algo_orders(p.symbol)
-        logger.warning("已撤该币种全部条件单以解除减仓冲突", symbol=p.symbol)
+        await cancel_strategy_algos(client, p.symbol)
+        logger.warning("已核对并撤销本策略在该币种的条件单", symbol=p.symbol)
     except Exception as e:
         # 撤单失败不阻塞减仓重试（条件单仅影响 -4118/-4130，非致命）
         logger.warning("撤同向条件单失败（继续重试减仓单）", symbol=p.symbol, error=str(e))

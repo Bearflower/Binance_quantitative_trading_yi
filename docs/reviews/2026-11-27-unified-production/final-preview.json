@@ -1,0 +1,406 @@
+{
+  "schema_version": "1",
+  "mode": "range",
+  "repository": "/Users/yl/.codex/worktrees/unified-production-20261127",
+  "from": "1801ef17",
+  "to": "c4a0bea5b9304779e4d64a526865541afce764a6",
+  "merge_base": "1801ef1706675f807362eca927126ea1fc75ed00",
+  "total_files": 60,
+  "reviewable_count": 31,
+  "excluded_count": 29,
+  "total_insertions": 5655,
+  "total_deletions": 99,
+  "reviewable_files": [
+    {
+      "path": ".github/workflows/full-regression-release.yml",
+      "status": "modified",
+      "insertions": 2,
+      "deletions": 2
+    },
+    {
+      "path": ".github/workflows/history-tolerance-build.yml",
+      "status": "added",
+      "insertions": 83,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/Dockerfile",
+      "status": "modified",
+      "insertions": 3,
+      "deletions": 1
+    },
+    {
+      "path": "ai_tuner/allocation/allocation_calculator.py",
+      "status": "modified",
+      "insertions": 5,
+      "deletions": 3
+    },
+    {
+      "path": "ai_tuner/allocation/classic_publication.py",
+      "status": "added",
+      "insertions": 196,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/config_updater.py",
+      "status": "modified",
+      "insertions": 2,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/history_acceptance.py",
+      "status": "added",
+      "insertions": 102,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/monthly_job.py",
+      "status": "modified",
+      "insertions": 77,
+      "deletions": 32
+    },
+    {
+      "path": "ai_tuner/main.py",
+      "status": "modified",
+      "insertions": 1,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/monitor/classic_account_risk.py",
+      "status": "added",
+      "insertions": 254,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/monitor/evidence_jobs.py",
+      "status": "modified",
+      "insertions": 59,
+      "deletions": 14
+    },
+    {
+      "path": "ai_tuner/notifier/messenger.py",
+      "status": "modified",
+      "insertions": 7,
+      "deletions": 2
+    },
+    {
+      "path": "database/postgres/migrations/2026-11-27-historical-risk-acceptance.sql",
+      "status": "added",
+      "insertions": 48,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/permissions.json",
+      "status": "modified",
+      "insertions": 24,
+      "deletions": 0
+    },
+    {
+      "path": "deploy/history-tolerance/bases.json",
+      "status": "added",
+      "insertions": 48,
+      "deletions": 0
+    },
+    {
+      "path": "deployment/full-regression/source-mount-removals.json",
+      "status": "modified",
+      "insertions": 1,
+      "deletions": 14
+    },
+    {
+      "path": "docs/reviews/2026-11-27-unified-production/coverage.json",
+      "status": "added",
+      "insertions": 215,
+      "deletions": 0
+    },
+    {
+      "path": "docs/reviews/2026-11-27-unified-production/preview.json",
+      "status": "added",
+      "insertions": 381,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/activate_history_acceptance.py",
+      "status": "added",
+      "insertions": 155,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/build_history_tolerance.py",
+      "status": "added",
+      "insertions": 52,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/deploy_full_regression.py",
+      "status": "modified",
+      "insertions": 63,
+      "deletions": 6
+    },
+    {
+      "path": "scripts/recover_proven_order_income.py",
+      "status": "modified",
+      "insertions": 12,
+      "deletions": 2
+    },
+    {
+      "path": "shared/accounting/allocation_provenance.py",
+      "status": "added",
+      "insertions": 154,
+      "deletions": 0
+    },
+    {
+      "path": "shared/accounting/classic_attribution.py",
+      "status": "added",
+      "insertions": 149,
+      "deletions": 0
+    },
+    {
+      "path": "shared/accounting/history_tolerance.py",
+      "status": "added",
+      "insertions": 176,
+      "deletions": 0
+    },
+    {
+      "path": "shared/capital_manager.py",
+      "status": "modified",
+      "insertions": 48,
+      "deletions": 2
+    },
+    {
+      "path": "strategies/hrs/equity_evidence.py",
+      "status": "modified",
+      "insertions": 5,
+      "deletions": 4
+    },
+    {
+      "path": "strategies/hrs/equity_service.py",
+      "status": "modified",
+      "insertions": 226,
+      "deletions": 10
+    },
+    {
+      "path": "strategies/hrs/history_tolerance.py",
+      "status": "added",
+      "insertions": 208,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/loss_gate.py",
+      "status": "modified",
+      "insertions": 32,
+      "deletions": 1
+    },
+    {
+      "path": "strategies/hrs/risk_ledger.py",
+      "status": "modified",
+      "insertions": 27,
+      "deletions": 1
+    }
+  ],
+  "excluded_files": [
+    {
+      "path": "ai_tuner/tests/test_classic_account_risk.py",
+      "status": "added",
+      "insertions": 124,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_classic_allocation_publication.py",
+      "status": "added",
+      "insertions": 165,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_classic_allocation_startup.py",
+      "status": "added",
+      "insertions": 95,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_classic_publication_postgres.py",
+      "status": "added",
+      "insertions": 287,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_evidence_jobs.py",
+      "status": "modified",
+      "insertions": 27,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "docs/knowledge/INDEX.md",
+      "status": "modified",
+      "insertions": 9,
+      "deletions": 3,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/knowledge/changelog/2026-11-27.md",
+      "status": "added",
+      "insertions": 8,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/knowledge/decisions/Binance_quantitative_trading-20261127-bounded-history-acceptance.md",
+      "status": "added",
+      "insertions": 11,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/knowledge/issues/Binance_quantitative_trading-20261127-recovery-digest-collector-metadata.md",
+      "status": "added",
+      "insertions": 31,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reports/historical-evidence-recovery-2026-11-27.md",
+      "status": "added",
+      "insertions": 48,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reports/inspection-repair-2026-11-27.md",
+      "status": "added",
+      "insertions": 54,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reports/production-ledger-reconciliation-2026-11-27.md",
+      "status": "added",
+      "insertions": 88,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reviews/2026-11-27-unified-production/review.md",
+      "status": "added",
+      "insertions": 13,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-11-27-historical-evidence-tolerance-design.md",
+      "status": "added",
+      "insertions": 91,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "tests/test_accounting/test_allocation_chain.py",
+      "status": "added",
+      "insertions": 136,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_accounting/test_allocation_provenance.py",
+      "status": "added",
+      "insertions": 37,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_accounting/test_classic_attribution.py",
+      "status": "added",
+      "insertions": 170,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_accounting/test_history_tolerance.py",
+      "status": "added",
+      "insertions": 97,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_accounting/test_reconcile_income_attribution_postgres.py",
+      "status": "modified",
+      "insertions": 2,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_accounting/test_recover_proven_order_income.py",
+      "status": "modified",
+      "insertions": 36,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_allocation_remediation/test_holdings_floor.py",
+      "status": "added",
+      "insertions": 351,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_database_permissions/test_activate_history_acceptance.py",
+      "status": "added",
+      "insertions": 298,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_database_permissions/test_historical_risk_acceptance.py",
+      "status": "added",
+      "insertions": 62,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_scripts/test_full_regression_build.py",
+      "status": "modified",
+      "insertions": 2,
+      "deletions": 2,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_scripts/test_full_regression_deploy.py",
+      "status": "modified",
+      "insertions": 65,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_equity_evidence.py",
+      "status": "modified",
+      "insertions": 74,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_equity_runtime_permissions.py",
+      "status": "modified",
+      "insertions": 24,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_equity_service.py",
+      "status": "modified",
+      "insertions": 296,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_history_tolerance.py",
+      "status": "added",
+      "insertions": 139,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    }
+  ]
+}

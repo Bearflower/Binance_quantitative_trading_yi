@@ -11,6 +11,7 @@ import yaml
 
 from shared.database import DatabaseManager
 from shared.market_cap import MarketCapService
+from shared.market_cap_client import market_cap_from_env
 from shared.notification import NotificationClient
 from shared.readonly_client import ReadOnlyBinanceClient
 
@@ -69,7 +70,7 @@ def _runtime(config: dict):
         testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
         use_unified_account=False, instance_id="ai-tuner-snapshot",
     )
-    market_cap = MarketCapService(api_key=os.getenv("COINGECKO_API_KEY") or None)
+    market_cap = market_cap_from_env(api_key=os.getenv("COINGECKO_API_KEY") or None)
     notifier = NotificationClient(
         service_url=os.getenv("NOTIFICATION_SERVICE_URL", ""), use_direct_webhook=True
     )

@@ -112,7 +112,6 @@ async def main(args: argparse.Namespace) -> None:
             api_key=binance_api_key,
             api_secret=binance_api_secret,
             testnet=binance_testnet,
-            use_unified_account=True,
         )
         print("[手动触发] 币安客户端已初始化")
     else:

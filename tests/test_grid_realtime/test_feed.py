@@ -174,6 +174,32 @@ async def test_stream_reconnect_dedup_and_health(cfg):
     assert feed._backoff == cfg["transport"]["reconnect_initial_seconds"] * 2
 
 
+async def test_parsed_decimal_backoff_reconnects_using_real_asyncio_sleep(profile_raw):
+    profile_raw["transport"]["reconnect_initial_seconds"] = "0.001"
+    cfg = parse_profile(profile_raw)
+    closed = _msg(aiohttp.WSMsgType.CLOSED)
+    first_ws = FakeWs([_msg_text(_ws_payload(10)), closed])
+    next_ws = FakeWs([_msg_text(_ws_payload(11)), _msg_text(_ws_payload(12)), closed])
+    sockets = [first_ws, next_ws]
+
+    async def factory(_url):
+        if not sockets:
+            raise RuntimeError("测试终止")
+        return sockets.pop(0)
+
+    async def refill():
+        return [parse_ws_message(_ws_payload(i), SYMBOL) for i in (10, 11)]
+
+    feed = TradeFeed(cfg, ws_factory=factory, rest_fetcher=refill)
+    seen = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            seen.append(trade.agg_trade_id)
+    # 11 arrives through REST, then again through WS. Emit each ID once.
+    assert seen == [10, 11, 12]
+    assert first_ws.closed and next_ws.closed
+
+
 async def test_stream_backoff_increases_after_first_disconnect(cfg):
     """断连无补齐时退避递增封顶（initial=1 → cap=30）。"""
     ws = FakeWs([_msg(aiohttp.WSMsgType.CLOSED)])

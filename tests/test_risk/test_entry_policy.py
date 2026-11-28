@@ -35,7 +35,8 @@ def test_minimum_lot_exception_never_exceeds_original_signal():
     signal = dict(quantity='1', entry_price='100', leverage=5,
                   initial_stop_loss='95', direction='LONG')
     sized = size_reduced_entry(signal, filters, D('.5'), D('.002'), [D('.3'), D('.3')])
-    assert sized.quantity == D(1)
+    assert sized.quantity == sized.original_quantity == D(1)
+    assert sized.margin == D(20)
     assert sized.exit_ratios == (D(1), D(0))
     assert sized.risk == sized.original_risk
     with pytest.raises(EntryDenied):

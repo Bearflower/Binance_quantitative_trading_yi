@@ -157,6 +157,22 @@ async def test_r08_ac4_stale_state_with_live_record_keeps_protection():
     cancel_mock.assert_not_awaited()
 
 
+async def test_stale_hrs_state_with_confirmed_exchange_position_keeps_both_protections_without_alert():
+    job, _, _, notification = _make_job(stale_hours_threshold=2.0)
+    states = {"hrs": {"symbols": {"BLESSUSDT"},
+                      "updated_at": datetime.utcnow() - timedelta(hours=3)}}
+    orders = [dict(_stop_loss_order("hrs", "BLESSUSDT"), algo_id=101),
+              dict(_stop_loss_order("hrs", "BLESSUSDT"), order_type="TAKE_PROFIT", algo_id=102)]
+    patches = _patch_execute(job, orders=orders, positions={"BLESSUSDT"},
+                             states=states, has_position=True)
+    cancel_mock = AsyncMock(return_value=(True, None))
+    with patches[0], patches[1], patches[2], patches[3], patches[4], \
+            patch.object(job, "_cancel_order", cancel_mock):
+        await job.execute()
+    cancel_mock.assert_not_awaited()
+    notification.send.assert_not_awaited()
+
+
 # ============================================================
 # R08-AC5：场景B 不回归
 # ============================================================

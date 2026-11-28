@@ -2,6 +2,7 @@
 
 No inferred symbol ownership, lifecycle win rate or legacy PNL fallback.
 """
+from shared.accounting.account_cutover import FILL_SOURCES, coverage_watermark
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import os
@@ -106,16 +107,8 @@ class ExchangeLedgerDashboardMixin:
                 account, start_ms, end_ms)]
             covered = set()
             for symbol in symbols:
-                intervals = sorted((int(row['window_start_ms']), int(row['covered_until_ms']))
-                                   for row in cursors if row.get('source') == 'userTrades'
-                                   and row.get('symbol') == symbol and row.get('page_complete') is True
-                                   and row.get('request_status') == 'ok'
-                                   and row.get('covered_until_ms') is not None)
-                cursor = anchors[symbol] if verified_sample else start_ms
-                for left, right in intervals:
-                    if left <= cursor:
-                        cursor = max(cursor, right)
-                if cursor >= end_ms:
+                left = anchors[symbol] if verified_sample else start_ms
+                if coverage_watermark(cursors, account, left, end_ms, FILL_SOURCES, None, symbol) >= end_ms:
                     covered.add(symbol)
             return stats(baselines, fills, owners, incomes, covered)
         except Exception:
@@ -138,6 +131,16 @@ class ExchangeLedgerDashboardMixin:
                     'FROM public.equity_snapshot '
                     'WHERE snapshot_date >= $1 AND snapshot_date < $2 ORDER BY snapshot_date',
                     start - timedelta(days=1), end - timedelta(days=1))
+                cutover = report.get("classic_cutover_ms")
+                if cutover and report["end_ms"] >= cutover:
+                    from shared.accounting.equity_bridge import classic_daily_equity
+                    cut_day = datetime.fromtimestamp(cutover / 1000, BEIJING).date()
+                    # 切换日的全天收益不能使用前一日 PM 权益作分母。
+                    equity_rows = [r for r in equity_rows if r["snapshot_date"] + timedelta(days=1) < cut_day]
+                    recent = await classic_daily_equity(self._db_manager, cutover,
+                                                         max(start - timedelta(days=1), cut_day),
+                                                         end - timedelta(days=1))
+                    equity_rows.extend(recent)
                 account_capital = {row['snapshot_date'] + timedelta(days=1): row['total_equity']
                                    for row in equity_rows}
                 if yearly:
@@ -177,12 +180,41 @@ class ExchangeLedgerDashboardMixin:
                     f"annual-archive-tail:{archive.END_MS}", current=current,
                     refresh_seconds=int(os.environ.get("LEDGER_REFRESH_SECONDS", "60")))
                 combined = archive.combine_archive(prefix, suffix)
-                return archive.apply_manual_history(combined, archive.load_manual_history())
+                result = archive.apply_manual_history(combined, archive.load_manual_history())
+                if suffix.get("classic_cutover_ms") is not None:
+                    from shared.accounting.economic_ledger import add_mode_segments
+                    add_mode_segments(result, suffix["classic_cutover_ms"])
+                return await self._with_classic_income(result, account, start, end, window_key, current)
             except (ValueError, OSError) as exc:
                 logging.getLogger(__name__).warning("Annual income archive unavailable: %s", exc)
-        return await read_published_report(
+        report = await read_published_report(
             self._db_manager, account, _ms(start), _ms(end), window_key,
             current=current, refresh_seconds=int(os.environ.get('LEDGER_REFRESH_SECONDS', '60')))
+        return await self._with_classic_income(report, account, start, end, window_key, current)
+
+    async def _with_classic_income(self, report, account, start, end, window_key, current):
+        cutover = report.get("classic_cutover_ms")
+        pm_end = report["end_ms"]
+        if not cutover or not _ms(start) < cutover < _ms(end) or pm_end >= cutover:
+            return report
+
+        result = dict(report, cutover_income_gap={"start_ms": pm_end, "end_ms": cutover})
+        try:
+            classic = await read_published_report(
+                self._db_manager, account, cutover, _ms(end), f"{window_key}:classic",
+                current=current, refresh_seconds=int(os.environ.get("LEDGER_REFRESH_SECONDS", "60")))
+        except Exception:
+            logging.getLogger(__name__).exception("Classic income segment refresh failed")
+            return result
+
+        if (classic["account_coverage_complete"] and classic["start_ms"] == cutover
+                and cutover < classic["end_ms"] <= _ms(end)
+                and classic.get("publication_status") in ("published", "stale")):
+            result["verified_classic_income"] = {key: classic.get(key) for key in (
+                "report_id", "start_ms", "end_ms", "as_of", "publication_status", "income_count",
+                "account_components", "by_strategy", "unattributed_count", "unattributed_usdt_total",
+                "other_asset_totals")}
+        return result
 
     @staticmethod
     def _ledger_metadata(report):
@@ -191,7 +223,8 @@ class ExchangeLedgerDashboardMixin:
             'requested_end_ms', 'as_of', 'stale_seconds', 'account_coverage_complete',
             'strategy_attribution_complete', 'coverage_gaps', 'other_asset_totals',
             'publication_status', 'refresh_error', 'income_archive_end_ms', 'archive_attribution_count',
-            'manual_attribution_count', 'manual_closure_count')}
+            'manual_attribution_count', 'manual_closure_count', 'classic_cutover_ms', 'mode_segments',
+            'cutover_income_gap', 'verified_classic_income')}
 
     def _strategy_projection(self, report, strategy_id):
         complete = report['strategy_attribution_complete']

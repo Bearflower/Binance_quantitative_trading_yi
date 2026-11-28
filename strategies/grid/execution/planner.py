@@ -37,6 +37,17 @@ class GridPlan:
     levels: Tuple[Decimal, ...]
     max_notional_usdt: Decimal
     max_margin_usdt: Decimal
+    stop_loss_low: Decimal = None
+    stop_loss_high: Decimal = None
+    sizing: dict = None
+
+
+class PlanLimitExceeded(ValueError):
+    """A valid grid signal cannot fit the configured execution budget."""
+
+    def __init__(self, message, **evidence):
+        super().__init__(message)
+        self.evidence = {key: str(value) for key, value in evidence.items()}
 
 
 def _round(value: Decimal, step: Decimal, rounding) -> Decimal:
@@ -45,7 +56,8 @@ def _round(value: Decimal, step: Decimal, rounding) -> Decimal:
 
 def build_plan(params: DynamicGridParams, feasibility: CapitalFeasibility,
                market_price: Decimal, exchange_filters: ExchangeFilters,
-               hard_limits: HardLimits) -> GridPlan:
+               hard_limits: HardLimits, *,
+               margin_budget_usdt: Decimal = None) -> GridPlan:
     if not feasibility.feasible or feasibility.grid_count != params.grid_count:
         raise ValueError("capital feasibility mismatch")
     if market_price <= 0 or not params.lower_boundary < market_price < params.upper_boundary:
@@ -62,6 +74,57 @@ def build_plan(params: DynamicGridParams, feasibility: CapitalFeasibility,
     qty = _round(feasibility.qty_per_grid, exchange_filters.step_size, ROUND_FLOOR)
     if qty < exchange_filters.min_qty:
         raise ValueError("quantity below minimum")
+    raw_levels, levels = price_levels(params, exchange_filters)
+    if any(left >= right for left, right in zip(levels, levels[1:])):
+        raise ValueError("rounded grid levels overlap")
+    # Compare each rounded interval with its own unrounded interval. Arithmetic
+    # signals quote profit relative to the current price, while interval returns
+    # use their respective lower price.
+    for index, (left, right) in enumerate(zip(levels, levels[1:])):
+        raw_left, raw_right = raw_levels[index:index + 2]
+        expected_rate = (raw_right - raw_left) / raw_left
+        if (right - left) / left < expected_rate * Decimal("0.95"):
+            raise PlanLimitExceeded("rounded profit rate below plan")
+
+    if margin_budget_usdt is not None:
+        if not margin_budget_usdt.is_finite() or margin_budget_usdt <= 0:
+            raise PlanLimitExceeded("no available execution margin")
+        # Reserve the budget across every possible level, including a level
+        # temporarily equal to the ticker. Price movement must not inflate size.
+        price_sum = sum(levels, Decimal(0))
+        notional_budget = min(
+            min(margin_budget_usdt, hard_limits.max_margin_usdt)
+            * Decimal(hard_limits.leverage), hard_limits.max_notional_usdt)
+        qty = min(qty, _round(notional_budget / price_sum,
+                              exchange_filters.step_size, ROUND_FLOOR))
+        if qty < exchange_filters.min_qty:
+            raise PlanLimitExceeded("execution budget below minimum quantity")
+
+    orders = []
+    for index, price in enumerate(levels):
+        if price == market_price:
+            continue
+        side = "BUY" if price < market_price else "SELL"
+        if price * qty < exchange_filters.min_notional:
+            raise PlanLimitExceeded("order notional below minimum", quantity=qty,
+                                    order_price=price, order_notional=price * qty)
+        orders.append(PlannedOrder(index, side, price, qty))
+    if not orders or len(orders) > hard_limits.max_open_orders:
+        raise PlanLimitExceeded("open order count exceeds limit")
+    total_notional = sum((order.price * order.quantity for order in orders), Decimal(0))
+    margin = total_notional / Decimal(hard_limits.leverage)
+    if total_notional > hard_limits.max_notional_usdt:
+        raise PlanLimitExceeded("whole-plan notional exceeds limit")
+    if margin > hard_limits.max_margin_usdt:
+        raise PlanLimitExceeded("whole-plan margin exceeds limit")
+    stop_low = _round(params.stop_loss_low, exchange_filters.tick_size, ROUND_FLOOR)
+    stop_high = _round(params.stop_loss_high, exchange_filters.tick_size, ROUND_CEILING)
+    if not 0 < stop_low < levels[0] or stop_high <= levels[-1]:
+        raise ValueError("rounded stop boundaries invalid")
+    return GridPlan(tuple(orders), levels, total_notional, margin, stop_low, stop_high)
+
+
+def price_levels(params, exchange_filters):
     raw_levels = []
     for index in range(params.grid_count + 1):
         if params.grid_mode == GridMode.ARITHMETIC:
@@ -76,25 +139,4 @@ def build_plan(params: DynamicGridParams, feasibility: CapitalFeasibility,
         raw_levels.append(raw)
 
     levels = tuple(_round(raw, exchange_filters.tick_size, ROUND_FLOOR) for raw in raw_levels)
-    if any(left >= right for left, right in zip(levels, levels[1:])):
-        raise ValueError("rounded grid levels overlap")
-    if min((right - left) / left for left, right in zip(levels, levels[1:])) < params.profit_rate * Decimal("0.95"):
-        raise ValueError("rounded profit rate below plan")
-
-    orders = []
-    for index, price in enumerate(levels):
-        if price == market_price:
-            continue
-        side = "BUY" if price < market_price else "SELL"
-        if price * qty < exchange_filters.min_notional:
-            raise ValueError("order notional below minimum")
-        orders.append(PlannedOrder(index, side, price, qty))
-    if not orders or len(orders) > hard_limits.max_open_orders:
-        raise ValueError("open order count exceeds limit")
-    total_notional = sum((order.price * order.quantity for order in orders), Decimal(0))
-    margin = total_notional / Decimal(hard_limits.leverage)
-    if total_notional > hard_limits.max_notional_usdt:
-        raise ValueError("whole-plan notional exceeds limit")
-    if margin > hard_limits.max_margin_usdt:
-        raise ValueError("whole-plan margin exceeds limit")
-    return GridPlan(tuple(orders), levels, total_notional, margin)
+    return raw_levels, levels

@@ -1,5 +1,7 @@
 # Binance_quantitative_trading 知识库索引
 
+> 2026-11-28 本任务增量复核：[统一修复归档边界](./decisions/Binance_quantitative_trading-20261128-release-acceptance-archive-boundary.md)／[最新报告](../reports/unified-production-archive-readiness-2026-11-28.md)。原工程交付完成，后继组合及历史／自然周期验收保留；不把旧时点通过报告当作当前全量验收。
+
 最后巡检: 2026-10-15（2026-10-13 完成冷启动初始化 + 5 条样例 + 第一批 11 条放下时复核 + 第二批 8 条扩充；2026-10-14 新增 1 条诊断沉淀；2026-10-15 新增 5 issue + 2 decision 并入索引。2026-10-14/15 两次均为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论；2026-10-15 另对 ghost-entry-record-mutex / entry-terminal-state-hookpoint 两条做增量补齐（BNB/SOL 续报，提交 `8071f06`，条目统计不变）；2026-10-15 另对 hrs-pnl-double-count / hrs-third-close-path-missing-summary / dashboard-pnl-caliber-map 三条做增量更新（`hrs_pnl_governance` /finish 归档：D 段上线 Run #71-73 + 生产回填 −52.91988 定案），条目统计不变；2026-10-15 另新增 1 条 issue（income-history-silent-empty-non-unified，源自 C1/D1 只读采集交付）并对 deploy-yml-init-scripts-unsynced 补记同类边界场景，条目 +1；2026-10-15 另因「看板资金基数 / 最大回撤口径修复」B 段文档债更新，新增 1 条 decision（segmented-drawdown-caliber，**取代** 20261009-max-drawdown-caliber，后者状态转「已替代」）并对 allocation-return-denominator-zero 补注「看板口径升级」、monthly 月度资金分配需求文档升 v1.6，决策 +1）；2026-10-15 另因 C1/D1 消费方/生产者接线 + DDL 迁入 `init-scripts/`（R1/R2/R3）落地，对 2026-10-15 每日变更与 income-history issue 待复查口径做增量补充（**未新增知识条目**，条目统计不变）；2026-10-16 新增 1 issue + 1 decision（CI `deploy.yml` 并发策略缺陷修复 `ci_concurrency_queue_max_2026-10-16`，条目 +1/+1）并入索引，并对「CI 并发策略（`cancel-in-progress:false` + `queue:max`）」登记路径 ③（构建失败的 Run 其变更不被后继 Run diff 覆盖）为**待复查/知悉项**；同日另因「独立复审 R1–R6 六项修复收口（`strategy_remediation_R1-R6_2026-10-16`）」新增 **2 issue**（execution-facts-cursor-before-fact-silent-drop / execution-facts-same-ms-page-advance）+ **2 decision**（fact-before-cursor-transaction-boundary / hrs-shadow-signal-origin-not-substitute），条目 **+2/+2**（本轮为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论）；2026-10-18 因「目的驱动型 AI Tuner MVP 阶段一（参数安全 + 90 天准备度审计）」收口，新增 **2 issue**（relative-path-wrong-root-silent-load-failure / db-api-hallucination-asyncpg-vs-wrapper），条目 **+2**（本轮为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论）；2026-10-19 因「阶段二前置项① MTPCS 系信号持久化」落地（`shared/mtpc_signal_persistence.py` + `init-scripts/12-mtpc-signal-persistence.sql` + 审计侧 `readiness.effective_signal_statuses` 状态过滤），新增 **1 decision**（`mtpc-signal-persistence-dedup-and-status`）、每日变更 +1、**无新增 issue**；本轮为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论；2026-10-19/20 因「XAUUSDT MTCPS 影子采集 + 本地回放链路」交付与两轮修复沉淀 **1 issue**（shadow-replay-flat-trailing-key-silent-default）+ **1 decision**（xau-replay-report-caliber-position-aggregation），**2026-10-20 修复轮**再新增 **1 issue**（shadow-replay-manifest-top-hash-verify-incomplete）并对既有 decision 补记「连续亏损状态机层口径」（幂等合并、未新增 decision），问题 **+1**（决策不变）（均为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论）；2026-10-20 因「`mtcps-xau-shadow` 复用 btc-eth 镜像漏 COPY 兄弟包 `strategies/btc_eth_aggressive/` 致容器 `ModuleNotFoundError` crash-loop」修复（代码侧补齐 Dockerfile COPY + 静态守护测试，待重新部署验证），新增 **1 issue**（shadow-image-missing-aggr-copy-crashloop）、每日变更 +1、**无新增 decision**，问题 **+1**；同轮登记 1 条**知悉项**（镜像依赖与 CI diff 判定不一致，待独立评估）；**2026-10-20 另因**「`mtcps-xau-shadow` compose 宿主 bind mount 空目录遮蔽镜像内烘焙影子 profile 配置致 crash-loop」修复（compose 移除遮蔽挂载 `./strategies/btc_eth/shadow/config` + 新增静态守护测试 `tests/test_strategies/test_shadow_compose_config_mount.py`，待重新部署验证）——**与前述「缺 aggr COPY」并列的第二处独立根因**——新增 **1 issue**（shadow-compose-bind-mount-masks-image-config）、每日变更 +1、**无新增 decision**，问题 **+1**（本轮为增量补充，未重跑全量巡检，孤立/引用链分析沿用 2026-10-13 结论）
 
 2026-10-27 增量补充（未重跑全量巡检）：补入 2026-10-26/27 已存在但尚未进索引的 2 条 issue，并因“MTPCS 黄金校准版（XAU）”新增 1 条 decision 与 2026-10-27 每日变更；孤立/引用链分析仍沿用 2026-10-13 结论。
@@ -10,17 +12,18 @@
 2026-11-02 AI Tuner 增量归档：新旧提示词契约冲突、可选持仓上限路径误写两条独立 issue 已修复并部署；新增长期问题条目 2，沿用当日变更文件，业务任务实跑仍待验证。未重跑全库巡检。
 2026-11-03 激进策略旧仓续报：SOL 部分已实现盈亏致归属查询漏仓，新增 1 条 issue；修复上线后生产日志确认归属兜底运行，SOL/XRP 均提前归零，残余交易所与数据库 OPEN 条件单清零。新增 1 篇当日变更，未重跑全库巡检；新仓自然重启恢复仍待观察。
 2026-11-11 增量补充：新增 1 条看板修复未闭合问题，记录绩效指标缺失及自动归属任务证据冲突；未重跑全库巡检。
-2026-11-27 增量补充：XAU 版本证据缺失与跨版本 run 复用新增 1 条 issue 和 1 篇变更日志；发布验收待完成，未重跑全库巡检。
-条目统计: 问题 50 / 决策 17 / 变更日志累计 13
+2026-11-27 增量补充：归属证据摘要稳定性修复新增 1 issue、1 篇当日记录；本轮核对来源与链接，未重跑全库巡检。
+2026-11-28 增量复查：经典账户切换补入收口报告及当日变更；HRS/AI 后续验收已更新先前“仍冻结”状态。PM 原始权益和 12 月自然分配仍待验收；生产容量与发布状态见当日续报。本轮未重跑知识库全量巡检。
+条目统计: 问题 51 / 决策 17 / 变更日志累计 14
 
 ## 巡检状态汇总
 | 状态   | 数量 | 判定规则              |
 |--------|------|-----------------------|
-| 正常   | 21   | 本次检查未发现需复查项，不代表重新验证全部结论（增量口径：问题 50 − 待复查清单 29） |
-| 待复查 | 29   | 存在证据缺口、相关代码变化或后续跟踪项等复查提示（= 待复查清单未勾选数，增量补充后实际） |
+| 正常   | 20   | 本次检查未发现需复查项，不代表重新验证全部结论（增量口径：问题 51 − 待复查清单 31） |
+| 待复查 | 31   | 存在证据缺口、相关代码变化或后续跟踪项等复查提示（= 待复查清单未勾选数，增量补充后实际） |
 | 孤立   | 8    | 无其他知识正文条目引用；索引入口不算入链，仅作提示（沿用 2026-10-13 全量链分析；本轮未重跑，未含 2026-10-15 及之后新增条目） |
 
-> 统计口径说明（2026-11-27 增量递增）：问题模式库实际 50 行，决策记录实际 17 行，变更日志 13 个文件；待复查清单未勾选 29 项，正常沿用旧表口径计为 50 − 29 = 21。孤立仍沿用 2026-10-13 全量链分析结论 8，本轮未重跑链分析。
+> 统计口径说明（2026-11-28 增量递增）：问题模式库实际 51 行，决策记录实际 17 行，变更日志 14 个文件；待复查清单未勾选 31 项，正常沿用旧表口径计为 51 − 31 = 20。孤立仍沿用 2026-10-13 全量链分析结论 8，本轮未重跑链分析。
 
 > 冷启动说明：5 条黄金样例的「审查」字段原均为「待审查」（仅表是否核对来源与表述，与状态互不混用）。2026-10-13 code-document-curator 完成首次放下时复核，5 条均已转「已审查」（其中 grid-min-quantity-unit 经「必要证据摘要」修正后转正）。
 >
@@ -38,6 +41,7 @@
 | ID | 标题 | 标签 | 日期 | 状态 |
 |----|------|------|------|------|
 | Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse | SHA-only 构建导致 XAU 事件版本为空并跨版本复用 run | bug,XAU,归因,版本证据 | 2026-11-27 | 待复查 |
+| [Binance_quantitative_trading-20261127-recovery-digest-collector-metadata](./issues/Binance_quantitative_trading-20261127-recovery-digest-collector-metadata.md) | 采集元数据导致归属凭据摘要不稳定 | accounting,幂等 | 2026-11-27 | 固定模块维护验证通过；镜像待正常发布 |
 | Binance_quantitative_trading-20261111-dashboard-closure-gaps | 交易所收益已对齐，但看板绩效指标缺失且自动归属任务因证据冲突失败 | bug,dashboard,收益口径,绩效指标,自动归属,证据冲突 | 2026-11-11 | 部分修复，待复查 |
 | Binance_quantitative_trading-20261103-partial-pnl-masks-legacy-owner | 部分止盈写入入场记录 realized_pnl 后，未平旧仓归属查询返回空 | bug,btc_eth_aggressive,持仓归属,资金限额,部分平仓,旧仓 | 2026-11-03 | 已解决 |
 | Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch | 旧契约策略收到新信封提示词，网格调优缺 reasons 和 summary | bug,ai_tuner,grid,LLM,prompt,契约不一致 | 2026-11-02 | 已修复并部署，待周度任务实跑验证 |
@@ -91,6 +95,7 @@
 ## 决策记录
 | ID | 标题 | 日期 | 状态 | 替代入口 |
 |----|------|------|------|----------|
+| Binance_quantitative_trading-20261127-bounded-history-acceptance | 经典账户有限历史容缺、HRS 连续账本与既有上限下 AI 自动分配 | 2026-11-27 | 已实施 | docs/reports/historical-evidence-recovery-2026-11-27.md |
 | Binance_quantitative_trading-20261102-untracked-position-safe-exit | 原始 ATR 丢失的未接管旧仓保留交易所保护并按真实成交时间退出 | 2026-11-02 | 已采纳 | — |
 | Binance_quantitative_trading-20261029-micro-leg-not-placeable-na-caliber | 微仓比例腿数量取整为 0 时按 N/A 处理，不补足最小下单量 | 2026-10-29 | 已采纳 | — |
 | Binance_quantitative_trading-20261028-journald-container-log-retention | 本项目容器 stdout 使用宿主机 journald 跨重建保留 | 2026-10-28 | 已采纳 | — |
@@ -110,6 +115,10 @@
 | Binance_quantitative_trading-20260917-grid-margin-five-factor-guide | 网格保证金由静态值改为五因子动态引导（BTC 独立检测器） | 2026-09-17 | 已采纳 | — |
 
 ## 每日变更（近 30 天）
+
+- [2026-11-28](./changelog/2026-11-28.md)：经典账户切换增量收口复查、当前 HRS/AI 状态及仍未完成的容量和自然周期验收。
+- [2026-11-27](./changelog/2026-11-27.md)：生产账本对账、资金费归属补记和稳定摘要修复。
+
 | 日期 | 变更数 | 摘要 |
 |------|--------|------|
 | 2026-11-27 | 1 | XAU 版本身份修复与受限发布审计包固化；见[当日变更](./changelog/2026-11-27.md)。 |
@@ -125,6 +134,10 @@
 | 2026-10-15 | 8 | [c1_d1_evidence_contract] C1「决策与证据契约」+ D1「只读采集与不可变原始事实」交付（旁路只读、先影子、零行为变更）：新增 `shared/decision_evidence.py`（纯模型/序列化，稳定 `cycle_id`/`decision_id`、`available_at` 校验、脱敏、`EvidenceSerializeResult`）+ 两张迁移 SQL（`decision_evidence` / `execution_fact_*` 四表，**仅落仓库未 apply**）+ `scripts/export_execution_facts.py`（分页/去重/游标断点恢复/`max_pages` 守卫/脱敏+sha256；**CLI 不带真实 sink，结果走 JSONL**）+ `shared/binance_api.py` 仅 `get_user_trades` 加 `end_time`/`limit`（向后兼容）；测试 84 passed（C1 19 + D1 65）；沉淀 issue 1 条（income-history-silent-empty-non-unified）+ 回补 deploy-yml-init-scripts-unsynced；**[ghost_entry_mutex_fix] 幽灵入场记录误拦修复收口（R3 GA/GB/GC，124 tests，`fce42bf` Run 74 五层验证 DEPLOY_ID=00004A01；D4 dry-run→execute：候选 582 → CANCELED 240 / KEPT 49 / SKIP 293，复查 SNPSUSDT 互斥命中数=0；**本轮增量修补 `8071f06` Run 76 五层验证 DEPLOY_ID=00004C01：BNB 8 条转 CLOSED、SOL 47 条真仓 KEPT、D2 扩 reason（open_failed/open_exception/micro_zeroed→CANCELED）、T2b 分类器修复、**AC1b 已通过（16:05 轮次日志互斥条数=0 + SQL 直查 BNBUSDT 互斥 owner 为空）**），沉淀 issue 1 + decision 1（其内容已随本轮增量补齐）；[newcoin_executed_at_timezone] R2 平仓盈亏回写 executed_at 时区修复上线（`94ca3ed` Run #75 DEPLOY_ID=00004B01，13 新增用例全绿、基线 25F/163P→25F/176P 失败集合逐条同名零回归；业务验收仍在观察中），沉淀 decision 1 + 追加工单 issue 2；[newcoin_legacy_test_debt] 另行登记 new_coin 既有测试 25 项长期失败（测试债，未修复）；[newcoin_db_strategy_name_mismatch] R2 发布后复查新发现的既有缺陷，容器内 A/B 实测确认属实（`$1='新币做空策略'` rows=0 / `$1='new_coin'` rows=1），工单 + 方案1 修复方案成文、代码未改；[hrs_pnl_governance] D 段收口 + /finish 归档：`8808e74`/`8cf1ae4`/`1d1b247`（Run #71-73）五层验证，生产回填 21 行 SUM −52.91988，回填后月度 7月+5.75/8月−29.09/9月−30.74/10月+10.29，回撤 1.0 定性为真实（income 7-9 月累计约 −87.8 > 基数 58.37）；**已完成 21 项 / 未完成转出 1 项**；[capital_base_caliber_fix_2026-10-15] 「看板资金基数 / 最大回撤口径修复」**B 段文档债更新**（文档侧收尾）：新增 decision `segmented-drawdown-caliber`（资金段分段口径 `segmented-v1`：E1/E2/E3 段边界 + K=3 配置化、段初向后取 `_SEGMENT_OPENING_CAPITAL_SQL`、段内 `nv=max(0,1+cum/段初)`、跨段不比取各段 max、残缺段 cum-reset（非比例缩放）、零分母整段跳过 + INFO 审计、CS3 持仓级 CTE 去重、`caliber_version='segmented-v1'`），**取代** `20261009-max-drawdown-caliber`（状态转「已替代」，原文保留）；`allocation-return-denominator-zero` 补注「看板侧 `_query_strategy_base_capital` 已删、口径升级」；月度资金分配需求文档升 v1.6（4 步回退链仅限 ai_tuner 侧）；`数据库设计.md` §3.12 补 `caliber_version` 字段；**[c1_d1_evidence_contract · R1/R2/R3 落地，追加]** C1/D1 消费方与生产者接线 + DDL 迁入部署路径（**开关默认关闭、零行为变更**）：R1 新增 `shared/execution_facts_sink.py`（幂等写 execution_fact 4 表）+ `export_execution_facts.py` 增 `EXECUTION_FACTS_DB_WRITE` 开关（缺省关闭、connect 失败降级）；R2 新增 `shared/decision_evidence_sink.py` + `strategies/btc_eth/evidence_recorder.py`（旁路全吞异常）+ `main.py` initialize/run_strategy 单点接线 + `config.yaml` `decision_evidence.enabled: false`；R3 DDL 迁入 `init-scripts/10-decision-evidence.sql`、`11-execution-facts.sql`（随 CI 部署执行，`migrations/` 源文件保留不删不 apply）；测试 123 passed；**`migrations/` 不自动执行、`init-scripts/` 为唯一随部署生效路径** |
 | 2026-10-14 | 2 | [postgres_error_triage] postgres 日志 5 条 ERROR 定性为临时 psql 会话误用（非生产缺陷，零数据影响），沉淀 issue 1 条（含修正 SQL 与日志排查要点），INDEX/changelog 同步；[hrs-pnl-governance] HRS income 对账定真值（7月+6.36/8月-54.53/9月-39.6538/10月+3.43，修正旧结论 -2.28 非真值）+ H6 第三平仓路径漏写汇总修复（178 tests/GC 通过，待部署）+ 回填 21 组 0 未决（锚 income 合计 -52.920，dry-run 待授权），沉淀 H6 issue 1 条并更正 hrs-pnl-double-count 状态 |
 | 2026-10-13 | 9 | [knowledge-base-build] 建立知识库样板（3 模板 + 5 样例 + INDEX）、knowledge 入 Git、修正 3 条样例证据/状态、补齐 skill 与 Claude 入口接入；[knowledge-base-expand] 第一批 11 条 + 放下时复核转「已审查」（1 条 commit 引用更正）；第二批 8 条（09-21 分配/佣金 + 10-01 补挂/部署 + 10-13 分母口径）；[hrs-pnl-dedup] HRS 盈亏双计防双计口径修复（f940a61/91e99c2，统计层，写入层待治理）；[pnl-caliber-map] 看板盈亏三口径设计确认（本期净盈亏/总盈亏/已实现+浮动，决策：维持现状不改文案） |
+
+## 经典账户切换增量收口
+
+本项尚未整体归档：PM 原始期末权益与完整历史 NAV 仍缺；12 月 1 日 AI 月度自然运行待验收。生产容量与发布状态按当日续报更新。见[收口复查报告](../reports/classic-cutover-closure-audit-2026-11-28.md)。以上 31 项复查统计未包含此任务总览。
 
 ## 待复查清单
 - [ ] XAU 版本修复实际容器与自然 cron 新事件验收；见[问题条目](./issues/Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse.md)。
@@ -176,3 +189,12 @@
 
 ## 关联
 - [项目文档入口](../README.md)
+
+## 2026-11-28 统一修复归档复核（增量）
+
+新增 1 条决策、1 篇当日变更；本分支正文文件数：问题 50／决策 19／变更日志 14。仅复核本任务来源与链接，不将旧的全库巡检、孤立分析或其他未结事项标记完成。
+
+- [x] 原全量修复、历史测试失败、统一生产发布及网格空仓交接，见[验收报告](../reports/unified-production-acceptance-2026-11-27.md)。
+- [ ] 最新后继版本运行集的统一完整回归证明，见[本轮归档复核](../reports/unified-production-archive-readiness-2026-11-28.md)。
+- [ ] 历史数据与长期证明保持原缺口；12 月 1 日自然分配结果届时验收，不提前关闭。
+- 决策：[生产验收与阶段归档边界](./decisions/Binance_quantitative_trading-20261128-release-acceptance-archive-boundary.md)；[当日变更](./changelog/2026-11-28.md)。

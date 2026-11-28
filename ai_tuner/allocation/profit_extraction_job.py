@@ -13,6 +13,7 @@
 """
 
 from datetime import datetime
+from hashlib import sha256
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
@@ -61,6 +62,8 @@ def render_skip(reason: str, *, equity=None, ath=None, initial_capital=None) -> 
         detail = f"当前权益 {_amount(equity)} U 创新高，但建议提取额低于最小提取额，本次不发送建议。"
     elif reason == "already_notified_this_week":
         detail = f"本周已发送过提取建议（ATH {_amount(ath)} U），本次不重复提醒。"
+    elif reason == "classic_equity_anchor_missing":
+        detail = "PM 期末或经典期初权益证据尚未补齐，不计算累计盈利和提取建议。"
     else:
         detail = f"未触发（{reason or '未知原因'}）。"
     return f"【利润提取提醒】本次未触发\n{detail}\n{_SKIP_HINT}"
@@ -114,7 +117,11 @@ class ProfitExtractionJob:
         try:
             # 1. 获取账户总权益
             account_info = await self.binance.get_account_info()
-            total_equity = Decimal(str(account_info.get("totalWalletBalance", 0)))
+            classic = getattr(self.binance, "use_unified_account", True) is False
+            equity_field = "totalMarginBalance" if classic else "totalWalletBalance"
+            total_equity = Decimal(str(account_info[equity_field]))
+            initial_capital = Decimal(str(self.extraction_cfg.get("initial_capital_usdt", 500)))
+            ath_key = "ath_balance"
             if total_equity <= Decimal("0"):
                 await self._publish(
                     render_skip("zero_or_negative_equity", equity=total_equity),
@@ -123,7 +130,31 @@ class ProfitExtractionJob:
                 return {"action": "skip", "reason": "zero_or_negative_equity"}
 
             # 2. 加载持久化 ATH
-            await self._load_ath_balance()
+            if classic:
+                from shared.accounting.account_cutover import classic_cutover_ms
+                from shared.accounting.equity_bridge import main_account, read_anchors, signed_spot_uid_sha256
+                cutover = classic_cutover_ms()
+                if cutover is None:
+                    raise ValueError("利润提取提醒缺少账户切点")
+                try:
+                    pm_final, classic_open = await read_anchors(
+                        self.db_manager, cutover, expected_uid=await signed_spot_uid_sha256(self.binance))
+                except ValueError as exc:
+                    if str(exc) != "缺少有效的 PM 期末或经典期初权益":
+                        raise
+                    logger.info("利润提取提醒等待切换权益证据", reason=str(exc))
+                    await self._publish(
+                        render_skip("classic_equity_anchor_missing"), "skip", "切换权益证据待补")
+                    return {"action": "skip", "reason": "classic_equity_anchor_missing"}
+                # Express old capital and peak in opening USDT at the same relative performance.
+                factor = classic_open / pm_final
+                initial_capital *= factor
+                identity = sha256(main_account().encode()).hexdigest()[:24]
+                ath_key = f"ath_balance:classic:{identity}:{cutover}"
+                pm_peak = await self._read_ath("ath_balance")
+                self._ath_balance = max(classic_open, pm_peak * factor, await self._read_ath(ath_key))
+            else:
+                await self._load_ath_balance()
 
             # 3. 检查是否创新高
             if total_equity <= self._ath_balance:
@@ -138,7 +169,6 @@ class ProfitExtractionJob:
             old_ath = self._ath_balance
 
             # 5. 计算盈利
-            initial_capital = Decimal(str(self.extraction_cfg.get("initial_capital_usdt", 500)))
             profit = total_equity - initial_capital
             if profit <= Decimal("0"):
                 await self._publish(
@@ -189,7 +219,7 @@ class ProfitExtractionJob:
             await self._publish(message, "warn", f"已触发，建议提取 {float(extract_amount):.2f} U")
             self._last_notified_week = current_week
             self._ath_balance = total_equity
-            await self._save_ath_balance(total_equity)
+            await self._save_ath_balance(total_equity, ath_key)
             logger.info(
                 "利润提取提醒已发送",
                 equity=float(total_equity),
@@ -234,21 +264,20 @@ class ProfitExtractionJob:
         except Exception as e:
             logger.warning("创建系统状态表失败", error=str(e))
 
+    async def _read_ath(self, key: str) -> Decimal:
+        row = await self.db_manager.fetch_one(
+            f"SELECT value FROM {_SYSTEM_STATE_TABLE} WHERE key = $1", key)
+        return Decimal(row["value"]) if row and row.get("value") is not None else Decimal(0)
+
     async def _load_ath_balance(self) -> None:
         """从数据库加载 ATH 余额"""
         try:
             await self._ensure_system_state_table()
-            row = await self.db_manager.fetch_one(
-                f"SELECT value FROM {_SYSTEM_STATE_TABLE} WHERE key = $1",
-                "ath_balance",
-            )
-            if row and row.get("value") is not None:
-                self._ath_balance = Decimal(row["value"])
-                logger.info("ATH余额已从数据库恢复", ath_balance=float(self._ath_balance))
+            self._ath_balance = await self._read_ath("ath_balance")
         except Exception as e:
             logger.warning("加载ATH余额失败", error=str(e))
 
-    async def _save_ath_balance(self, new_ath: Decimal) -> None:
+    async def _save_ath_balance(self, new_ath: Decimal, key: str = "ath_balance") -> None:
         """保存 ATH 余额到数据库"""
         try:
             await self._ensure_system_state_table()
@@ -259,7 +288,7 @@ class ProfitExtractionJob:
                         value = EXCLUDED.value,
                         updated_at = NOW()
                 """,
-                "ath_balance",
+                key,
                 str(new_ath),
             )
         except Exception as e:

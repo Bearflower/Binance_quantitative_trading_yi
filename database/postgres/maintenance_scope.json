@@ -1,0 +1,170 @@
+[
+  {
+    "schema": "hrs",
+    "name": "hrs_decision_evidence"
+  },
+  {
+    "schema": "public",
+    "name": "ai_tuner_funding_schedule_observations"
+  },
+  {
+    "schema": "public",
+    "name": "ai_tuner_funding_schedule_runs"
+  },
+  {
+    "schema": "public",
+    "name": "ai_tuner_market_snapshots"
+  },
+  {
+    "schema": "public",
+    "name": "ai_tuner_universe_scan_runs"
+  },
+  {
+    "schema": "public",
+    "name": "ai_tuner_universe_snapshots"
+  },
+  {
+    "schema": "trading",
+    "name": "account_mode_equity"
+  },
+  {
+    "schema": "trading",
+    "name": "account_risk_baseline"
+  },
+  {
+    "schema": "trading",
+    "name": "account_risk_breach"
+  },
+  {
+    "schema": "trading",
+    "name": "account_risk_coverage"
+  },
+  {
+    "schema": "trading",
+    "name": "account_risk_equity_point"
+  },
+  {
+    "schema": "trading",
+    "name": "account_risk_transfer"
+  },
+  {
+    "schema": "trading",
+    "name": "aggressive_stop_bindings"
+  },
+  {
+    "schema": "trading",
+    "name": "aggressive_stop_exit_trades"
+  },
+  {
+    "schema": "trading",
+    "name": "aggressive_stop_exits"
+  },
+  {
+    "schema": "trading",
+    "name": "capital_allocation_history"
+  },
+  {
+    "schema": "trading",
+    "name": "derived_income_attribution"
+  },
+  {
+    "schema": "trading",
+    "name": "entry_activity_source_fact"
+  },
+  {
+    "schema": "trading",
+    "name": "entry_order_observation"
+  },
+  {
+    "schema": "trading",
+    "name": "entry_risk_reservation"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_allocation_audit_control"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_allocation_event"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_equity_evidence"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_equity_reconciliation"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_equity_segment"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_funding_observation"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_income_attribution"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_loss_gate_reset_audit"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_loss_gate_state"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_risk_equity_checkpoints"
+  },
+  {
+    "schema": "trading",
+    "name": "hrs_risk_ledger_events"
+  },
+  {
+    "schema": "trading",
+    "name": "income_ingestion_attempt"
+  },
+  {
+    "schema": "trading",
+    "name": "income_ingestion_attempt_event"
+  },
+  {
+    "schema": "trading",
+    "name": "income_ingestion_conflict"
+  },
+  {
+    "schema": "trading",
+    "name": "ledger_report_active"
+  },
+  {
+    "schema": "trading",
+    "name": "ledger_report_run"
+  },
+  {
+    "schema": "trading",
+    "name": "order_strategy_evidence"
+  },
+  {
+    "schema": "trading",
+    "name": "position_flat_baseline"
+  },
+  {
+    "schema": "trading",
+    "name": "strategy_equity_gate"
+  },
+  {
+    "schema": "trading",
+    "name": "strategy_risk_active"
+  },
+  {
+    "schema": "trading",
+    "name": "strategy_risk_audit"
+  },
+  {
+    "schema": "trading",
+    "name": "strategy_risk_policy"
+  }
+]

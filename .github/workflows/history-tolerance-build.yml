@@ -1,0 +1,142 @@
+name: Build reviewed history tolerance
+on:
+  push:
+    branches: [codex/classic-account-cutover]
+  workflow_dispatch:
+    inputs:
+      activate:
+        description: Activate the four reviewed HRS and AI consumers after build
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: history-tolerance-build-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/codex/classic-account-cutover'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: echo "matrix=$(python3 scripts/build_history_tolerance.py matrix)" >> "$GITHUB_OUTPUT"
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare scoped overlay
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: python3 scripts/build_history_tolerance.py prepare --name '${{ matrix.name }}'
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .history-build/${{ matrix.name }}
+          file: .history-build/${{ matrix.name }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ matrix.repository }}:history-${{ github.sha }}-r${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+      - name: Verify exact files and runtime imports
+        env:
+          IMAGE: ${{ matrix.repository }}@${{ steps.image.outputs.digest }}
+          GROUP: ${{ matrix.name }}
+        run: |
+          docker pull "$IMAGE"
+          docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /app/logs:rw,mode=1777 \
+            -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python "$IMAGE" -B -c \
+            'import shared.capital_manager; import shared.accounting.history_tolerance; import shared.accounting.allocation_provenance'
+          if [ "$GROUP" = hrs ]; then
+            docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /app/logs:rw,mode=1777 \
+              --entrypoint python "$IMAGE" -B -c 'import strategies.hrs.equity_service'
+          fi
+          if [ "$GROUP" = ai-tuner ]; then
+            docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /app/logs:rw,mode=1777 \
+              --entrypoint python "$IMAGE" -B -c 'import ai_tuner.monitor.evidence_jobs; import ai_tuner.allocation.classic_publication; import ai_tuner.cleanup.orphan_cleanup'
+          fi
+          python3 - <<'PY'
+          import json,os,pathlib,subprocess
+          source=pathlib.Path('.history-build')/os.environ['GROUP']/'source.json'
+          receipt=json.loads(source.read_text());receipt['digest_ref']=os.environ['IMAGE']
+          code="import hashlib,pathlib; expected="+repr(receipt['hashes'])+"; assert all(hashlib.sha256((pathlib.Path('/app')/p).read_bytes()).hexdigest()==h for p,h in expected.items()); [compile((pathlib.Path('/app')/p).read_text(),p,'exec') for p in expected]"
+          subprocess.run(['docker','run','--rm','--network','none','--read-only','--entrypoint','python',os.environ['IMAGE'],'-B','-c',code],check=True)
+          source.write_text(json.dumps(receipt,sort_keys=True,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: history-tolerance-${{ matrix.name }}
+          path: .history-build/${{ matrix.name }}/source.json
+          if-no-files-found: error
+  activate:
+    if: github.event_name == 'workflow_dispatch' && inputs.activate == true
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: history-tolerance-*
+          path: ${{ runner.temp }}/history-live-gap-artifacts
+      - name: Bind images to reviewed consumers
+        run: |
+          python3 scripts/prepare_history_live_gap_release.py \
+            --artifacts "$RUNNER_TEMP/history-live-gap-artifacts" \
+            --source "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/history-live-gap"
+          tar -C "$RUNNER_TEMP/history-live-gap" -czf "$RUNNER_TEMP/history-live-gap.tar.gz" .
+      - name: Set up SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          # 复用已核验生产公钥，不能在发送令牌前信任现场扫描结果。
+          printf '%s\n' '43.156.242.184 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFNCPR4nqDmkewu2141YjcAEiP/PD+cBEXMZKWDcAlSu' > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<'EOF'
+          Host 43.156.242.184
+            User root
+            IdentityFile ~/.ssh/id_rsa
+            StrictHostKeyChecking yes
+            ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+          EOF
+          chmod 600 ~/.ssh/config
+      - name: Authenticate GHCR for scoped pull
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          set -o pipefail
+          printf '%s' "$GHCR_PULL_TOKEN" | ssh -o ConnectTimeout=15 root@43.156.242.184 \
+            'docker login ghcr.io -u bearflower --password-stdin'
+      - name: Stage and activate only four consumers
+        run: |
+          remote="/root/trading_system/.deploy_tmp/history-live-gap-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "mkdir -m 700 -p '$remote'"
+          scp -o ConnectTimeout=15 "$RUNNER_TEMP/history-live-gap.tar.gz" "root@43.156.242.184:$remote/bundle.tar.gz"
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "tar -xzf '$remote/bundle.tar.gz' -C '$remote'"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 \
+            "python3 '$remote/activate.py' stage"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 \
+            "python3 '$remote/activate.py' activate"

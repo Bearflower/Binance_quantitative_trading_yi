@@ -196,7 +196,8 @@ SELECT r.symbol, r.margin, r.quantity, o.orig_qty, o.side, o.executed_qty,
            SELECT range_agg(int8range(c.window_start_ms,c.covered_until_ms,'[)')) @>
                   int8range(floor(extract(epoch FROM r.created_at)*1000)::bigint,$4,'[)')
            FROM trading.execution_fact_cursor c
-           WHERE c.account_id=r.account_id AND c.symbol=r.symbol AND c.source='userTrades'
+           WHERE c.account_id=r.account_id AND c.symbol=r.symbol AND c.source=CASE WHEN o.source='signed_classic_get_order_v1'
+                               THEN 'fapi/userTrades' ELSE 'userTrades' END
              AND c.page_complete AND c.request_status='ok'
              AND c.covered_until_ms > c.window_start_ms
              AND c.window_start_ms < $4
@@ -207,7 +208,7 @@ JOIN LATERAL (
     SELECT * FROM trading.entry_order_observation a
     WHERE a.account_id=r.account_id AND a.symbol=r.symbol AND a.client_order_id=r.client_order_id
     ORDER BY a.observed_at DESC,a.id DESC LIMIT 1
-) o ON o.outcome='ok' AND o.source='signed_pm_get_order_v1' AND o.status='FILLED'
+) o ON o.outcome='ok' AND o.source IN ('signed_pm_get_order_v1', 'signed_classic_get_order_v1') AND o.status='FILLED'
    AND o.raw_payload->>'positionSide'='BOTH'
    AND o.raw_payload->'reduceOnly'='false'::jsonb
    AND COALESCE(o.raw_payload->'closePosition','false'::jsonb)='false'::jsonb
@@ -222,7 +223,7 @@ WHERE r.account_id=$1 AND r.strategy_id=$2 AND r.symbol=ANY($3::text[])
         AND bad.outcome='order_identity_conflict'
   )
 GROUP BY r.account_id,r.symbol,r.margin,r.quantity,r.created_at,r.client_order_id,
-         o.orig_qty,o.side,o.executed_qty,o.order_id
+         o.orig_qty,o.side,o.executed_qty,o.order_id,o.source
 """
 
 
@@ -265,7 +266,7 @@ count(*) FILTER (WHERE status='executed' AND
       AND r.client_order_id=s.metadata->>'_risk_client_id'
       AND (s.metadata->>'entry_order_id' IS NULL OR o.order_id=s.metadata->>'entry_order_id')
       AND o.side=CASE UPPER(s.direction) WHEN 'LONG' THEN 'BUY' WHEN 'SHORT' THEN 'SELL' END
-      AND o.outcome='ok' AND o.source='signed_pm_get_order_v1' AND o.status='FILLED'
+      AND o.outcome='ok' AND o.source IN ('signed_pm_get_order_v1', 'signed_classic_get_order_v1') AND o.status='FILLED'
       AND o.raw_payload->>'positionSide'='BOTH' AND o.raw_payload->'reduceOnly'='false'::jsonb
       AND COALESCE(o.raw_payload->'closePosition','false'::jsonb)='false'::jsonb
       AND f.trade_time_utc >= r.created_at AND f.trade_time_utc < ($2::timestamp AT TIME ZONE 'UTC')
@@ -408,7 +409,8 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             result["um_margin"] = blocked_margin("position_ownership_incomplete")
             if result.get("ownership_complete") is True:
                 result["unrealized_position_evidence"] = marked_unrealized_snapshot(
-                    positions, result["owned_positions"], position_as_of_ms
+                    positions, result["owned_positions"], position_as_of_ms,
+                    unified=getattr(exchange, "use_unified_account", True),
                 )
                 result["um_margin"] = await read_um_margin(
                     exchange, positions, result["owned_positions"], position_as_of_ms

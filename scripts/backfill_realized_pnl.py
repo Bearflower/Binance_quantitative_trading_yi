@@ -1,7 +1,8 @@
 """
 历史 realized_pnl 回填脚本
 
-通过 Binance 收入 API 批量查询已实现盈亏，回填到 trade_records 表。
+通过 Binance order/userTrades 核实完整成交，只回填 trade_records 的 NULL 盈亏。
+必须显式设置 TRADE_ACCOUNT_ID；不覆盖既有数据、不推测历史未知订单归属。
 
 使用方式（在容器内执行）：
     docker exec trading_system-btc_eth python /app/backfill_realized_pnl.py
@@ -15,9 +16,10 @@ import sys
 import asyncio
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
-from typing import Optional, Dict, List, Tuple
+from typing import Dict, List
+from pathlib import Path
 
-sys.path.insert(0, "/app")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 # ──────────────────────────────────────────────
@@ -50,7 +52,10 @@ class BinanceBackfillClient:
     def __init__(self, api_key: str, api_secret: str):
         self.api_key = api_key
         self.api_secret = api_secret
-        self.base_url = "https://papi.binance.com"
+        from shared.binance_account_mode import configured_pm
+        self.use_unified_account = configured_pm()
+        self.base_url = "https://papi.binance.com" if self.use_unified_account else "https://fapi.binance.com"
+        self.api_prefix = "/papi/v1/um" if self.use_unified_account else "/fapi/v1"
         self.recv_window = 10000
 
     async def _request(self, method: str, path: str, params: dict = None) -> dict:
@@ -91,7 +96,7 @@ class BinanceBackfillClient:
             "endTime": end_time,
             "limit": 1000
         }
-        data = await self._request("GET", "/papi/v1/um/income", params)
+        data = await self._request("GET", f"{self.api_prefix}/income", params)
         return data if isinstance(data, list) else []
 
 
@@ -129,233 +134,86 @@ async def get_db_connection():
 # ──────────────────────────────────────────────
 
 async def main():
-    log("=" * 60)
-    log("历史 realized_pnl 回填脚本启动")
-    log("=" * 60)
+    """仅凭精确且完整的订单成交证据回填空值。
 
-    # 1. 获取 Binance API 凭据
-    api_key = os.environ.get("BINANCE_API_KEY", "")
-    api_secret = os.environ.get("BINANCE_API_SECRET", "")
+    保留已有盈亏；全部读取和校验完成后才在单个事务中写入。
+    """
+    from shared.entry_fill_evidence import verified_fill
+    from shared.accounting.account_cutover import classic_cutover_ms, order_epoch
 
-    if not api_key or not api_secret:
-        log("❌ 未找到 Binance API 凭据")
-        return
+    api_key = os.environ.get("BINANCE_API_KEY", "").strip()
+    api_secret = os.environ.get("BINANCE_API_SECRET", "").strip()
+    account = os.environ.get("TRADE_ACCOUNT_ID", "").strip()
+    if not api_key or not api_secret or not account:
+        log("缺少 API 凭据或显式 TRADE_ACCOUNT_ID，未执行回填")
+        return 1
 
-    # 2. 连接数据库
-    log("📡 连接数据库...")
+    conn = None
     try:
-        conn = await get_db_connection()
-        log("✅ 数据库连接成功")
-    except Exception as e:
-        log(f"❌ 数据库连接失败: {e}")
-        return
-
-    try:
-        # 3. 重置所有 realized_pnl（重新匹配，确保准确性）
-        log("🔄 重置所有 realized_pnl 为 NULL...")
-        await conn.execute("""
-            UPDATE trading.trade_records 
-            SET realized_pnl = NULL 
-            WHERE executed_at >= '2026-05-01'
-        """)
-        log("✅ 重置完成")
-        
-        # 4. 获取所有待回填记录（按策略和交易对分组）
-        log("📊 查询所有待匹配记录...")
-        rows = await conn.fetch("""
-            SELECT id, strategy, symbol, order_id, side, order_type, 
-                   executed_at, commission
-            FROM trading.trade_records
-            WHERE realized_pnl IS NULL
-              AND executed_at >= '2026-05-01'
-            ORDER BY strategy, symbol, executed_at
-        """)
-        records = [dict(r) for r in rows]
-        log(f"📊 找到 {len(records)} 条待回填记录")
-
-        if not records:
-            log("✅ 没有需要回填的记录")
-            return
-
-        # 统计各策略的记录数
-        from collections import Counter
-        strategy_counts = Counter(r["strategy"] for r in records)
-        for strategy, count in strategy_counts.most_common():
-            log(f"   - {strategy}: {count} 条记录")
-
-        # 获取所有涉及的交易对
-        symbols = set(r["symbol"] for r in records)
-        log(f"📈 涉及 {len(symbols)} 个交易对")
-
-        # 5. 初始化 Binance 客户端
-        log("🔑 初始化 Binance API 客户端...")
         client = BinanceBackfillClient(api_key, api_secret)
+        cutover = classic_cutover_ms()
+        if not client.use_unified_account and cutover is None:
+            raise ValueError("经典账户回填需要明确账户模式切点")
+        mode_clause = ""
+        query_args = [account, datetime(2026, 5, 1)]
+        if cutover is not None:
+            # trade_records.executed_at 是无时区的北京时间；切点毫秒属于 classic。
+            boundary = datetime.fromtimestamp(cutover / 1000, timezone(timedelta(hours=8))).replace(tzinfo=None)
+            mode_clause = " AND executed_at " + ("<" if client.use_unified_account else ">=") + " $3"
+            query_args.append(boundary)
+        conn = await get_db_connection()
+        rows = await conn.fetch(
+            "SELECT id, account_id, symbol, order_id, side, executed_at "
+            "FROM trading.trade_records WHERE account_id=$1 "
+            "AND realized_pnl IS NULL AND status='FILLED' "
+            "AND order_id IS NOT NULL AND order_id<>'' "
+            "AND executed_at >= $2" + mode_clause + " ORDER BY id",
+            *query_args,
+        )
+        updates = []
+        seen_orders = set()
+        for row in rows:
+            key = (row["symbol"], str(row["order_id"]))
+            if row["account_id"] != account or key in seen_orders:
+                raise ValueError("账户或订单绑定不唯一")
+            if cutover is not None and order_epoch(row["executed_at"], cutover) != ("pm" if client.use_unified_account else "classic"):
+                raise ValueError("记录不属于当前账户模式的时间区间")
+            seen_orders.add(key)
+            params = {"symbol": row["symbol"], "orderId": str(row["order_id"])}
+            order = await client._request("GET", f"{client.api_prefix}/order", params.copy())
+            trades = await client._request(
+                "GET", f"{client.api_prefix}/userTrades", dict(params, limit=1000))
+            verified_fill(row, order, trades)
+            pnl = Decimal("0")
+            for trade in trades:
+                value = Decimal(str(trade["realizedPnl"]))
+                if not value.is_finite():
+                    raise ValueError("已实现盈亏不是有限数值")
+                pnl += value
+            updates.append((pnl, row["id"], account, row["symbol"],
+                            str(row["order_id"]), row["side"]))
 
-        # 6. 分片查询收入数据（每次查 7 天）
-        log("📥 查询 Binance 收入历史（分片 7 天）...")
-        
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        seven_days_ms = 7 * 24 * 60 * 60 * 1000
-        
-        all_income = []
-        chunk_start = START_TIME_MS
-        chunk_idx = 0
-        
-        while chunk_start < now_ms:
-            chunk_end = min(chunk_start + seven_days_ms, now_ms)
-            chunk_idx += 1
-            
-            try:
-                income_records = await client.get_income_history(chunk_start, chunk_end)
-                if income_records:
-                    all_income.extend(income_records)
-                    log(f"   第 {chunk_idx} 片: {len(income_records)} 条收入记录")
-                else:
-                    log(f"   第 {chunk_idx} 片: 0 条记录")
-            except Exception as e:
-                log(f"   第 {chunk_idx} 片查询失败: {e}")
-            
-            chunk_start = chunk_end
-
-        log(f"📥 共获取 {len(all_income)} 条收入记录")
-
-        # 7. 去重（分片查询边界可能存在重复记录）
-        seen = set()
-        deduped_income = []
-        for inc in all_income:
-            key = (inc.get("symbol", ""), inc.get("time", 0), inc.get("income", "0"))
-            if key not in seen:
-                seen.add(key)
-                deduped_income.append(inc)
-        all_income = deduped_income
-        log(f"📥 去重后: {len(all_income)} 条收入记录")
-
-        # 8. 按 symbol 和 time 建立索引
-        from collections import defaultdict
-        income_by_symbol = defaultdict(list)
-        for inc in all_income:
-            symbol = inc.get("symbol", "")
-            if symbol:
-                income_by_symbol[symbol].append(inc)
-
-        # 9. 以收入记录为主循环，每条收入记录找到最匹配的 trade_record
-        #    优先匹配出口单（STOP/TAKE_PROFIT），因为它们才是实际产生盈亏的订单
-        #    入口单（LIMIT/MARKET）只有 PnL 时才会被匹配
-        log("🧮 匹配收入记录到交易记录（以收入记录为主循环，优先匹配出口单）...")
-        
-        # 按 symbol 建立 trade_records 索引
-        records_by_symbol = defaultdict(list)
-        for rec in records:
-            records_by_symbol[rec["symbol"]].append(rec)
-        
-        updated_count = 0
-        total_pnl = Decimal("0")
-        matched_symbols = set()
-        unmatched_symbols = set()
-        used_record_ids = set()  # 已匹配的记录 ID
-        
-        # 判断是否为出口单（STOP/TAKE_PROFIT 类型）
-        def is_exit_order(order_type: str) -> bool:
-            return order_type in ("STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET")
-        
-        # 将 trade_record 的时间转为 UTC 毫秒时间戳
-        def get_record_ts(rec: dict) -> int:
-            exec_time = rec["executed_at"]
-            if isinstance(exec_time, datetime):
-                beijing_tz = timezone(timedelta(hours=8))
-                exec_utc = exec_time.replace(tzinfo=beijing_tz).astimezone(timezone.utc)
-                return int(exec_utc.timestamp() * 1000)
-            return 0
-        
-        # 对每条收入记录，从同 symbol 的未匹配记录中找到最佳匹配
-        # 优先匹配出口单，且时间差最小的
-        MATCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000  # 7天窗口
-        EXIT_PRIORITY_BONUS = 1000  # 出口单的优先级加成（毫秒），让出口单优先于入口单
-        
-        for inc in all_income:
-            symbol = inc.get("symbol", "")
-            inc_time = inc.get("time", 0)
-            income_val = inc.get("income", "0")
-            
-            if not symbol:
-                continue
-            
-            # 获取该 symbol 未匹配的记录
-            symbol_records = [r for r in records_by_symbol.get(symbol, [])
-                              if r["id"] not in used_record_ids]
-            if not symbol_records:
-                continue
-            
-            # 找最佳匹配：出口单优先，时间差最小
-            best_match = None
-            best_score = MATCH_WINDOW_MS  # 越小越好，超过窗口则不匹配
-            
-            for rec in symbol_records:
-                rec_ts = get_record_ts(rec)
-                diff = abs(inc_time - rec_ts)
-                
-                if diff >= MATCH_WINDOW_MS:
-                    continue
-                
-                # 出口单的 diff 减去优先级加成，使其更容易被选中
-                adjusted_diff = diff
-                if is_exit_order(rec["order_type"]):
-                    adjusted_diff = max(0, diff - EXIT_PRIORITY_BONUS)
-                
-                if adjusted_diff < best_score:
-                    best_score = adjusted_diff
-                    best_match = rec
-            
-            if best_match:
-                try:
-                    pnl_decimal = Decimal(str(income_val))
+        if updates:
+            async with conn.transaction():
+                for values in updates:
                     await conn.execute(
-                        "UPDATE trading.trade_records SET realized_pnl = $1 WHERE id = $2",
-                        str(pnl_decimal), best_match["id"]
+                        "UPDATE trading.trade_records SET realized_pnl=$1, "
+                        "pnl_source='exchange_order_matched' "
+                        "WHERE id=$2 AND account_id=$3 AND symbol=$4 "
+                        "AND order_id=$5 AND side=$6 AND status='FILLED' "
+                        "AND realized_pnl IS NULL",
+                        *values,
                     )
-                    used_record_ids.add(best_match["id"])
-                    updated_count += 1
-                    total_pnl += pnl_decimal
-                    matched_symbols.add(symbol)
-                except Exception as e:
-                    log(f"  ⚠️ 记录 {best_match['id']} 更新失败: {e}")
-            # 未匹配的收入记录不统计 unmatched_symbols，因为可能没有对应 trade_record
-
-        # 10. 输出结果
-        log(f"✅ 更新完成:")
-        log(f"   成功匹配: {updated_count} 条记录")
-        log(f"   总盈亏: {total_pnl:.4f} USDT")
-        log(f"   匹配到的交易对: {len(matched_symbols)} 个")
-        log(f"   未匹配的交易对: {len(unmatched_symbols)} 个")
-
-        # 11. 验证结果
-        result = await conn.fetchrow("""
-            SELECT 
-                COUNT(*) as total,
-                COUNT(realized_pnl) as with_pnl,
-                COUNT(*) FILTER (WHERE realized_pnl IS NOT NULL AND realized_pnl != '0') as non_zero_pnl,
-                SUM(COALESCE(realized_pnl::numeric, 0)) as total_pnl
-            FROM trading.trade_records 
-            WHERE executed_at >= '2026-05-01'
-        """)
-        log(f"📊 数据库验证:")
-        log(f"   总记录数: {result['total']}")
-        log(f"   有 realized_pnl 的记录: {result['with_pnl']}")
-        log(f"   非零 realized_pnl 的记录: {result['non_zero_pnl']}")
-        log(f"   总盈亏: {result['total_pnl']} USDT")
-
-    except Exception as e:
-        log(f"❌ 脚本执行失败: {e}")
-        import traceback
-        traceback.print_exc()
+        log("回填完成，已有盈亏保持不变", verified_orders=len(updates))
+        return 0
+    except Exception as exc:
+        # 读取或校验失败不写入；写入失败则整笔事务回滚。
+        log("回填失败，未提交本轮更改", error_type=type(exc).__name__)
+        return 1
     finally:
-        await conn.close()
-        log("👋 数据库连接已关闭")
-
-    log("=" * 60)
-    log("回填完成")
-    log("=" * 60)
+        if conn is not None:
+            await conn.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

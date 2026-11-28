@@ -545,9 +545,22 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
     assert "ALTER ROLE ai_tuner_funding_writer LOGIN PASSWORD :'funding_password'" in runtime
     assert "FUNDING_PERMISSION_BOUNDARY_OK" in runtime
     gate = runtime.index('if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then')
-    assert runtime.index("--parallel 1 up -d --remove-orphans") < gate
+    # 统一权限契约要求先验证/补齐权限，再激活任何新服务镜像。
+    apply_permissions = runtime.index('python3 "$DB_PERMISSION_ROOT/database_permissions.py" apply')
+    normal_up = runtime.index(
+        'docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --remove-orphans'
+    )
+    keep_up = runtime.index(
+        'docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"'
+    )
+    # up 语句封装在函数内，必须检查实际调用位置；定义位置不代表激活时机。
+    activation = runtime.index("\nactivate_full_services\n")
+    audit_permissions = runtime.index('python3 "$DB_PERMISSION_ROOT/database_permissions.py" audit', apply_permissions)
+    assert gate < apply_permissions < audit_permissions < activation
+    assert keep_up < normal_up < gate
+    before_migrations = runtime.split("# ========== step 4.5", 1)[0]
+    assert "\n  activate_full_services\n" not in before_migrations
     assert 'if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then' in runtime
-    assert '--parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"' in runtime
     # Clear inherited profiles before any one-off Compose call; only stop the
     # existing collector on the normal deployment path after one-off modes exit.
     assert runtime.index("export COMPOSE_PROFILES=") < runtime.index(

@@ -267,7 +267,7 @@ async def test_mtpcs_reduces_owned_unadopted_exchange_position(strategy_type):
         strategy._close_position.assert_awaited_once()
         assert strategy._close_position.await_args.args[3] == "ALLOCATION_LIMIT"
         strategy._cancel_symbol_conditional_orders.assert_awaited_once()
-        strategy.db_manager.execute.assert_awaited_once()
+        # classic 通过角色协调器释放归属，不再直接删条件单账本。
         release.assert_awaited_once()
 
 
@@ -348,6 +348,7 @@ async def test_mtpcs_keeps_position_monitor_running_when_allocation_check_errors
     strategy._maybe_cleanup_expired_claims = AsyncMock()
     strategy._unverified_entry_time_symbols = set()
     strategy._untracked_stop_retry_symbols = set()
+    strategy.binance = MagicMock(use_unified_account=True)
 
     await strategy.update_positions()
 
@@ -464,3 +465,18 @@ async def test_mtpcs_counts_owned_exchange_positions_missing_from_local_state(
 
     assert allowed is False
     assert strategy.capital_mgr.can_open_within_limit.await_args.args == (50.0, 50.0)
+
+
+@pytest.fixture(autouse=True)
+def historical_lot_clock(monkeypatch):
+    """历史成交样本固定在当时观测窗，避免随机器日期跨页重复或耗尽假数据。"""
+    from datetime import datetime, timezone
+    import shared.position_entry_recovery as recovery
+    import strategies.btc_eth_aggressive.strategy as strategy_module
+    class HistoricalDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 11, 2, tzinfo=timezone.utc)
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+    monkeypatch.setattr(recovery, 'datetime', HistoricalDatetime)
+    monkeypatch.setattr(strategy_module, 'datetime', HistoricalDatetime)

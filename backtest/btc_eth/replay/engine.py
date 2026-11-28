@@ -797,7 +797,7 @@ class ReplayEngine:
           pos["exit_scan_cursor"] 记录已评估的最后一根 K 线的 open_time（datetime）。
           - 首次扫描（cursor is None）：从 opened_at 起第一根开始（含成交当根——_find_kline_idx_after 取 open_time >= after 的第一根）
           - 后续扫描（cursor 非 None）：只扫 open_time **严格大于** cursor 的 K 线
-          - 每评估完一根就更新游标；函数因触发退出事件而 return 后，下次自然从下一根继续
+          - 每评估完一根就更新游标；部分退出继续下一根，全平结束扫描
           - 保证同一仓位所有退出事件的 at 时间严格单调递增，永不回扫
 
           游标存放于 pos dict（而非 state）：
@@ -806,7 +806,7 @@ class ReplayEngine:
 
         同一根 K 线内的语义保持不变（保守优先级，阻断 #1 前已确立）：
           STOP_LOSS → TP1 → TP2 → trailing → TIME_STOP；
-          命中哪个就 return 哪个，同一根只触发最先命中的事件。
+          同一根只触发最先命中的事件，仍有余仓则继续检查下一根。
 
         阻断 #3：每根 K 线先更新 running peak（highest_price / lowest_price），
         供 trailing 按「历史最高浮盈」分档使用（非当前 K 线内部极值，这是原 bug 根因）。
@@ -845,20 +845,18 @@ class ReplayEngine:
 
             # 阻断 #3：先更新 running peak（历史最高/最低）
             direction = pos["direction"]
-            if direction == "LONG":
-                pos["highest_price"] = max(pos.get("highest_price", entry_price), k_high)
-            else:
-                pos["lowest_price"] = min(pos.get("lowest_price", entry_price), k_low)
+            pos["highest_price"] = max(pos.get("highest_price", entry_price), k_high)
+            pos["lowest_price"] = min(pos.get("lowest_price", entry_price), k_low)
 
             # 退出判定（保守优先级不变）
-            result = self._check_and_close_on_bar(profile_id, k, k_open_time)
+            self._check_and_close_on_bar(profile_id, k, k_open_time)
 
             # 无论是否触发退出，先推进游标到当前根
             # 这样即使 return，下次调用也不会再扫这根
             pos["exit_scan_cursor"] = k_open_time
 
             # 阻断 #4：未平仓 → 盯市快照
-            if result is None:
+            if state.has_open_position():
                 mark = k_close
                 qty = pos["quantity"]
                 if direction == "LONG":
@@ -868,7 +866,7 @@ class ReplayEngine:
                 marked_equity = state.equity + unrealized
                 state.snapshot_marked_equity(k_open_time, marked_equity, True)
             else:
-                # 已平仓（全平或部分平仓），后续 K 线不再执行
+                # 全平后不再检查后续 K 线；部分退出仍须管理余仓。
                 return
 
     def _check_and_close_on_bar(self, profile_id: str, k: Dict[str, Any], at: datetime) -> Optional[str]:
@@ -1171,7 +1169,7 @@ class ReplayEngine:
             })
             return
         close_qty = round_quantity(close_qty, self.step_size)
-        close_qty = clamp_notional(close_qty, exit_price, self.min_notional)
+        close_qty = clamp_notional(close_qty, exit_price, self.min_notional, self.step_size)
         close_qty = round_quantity(close_qty, self.step_size)
         # 上限约束：clamp_notional 在 notional < minNotional 时会向上抬升数量（无上限），
         # 必须把 close_qty 截断到持仓量，避免平仓量 > 持仓量的"幻读盈亏"污染 equity。
@@ -1460,7 +1458,7 @@ class ReplayEngine:
         notional = margin * leverage
         # 用 limit_price_r 估算 quantity
         raw_qty = notional / limit_price_r
-        raw_qty = clamp_notional(raw_qty, limit_price_r, self.min_notional)
+        raw_qty = clamp_notional(raw_qty, limit_price_r, self.min_notional, self.step_size)
         quantity = round_quantity(raw_qty, self.step_size)
         if quantity <= 0:
             return

@@ -19,12 +19,14 @@ import os
 import sys
 import time
 
+from shared.binance_account_mode import configured_pm, verify_cutover_ledger
 from shared.accounting.derived_attribution import derive_income
 from shared.accounting.economic_ledger import INCOME_TYPES, coverage_gaps
+from shared.accounting.account_cutover import (FILL_SOURCES, INCOME_SOURCES, account_cutover_ms, coverage_watermark, observed_symbol_windows, order_epoch)
 from shared.accounting.historical_funding import recover_from_checkpoint
 from shared.accounting.order_evidence import resolve_order_owner
 from shared.accounting.position_replay import replay_position
-from scripts.audit_algo_attribution import _fetch_links
+from scripts.audit_algo_attribution import _CLASSIC_CONDITIONS, _fetch_links
 from scripts.export_execution_facts import _build_client_from_env
 from scripts.report_economic_ledger import month_window_ms
 
@@ -38,12 +40,12 @@ commission, commission_asset, realized_pnl, trade_time_utc
 FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=ANY($2::text[])
 AND ((trade_time_utc >= $3 AND trade_time_utc < $4)
 OR trade_id = ANY($5::bigint[]))"""
-_TRADE_SQL = """SELECT id, account_id, symbol, order_id, strategy
+_TRADE_SQL = """SELECT id, account_id, symbol, order_id, strategy, executed_at
 FROM trading.trade_records WHERE account_id=$1 AND symbol=ANY($2::text[])
 AND order_id IS NOT NULL"""
 _CONDITION_SQL = """SELECT account_id, symbol, algo_id, strategy_name
 FROM btc_eth.condition_orders WHERE account_id=$1 AND symbol=ANY($2::text[])
-AND algo_id IS NOT NULL"""
+AND algo_id IS NOT NULL AND ($3::bigint IS NULL OR created_at < to_timestamp($3::double precision / 1000)::timestamp)"""
 _MANUAL_SQL = """SELECT account_id, income_type, tran_id, strategy, symbol, income,
 asset, event_time_utc FROM trading.reviewed_income_attribution WHERE account_id=$1
 AND event_time_utc >= $2 AND event_time_utc < $3"""
@@ -84,7 +86,7 @@ def _json_equal(left, right):
 def _stable_order_evidence(proof):
     if isinstance(proof, str):
         proof = json.loads(proof)
-    if isinstance(proof, dict) and proof.get("source_kind") == "pm_algo_link":
+    if isinstance(proof, dict) and proof.get("source_kind") in ("pm_algo_link", "classic_algo_link"):
         return {key: value for key, value in proof.items() if key != "trade_record_ids"}
     return proof
 
@@ -108,37 +110,28 @@ def _same_derivation(old, new):
 
 def verified_fact_cutoff(cursors, account_id, start_ms, target_ms, symbols):
     """Return the common contiguous exchange-fact watermark."""
-    required = [("um/income", kind, None) for kind in INCOME_TYPES]
-    required += [("userTrades", None, symbol) for symbol in sorted(symbols)]
-    cutoffs = []
-    for source, kind, symbol in required:
-        covered = start_ms
-        intervals = sorted(
-            (int(row["window_start_ms"]), int(row["covered_until_ms"]))
-            for row in cursors
-            if row.get("account_id") == account_id
-            and row.get("source") == source
-            and row.get("income_type") == kind
-            and row.get("symbol") == symbol
-            and row.get("page_complete") is True
-            and row.get("request_status") == "ok"
-            and row.get("covered_until_ms") is not None)
-        for left, right in intervals:
-            if left <= covered:
-                covered = max(covered, right)
-        cutoffs.append(min(covered, target_ms))
-    return min(cutoffs, default=start_ms)
+    streams = [(INCOME_SOURCES, kind, None) for kind in INCOME_TYPES]
+    streams.extend((FILL_SOURCES, None, symbol) for symbol in symbols)
+    return min(coverage_watermark(cursors, account_id, start_ms, target_ms, sources, kind, symbol)
+               for sources, kind, symbol in streams)
 
 
 async def verified_position_at_cutoff(client, symbol, cutoff_ms):
-    """Prove a PM position at a past fact watermark by ruling out gap fills."""
-    positions = await client._request("GET", "/papi/v1/um/positionRisk", {}, signed=True)
+    """用持仓快照和观察间隔的成交历史证明水位时的持仓。"""
+    pm = getattr(client, "use_unified_account", True) is not False
+    cutover = account_cutover_ms(os.environ.get("TRADE_ACCOUNT_ID", "default"))
+    if not pm and (cutover is None or cutoff_ms < cutover):
+        return None, "position_snapshot_crosses_account_mode", None
+    positions = (await client._request("GET", "/papi/v1/um/positionRisk", {}, signed=True)
+                 if pm else await client.get_position(symbol))
     observed_ms = int(time.time() * 1000)
     if not isinstance(positions, list) or observed_ms <= cutoff_ms:
         return None, "position_snapshot_invalid", None
     if observed_ms - cutoff_ms > 6 * 24 * 60 * 60 * 1000:
         return None, "post_cutoff_gap_too_wide", None
     matching = [row for row in positions if row.get("symbol") == symbol]
+    if not pm and (len(matching) != 1 or matching[0].get("positionSide") != "BOTH"):
+        return None, "classic_position_unproven", None
     if len(matching) > 1 or any(row.get("positionSide", "BOTH") != "BOTH" for row in matching):
         return None, "hedge_or_duplicate_position", None
     try:
@@ -147,7 +140,7 @@ async def verified_position_at_cutoff(client, symbol, cutoff_ms):
         return None, "position_quantity_invalid", None
     if not qty.is_finite():
         return None, "position_quantity_invalid", None
-    gap = await client._request("GET", "/papi/v1/um/userTrades",
+    gap = await client._request("GET", "/papi/v1/um/userTrades" if pm else "/fapi/v1/userTrades",
                                 {"symbol": symbol, "startTime": cutoff_ms,
                                  "endTime": observed_ms, "limit": 1000}, signed=True)
     if not isinstance(gap, list) or len(gap) >= 1000:
@@ -163,12 +156,23 @@ async def verified_position_at_cutoff(client, symbol, cutoff_ms):
 
 def _order_map(account_id, symbol, fills, trade_records, algo_links, condition_orders):
     rows, by_id = {}, {}
+    cutover = account_cutover_ms(account_id)
     for fill in fills:
         order_id = fill.get("order_id")
         if order_id is None:
             continue
+        epoch = order_epoch(fill.get("trade_time_utc"), cutover)
+        if epoch is None:
+            continue
+        scoped_trades = [row for row in trade_records if order_epoch(row.get("executed_at"), cutover) == epoch]
+        scoped_links = [row for row in algo_links if row.get("account_mode", "pm") == epoch]
+        if epoch == "classic" and any(
+            str(row.get("actual_order_id")) == str(order_id) and row.get("symbol") == symbol
+            and row.get("side") != fill.get("side") for row in scoped_links
+        ):
+            continue
         strategy, proof = resolve_order_owner(account_id, symbol, order_id,
-                                               trade_records, algo_links, condition_orders)
+                                               scoped_trades, scoped_links, condition_orders)
         if strategy is None:
             continue
         row = {"account_id": account_id, "symbol": symbol,
@@ -210,7 +214,10 @@ def plan_reconciliation(incomes, fills, trade_records, algo_links,
     order_rows, derived_rows, rejected, conflicts = {}, [], [], []
     for income in incomes:
         account, symbol = str(income["account_id"]), str(income["symbol"])
-        scoped_fills = by_symbol[(account, symbol)]
+        cutover = account_cutover_ms(account)
+        epoch = order_epoch(income.get("event_time_utc"), cutover)
+        scoped_fills = [fill for fill in by_symbol[(account, symbol)]
+                        if epoch and order_epoch(fill.get("trade_time_utc"), cutover) == epoch]
         by_trade = {str(fill["trade_id"]): fill for fill in scoped_fills}
         scoped_rows, order_evidence = _order_map(
             account, symbol, scoped_fills, trade_records, algo_links, condition_orders)
@@ -386,14 +393,25 @@ async def _run(month, account_id, apply, requested_end_ms=None):
     password = os.environ.get("DATABASE_PASSWORD")
     if not password:
         raise RuntimeError("DATABASE_PASSWORD is required")
+    if account_id != os.environ.get("TRADE_ACCOUNT_ID", "default") or not account_id.strip():
+        raise ValueError("归属账户必须与签名账户配置一致")
     start_ms, calendar_end = month_window_ms(month)
     latest_safe_ms = int(time.time() * 1000) - 1000
     if requested_end_ms is not None and requested_end_ms > latest_safe_ms:
         raise ValueError("end-ms is later than the safe observation time")
     target_ms = min(calendar_end, requested_end_ms or latest_safe_ms)
+    pm = configured_pm()
+    cutover = account_cutover_ms(account_id)
+    if not pm:
+        if cutover is None:
+            raise ValueError("经典账户归属核对缺少切换时间")
+        start_ms = max(start_ms, cutover)
+    elif cutover is not None:
+        target_ms = min(target_ms, cutover)
     if start_ms >= target_ms:
         raise ValueError("month has not started")
     start = datetime.fromtimestamp(start_ms / 1000, timezone.utc)
+    window = dict(account_mode="pm" if pm else "classic", cutover_ms=cutover, window_start_ms=start_ms)
     db = DatabaseManager(host=os.environ.get("DATABASE_HOST", "localhost"),
                          port=int(os.environ.get("DATABASE_PORT", "5432")),
                          database=os.environ.get("DATABASE_NAME", "trading_platform"),
@@ -402,30 +420,38 @@ async def _run(month, account_id, apply, requested_end_ms=None):
     await db.connect()
     client = None
     try:
+        if not pm:
+            client, code = _build_client_from_env()
+            if client is None:
+                raise RuntimeError(f"账户签名客户端不可用: {code}")
+            await verify_cutover_ledger(client, db)
         if requested_end_ms is None:
             target = datetime.fromtimestamp(target_ms / 1000, timezone.utc)
             async with db.pool.acquire() as connection:
                 async with connection.transaction(isolation="repeatable_read", readonly=True):
                     preliminary = [dict(row) for row in await connection.fetch(
                         _INCOME_SQL, account_id, start, target)]
-                    preliminary_symbols = {str(row["symbol"]) for row in preliminary if row.get("symbol")}
                     preliminary_cursors = [dict(row) for row in await connection.fetch(
                         _CURSOR_SQL, account_id, start_ms, target_ms)]
                     # A completed backfill cursor can belong to a symbol with
                     # no activity this month. Only observed account facts define
                     # which symbol streams have to reach the common watermark.
-                    preliminary_symbols.update(row["symbol"] for row in await connection.fetch(
-                        "SELECT DISTINCT symbol FROM trading.execution_fact_fill "
+                    preliminary_fills = await connection.fetch(
+                        "SELECT symbol,trade_time_utc FROM trading.execution_fact_fill "
                         "WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc < $3",
-                        account_id, start, target))
-            end_ms = verified_fact_cutoff(preliminary_cursors, account_id,
-                                          start_ms, target_ms, preliminary_symbols)
+                        account_id, start, target)
+            preliminary_symbols = {r["symbol"] for r in preliminary_fills if r.get("symbol")}
+            for left, right, active in observed_symbol_windows(account_id, start_ms, target_ms,
+                                                              preliminary, preliminary_fills):
+                end_ms = verified_fact_cutoff(preliminary_cursors, account_id, left, right, active)
+                if end_ms < right:
+                    break
         else:
             end_ms = target_ms
         if end_ms <= start_ms:
             if apply:
                 raise ValueError("fact cursor coverage incomplete")
-            return {"account_id": account_id, "month": month, "mode": "shadow",
+            return {**window, "account_id": account_id, "month": month, "mode": "shadow",
                     "status": "waiting_for_fact_coverage", "examined": 0,
                     "income_candidates": 0, "rejected": [], "conflicts": []}
         end = datetime.fromtimestamp(end_ms / 1000, timezone.utc)
@@ -439,12 +465,24 @@ async def _run(month, account_id, apply, requested_end_ms=None):
                 baselines = {}
                 for row in baseline_rows:
                     baselines.setdefault(str(row["symbol"]), row)
+                if not pm:
+                    classic_start = await connection.fetchval(
+                        "SELECT observed_at FROM trading.account_mode_equity WHERE account_id=$1 AND cutover_ms=$2 "
+                        "AND observation='classic_open'", account_id, cutover)
+                    if classic_start is None:
+                        raise ValueError("缺少经典账户期初空仓证据")
+                    for symbol in symbols:
+                        if classic_start < end and (symbol not in baselines or baselines[symbol]["flat_at"] < classic_start):
+                            baselines[symbol] = dict(account_id=account_id, symbol=symbol, flat_at=classic_start, exchange_qty=0)
                 earliest = min([start] + [row["flat_at"] for row in baselines.values()])
                 trade_ids = sorted({int(row["trade_id"]) for row in incomes if row.get("trade_id") is not None})
                 fills = [dict(row) for row in await connection.fetch(
                     _FILL_SQL, account_id, symbols, earliest, end, trade_ids)]
                 trades = [dict(row) for row in await connection.fetch(_TRADE_SQL, account_id, symbols)]
-                conditions = [dict(row) for row in await connection.fetch(_CONDITION_SQL, account_id, symbols)]
+                cutover = account_cutover_ms(account_id)
+                conditions = [dict(row) for row in await connection.fetch(_CONDITION_SQL, account_id, symbols, cutover)]
+                if cutover is not None:
+                    conditions.extend(dict(row) for row in await connection.fetch(_CLASSIC_CONDITIONS, account_id, symbols, cutover))
                 manual = [dict(row) for row in await connection.fetch(_MANUAL_SQL, account_id, start, end)]
                 existing = [dict(row) for row in await connection.fetch(_EXISTING_SQL, account_id, start, end)]
                 earliest_ms = int(earliest.timestamp() * 1000)
@@ -452,14 +490,14 @@ async def _run(month, account_id, apply, requested_end_ms=None):
                     _CURSOR_SQL, account_id, earliest_ms, end_ms)]
         links = []
         if symbols:
-            client, code = _build_client_from_env()
             if client is None:
-                raise RuntimeError(f"PM client unavailable: {code}")
-            if not client.use_unified_account:
-                raise RuntimeError("PM account required")
+                client, code = _build_client_from_env()
+                if client is None:
+                    raise RuntimeError(f"账户签名客户端不可用: {code}")
             links = await _fetch_links(client, symbols, earliest_ms, end_ms)
             links = [{**row, "account_id": account_id} for row in links]
-        gaps = coverage_gaps(cursors, account_id, start_ms, end_ms, set(symbols))
+        gaps = sorted({gap for left, right, active in observed_symbol_windows(account_id, start_ms, end_ms, incomes, fills)
+                       for gap in coverage_gaps(cursors, account_id, left, right, active)})
         position_qty, position_proofs, position_rejections, new_baselines = {}, {}, {}, []
         if client is not None:
             for symbol in symbols:
@@ -515,7 +553,7 @@ async def _run(month, account_id, apply, requested_end_ms=None):
         plan["rejected"] = [r for r in plan["rejected"] if not (
             r["income_type"] == "FUNDING_FEE" and r["tran_id"] in solved)]
         plan["baseline_rows"] = new_baselines
-        result = {"account_id": account_id, "month": month,
+        result = {**window, "account_id": account_id, "month": month,
                   "start_ms": start_ms, "end_ms": end_ms,
                   "coverage_gaps": gaps, "algo_links_observed": len(links),
                   "orders_proven": len(plan["order_rows"]),

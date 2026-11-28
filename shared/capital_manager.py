@@ -287,8 +287,10 @@ class CapitalManager:
         margins: Mapping[str, float],
         close_position: Callable[[str], Awaitable[bool]],
     ) -> bool:
-        """Close whole owned positions when a newly reduced allocation is below usage.
+        """Enforce verified holdings limits separately from new-entry allocations.
 
+        A reviewed allocation decrease preserves its proven previous holdings
+        limit. Invalid protection metadata never authorizes a forced close.
         A failed close leaves the breach visible for the next monitoring cycle.
         The caller supplies its own positions and a reduce-only full-close
         callback. A failed confirmation leaves the breach for the next cycle.
@@ -297,7 +299,18 @@ class CapitalManager:
                      if math.isfinite(float(margin)) and float(margin) > 0}
         if not remaining:
             return True
-        limit, source = await self.get_effective_margin_limit()
+        if self.db is not None and isinstance(self.strategy_id, str) and self.strategy_id:
+            try:
+                limit, source = await asyncio.wait_for(
+                    self._fetch_existing_position_limit(),
+                    timeout=self._get_db_query_timeout(),
+                )
+            except Exception as exc:
+                logger.error("存量持仓额度及保护来源不可验证，停止额度强平",
+                             strategy_id=self.strategy_id, error=str(exc))
+                return False
+        else:
+            limit, source = await self.get_effective_margin_limit()
         if limit is None:
             return False
         total = sum(remaining.values())
@@ -325,6 +338,39 @@ class CapitalManager:
             total -= margin
             del remaining[symbol]
         return total <= limit + 1e-8
+
+    async def _fetch_existing_position_limit(self) -> Tuple[Optional[float], str]:
+        """Read the amount and its protection from one current allocation row.
+
+        Receipt lookup intentionally uses the original approval hash. Revoking
+        future allocation does not remove protection from already-held positions.
+        This method does not change the limit used for opening new positions.
+        """
+        from shared.accounting.allocation_provenance import validate_allocation_chain
+        from shared.accounting.history_tolerance import validate_history_acceptance
+
+        row = await self.db.fetch_one(
+            "SELECT id, entries FROM public.capital_allocation "
+            "WHERE left(month::text, 7) = $1 AND status = 'active' "
+            "ORDER BY created_at DESC LIMIT 1", self._current_month())
+        if not row:
+            return None, SOURCE_NONE
+        # Keep the immutable historical anchor even after a newer revocation.
+        # A row stripped of all protection fields cannot masquerade as legacy.
+        receipt = await self.db.fetch_one(
+            "SELECT account_id,revision,payload,receipt_sha256 "
+            "FROM trading.historical_risk_acceptance WHERE account_id=$1 "
+            "AND payload->>'enabled'='true' ORDER BY revision DESC LIMIT 1", 'default')
+        policy = validate_history_acceptance(receipt, 'default') if receipt else None
+        if receipt is not None and policy is None:
+            raise ValueError('holdings_allocation_historical_approval_invalid')
+        limits = await validate_allocation_chain(self.db, row, policy=policy)
+        if self.strategy_id not in limits:
+            raise ValueError('holdings_allocation_strategy_scope_invalid')
+        amount = float(limits[self.strategy_id])
+        if not math.isfinite(amount):
+            raise ValueError('holdings_allocation_limit_not_representable')
+        return amount, 'db_verified_holdings_limit'
 
     def get_min_position_margin(self) -> Optional[float]:
         """

@@ -16,6 +16,7 @@
 
 import os
 from decimal import Decimal
+from types import SimpleNamespace
 import structlog
 from datetime import datetime, timedelta, timezone
 from typing import Set, Optional
@@ -265,6 +266,33 @@ class OrphanCleanupJob:
             positions = await self._get_exchange_positions()
             if not self._is_confirmed_no_position(symbol, positions):
                 return False, "撤单前持仓未确认空仓"
+            from shared.binance_api import symbol_has_zero_position
+            from shared.condition_orders import strategy_owned_algos
+            if not await symbol_has_zero_position(self.binance, symbol):
+                return False, "撤单前两个账户仓位视图未同时确认空仓"
+            if algo_id is not None:
+                current = await self.binance.get_algo_order(int(algo_id))
+                owner = SimpleNamespace(db=self.db, account_id=self.account_id, strategy_name=strategy_name)
+                if (str(current.get("algoId")) != str(algo_id)
+                        or not await strategy_owned_algos(self.binance, symbol=symbol, orders=[current], owner=owner)):
+                    return False, "缺少本账户、本策略的条件单回执"
+            else:
+                from shared.accounting.account_cutover import account_cutover_ms
+                cutoff = account_cutover_ms(self.account_id)
+                pm = self.binance.use_unified_account is not False
+                current = await self.binance.get_order(symbol, int(order_id))
+                if (not current or current.get("symbol") != symbol or str(current.get("orderId")) != str(order_id)
+                        or (not pm and cutoff is None)
+                        or (cutoff is not None and (int(current["time"]) < cutoff) != pm)):
+                    return False, "委托身份或创建时间不符"
+                receipts = await self.db.fetch_all("""
+                    SELECT strategy,side FROM trading.trade_records WHERE account_id=$1 AND symbol=$2
+                      AND order_id=$3 AND order_type <> 'PNL_SUMMARY'
+                      AND ($4::bigint IS NULL OR ((executed_at < timezone('Asia/Shanghai',
+                           to_timestamp($4::double precision / 1000)))=$5::boolean))
+                """, self.account_id, symbol, str(order_id), cutoff, pm)
+                if len(receipts) != 1 or (receipts[0]["strategy"], receipts[0]["side"]) != (strategy_name, current.get("side")):
+                    return False, "普通委托缺少唯一策略回执"
             try:
                 if algo_id is not None:
                     await self.binance.cancel_algo_order(symbol, int(algo_id))
@@ -285,11 +313,18 @@ class OrphanCleanupJob:
                 status = terminal.get("status")
             if terminal.get("symbol") != symbol or status not in {"CANCELED", "CANCELLED", "FILLED"}:
                 return False, "订单终态未确认"
-            state = "EXECUTED" if status == "FILLED" else "CANCELED"
+            if algo_id is not None:
+                if int(terminal.get("actualOrderId") or 0) or status == "FILLED":
+                    return False, "已触发的条件单需按实际子单与成交核对"
+            else:
+                qty = Decimal(str(terminal["executedQty"]))
+                if not qty.is_finite() or qty != 0 or status == "FILLED":
+                    return False, "有成交的普通委托需核对实际成交归属"
+            state = "CANCELED"
             affected = await self.db.execute(
-                "UPDATE condition_orders SET status=$1, updated_at=NOW() "
-                "WHERE id=$2 AND account_id=$3 AND symbol=$4 AND status='OPEN'",
-                state, order["id"], self.account_id, symbol,
+                "UPDATE btc_eth.condition_orders SET status=$1, updated_at=NOW() "
+                "WHERE id=$2 AND account_id=$3 AND symbol=$4 AND strategy_name=$5 AND status='OPEN'",
+                state, order["id"], self.account_id, symbol, strategy_name,
             )
             return (True, None) if affected == "UPDATE 1" else (False, "订单状态已变化")
         except Exception as exc:
@@ -375,10 +410,19 @@ class OrphanCleanupJob:
                         updated_at = updated_at.astimezone(timezone.utc).replace(tzinfo=None)
                     hours_since = (now - updated_at).total_seconds() / 3600
                     if hours_since > self.stale_hours_threshold:
-                        # 如果交易所确认有持仓，跳过
-                        if (not self._is_confirmed_no_position(symbol, exchange_positions)
-                                or await self._strategy_has_position(sn, symbol)):
-                            no_state_alerts.append(f"{sn} | {symbol} | 陈旧状态下缺少空仓确认")
+                        # A strategy state may only be written on position changes.
+                        # A confirmed live exchange position makes its protection
+                        # orders expected, even when that state timestamp is old.
+                        if exchange_positions is not None and symbol in exchange_positions:
+                            skipped.append(f"{sn} | {symbol} | {order['order_type']} | 场景A跳过: 交易所确认有持仓")
+                            continue
+                        has_trade = await self._strategy_has_position(sn, symbol)
+                        if exchange_positions is None or has_trade:
+                            reason = ('交易所持仓不可确认' if exchange_positions is None
+                                      else '交易所无仓但策略有活交易记录')
+                            alert = f"{sn} | {symbol} | {reason}"
+                            if alert not in no_state_alerts:
+                                no_state_alerts.append(alert)
                             skipped.append(f"{sn} | {symbol} | {order['order_type']} | 场景A跳过: 未确认可清理（策略{hours_since:.1f}h未更新）")
                             continue
                         stale_orders.append(order)

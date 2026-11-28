@@ -255,6 +255,7 @@ class TestRebuildConditionOrdersTpNaLegs:
                             current_quantity=Decimal('0.01'),
                             tp1_hit=True)
         mock_rebuild_params(s, step_size='0.01')
+        s.binance.get_open_algo_orders = AsyncMock(return_value=[])
         s._place_stop_loss_order = AsyncMock(return_value=800)
         s._place_tp_order = AsyncMock(return_value=902)
 
@@ -308,7 +309,7 @@ async def test_restart_loader_keeps_tp_level(strategy, strategy_ctx, monkeypatch
     loader = AsyncMock(return_value=[
         {'symbol': 'BTCUSDT', 'order_type': 'TAKE_PROFIT', 'algo_id': 900, 'tp_level': 2},
     ])
-    monkeypatch.setattr(strategy_ctx.module, 'get_open_orders', loader)
+    monkeypatch.setattr(strategy_ctx.module, 'strategy_owned_algos', loader)
     orders = await strategy._load_existing_open_orders()
     assert orders['BTCUSDT']['TAKE_PROFIT'] == [{'algo_id': 900, 'tp_level': 2}]
 
@@ -632,7 +633,7 @@ async def test_aggressive_untracked_position_repairs_only_missing_hard_stop(
         'symbol': symbol, 'side': 'SELL', 'orderType': 'STOP',
         'reduceOnly': True, 'quantity': str(missing_qty), 'triggerPrice': '89',
     }]
-    s.binance.get_open_algo_orders = AsyncMock(side_effect=(
+    s._owned_open_protection = AsyncMock(side_effect=(
         [existing_orders, repaired_orders] if placement_ok else [existing_orders]
     ))
     s._get_current_price = AsyncMock(return_value=Decimal('91'))
@@ -659,7 +660,7 @@ async def test_aggressive_untracked_position_repairs_only_missing_hard_stop(
     s._place_conditional_order_and_record.assert_awaited_once()
     assert s._place_conditional_order_and_record.await_args.args[5] == missing_qty
     assert (symbol in s._untracked_stop_retry_symbols) is not placement_ok
-    assert s.binance.get_open_algo_orders.await_count == (2 if placement_ok else 1)
+    assert s._owned_open_protection.await_count == (2 if placement_ok else 1)
 
 
 # ============================================================================

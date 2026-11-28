@@ -1,0 +1,36 @@
+"""Read-only proof of the precise zero-budget WAIT condition, with frozen config."""
+import hashlib,json,os,pathlib,sqlite3,time
+from decimal import Decimal
+from shared.config_loader import load_strategy_config_with_metadata
+from strategies.grid.margin_advisor import MarginAdvisor
+from strategies.grid.market_state import MarketState
+from strategies.grid.signal_bot import GridSignalBot
+from strategies.grid.grid_calculator import GridCalculator
+from strategies.grid.execution.contracts import decode_grid_params
+from strategies.grid.execution.policy import decide,grid_candles_current
+p=pathlib.Path(os.environ['GRID_EXECUTION_DB'])
+c=sqlite3.connect(p.resolve().as_uri()+'?mode=ro',uri=True);c.row_factory=sqlite3.Row
+try:
+ c.execute('PRAGMA query_only=ON');c.execute('BEGIN')
+ row=c.execute('SELECT decision_id,config_hash,payload_json FROM decisions ORDER BY rowid DESC LIMIT 1').fetchone()
+ d=json.loads(row['payload_json']);state=dict(c.execute('SELECT * FROM engine_state WHERE id=1').fetchone())
+ cursor=c.execute('SELECT decision_id FROM execution_cursor WHERE id=1').fetchone()[0]
+ receipt=json.loads(c.execute("SELECT value FROM schema_meta WHERE key='signal_execution_receipt_v1'").fetchone()[0])
+finally:c.close()
+config,metadata=load_strategy_config_with_metadata('/app/strategies/grid')
+assert metadata['load_error'] is None and metadata['config_hash']==row['config_hash']
+paths=['strategies/grid/config.yaml','strategies/grid/tuning_overrides/.active']
+assert metadata['applied_overrides_version']=='V20260830'
+paths.append('strategies/grid/tuning_overrides/'+metadata['applied_overrides_version']+'.yaml')
+hashes={s:hashlib.sha256((pathlib.Path('/app')/s).read_bytes()).hexdigest() for s in paths}
+m=MarginAdvisor.__new__(MarginAdvisor);m._load_state_config(config.get('margin_guide',{}));m._load_trend_config(config.get('margin_guide',{}))
+bot=GridSignalBot.__new__(GridSignalBot);bot.config=config;bot.grid_calculator=GridCalculator(config)
+params=decode_grid_params(d['grid_params']);minimum=bot._state_grid_bounds(MarketState[d['state']])[0]
+profit_cap=bot._resolve_profit_cap(params,minimum);adx=Decimal(str(d['market_analysis']['adx_1h']));now=int(time.time()*1000)
+result=dict(read_only=True,observed_at=time.time(),config_hashes=hashes,config_hash=row['config_hash'],engine_state=state,
+ decision_id=row['decision_id'],cursor_matches=cursor==row['decision_id'],signal_state=d['state'],executable=d['executable'],feasibility=d['feasibility'],
+ calculated_at_ms=d['calculated_at_ms'],candles_current=grid_candles_current(d,now),margin_used=d['margin_used'],trend_coeff=str(m._trend_strength_coeff(adx)),
+ base_margin=str(config['trading']['margin']),profit_cap=profit_cap,minimum_grid_count=minimum,
+ policy_action=decide(d,dict(clean=True,active_epoch=True),dict(locked=False)).value,
+ receipt={k:receipt.get(k) for k in ('decision_id','updated_at_ms','state','reason','processed','stream_ready','risk')})
+print('GRID_SIGNAL_RESULT='+json.dumps(result,sort_keys=True))

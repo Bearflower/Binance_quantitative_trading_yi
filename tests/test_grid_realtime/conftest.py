@@ -16,8 +16,32 @@ import pytest  # noqa: E402
 
 from strategies.grid.realtime.rules import ReferenceSnapshot  # noqa: E402
 from factories import make_feature, make_trade  # noqa: E402
+from tests.fixtures.grid_replay import materialize_grid_database, materialize_grid_sample  # noqa: E402
 
 __all__ = ["make_trade", "make_feature"]
+
+
+@pytest.fixture(scope='session')
+def historical_grid_sample(tmp_path_factory):
+    """使用版本化原样本，避免依赖开发机根目录遗留文件。"""
+    return materialize_grid_sample(tmp_path_factory.mktemp('grid-original-sample'))
+
+
+@pytest.fixture(scope='session')
+def historical_grid_database(tmp_path_factory):
+    return materialize_grid_database(tmp_path_factory.mktemp('grid-original-database'))
+
+
+@pytest.fixture(autouse=True)
+def replay_sample_path(request, monkeypatch):
+    if Path(request.module.__file__).name != 'test_replay.py':
+        return
+    from strategies.grid.realtime import replay
+    historical_grid_sample = request.getfixturevalue('historical_grid_sample')
+    monkeypatch.setattr(replay, 'DEFAULT_JSON', historical_grid_sample)
+    if request.node.originalname in {'test_experiment_matches_saved_results', 'test_cli_replay', 'test_cli_experiment_writes_output'}:
+        database = request.getfixturevalue('historical_grid_database')
+        monkeypatch.setattr(replay, 'DEFAULT_DB', database)
 
 # 09:05 证据快照四边界（需求 §2.2）
 SL, L, U, SU = Decimal("2599.45"), Decimal("2623.52"), Decimal("2767.96"), Decimal("2792.03")

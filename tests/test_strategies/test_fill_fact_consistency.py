@@ -330,6 +330,7 @@ class TestNewCoinFillFacts:
             },
         )
         executor._wait_for_order_fill = AsyncMock(return_value=fill)
+        executor._promote_filled_entry = AsyncMock()
 
         order, reason = await executor.execute_short(
             symbol='BTCUSDT',
@@ -379,6 +380,7 @@ class TestNewCoinFillFacts:
             },
         )
         executor._wait_for_order_fill = AsyncMock(return_value=fill)
+        executor._promote_filled_entry = AsyncMock()
 
         with patch.object(nc_logger, 'warning') as mock_warn:
             order, reason = await executor.execute_short(
@@ -404,6 +406,11 @@ class TestNewCoinFillFacts:
 # ===================================================================
 
 class TestHRSFillFactsAndOutcomeRecord:
+    @pytest.fixture(autouse=True)
+    def allow_entry_for_fill_fact_tests(self, monkeypatch):
+        # 本组只验证成交/保护编排，入场授权由风险政策测试单独覆盖。
+        monkeypatch.setattr('strategies.hrs.executor.entry_allowed', AsyncMock(return_value=True))
+
     """B6a — HRS 真实成交 + _record_outcome_by_pnl 助手"""
 
     @pytest.mark.asyncio
@@ -497,6 +504,8 @@ class TestHRSFillFactsAndOutcomeRecord:
 
         executor = HRSTradingExecutor.__new__(HRSTradingExecutor)
         executor.config = {}
+        executor.persist_fill = None
+        executor._entry_identities = {}
         executor.order_type_entry = 'LIMIT'
         executor.binance_api = MagicMock()
         executor.binance_api.place_order = AsyncMock()  # async 下单方法
@@ -521,6 +530,9 @@ class TestHRSFillFactsAndOutcomeRecord:
         executor._calc_sl_price = MagicMock(return_value=48000.0)
         executor._create_protection_orders = AsyncMock(return_value=[])
         executor._send_notification = AsyncMock()
+        async def submit(symbol, side, quantity, price, decision):
+            return await executor.binance_api.place_order(symbol=symbol, side=side, quantity=quantity, price=price)
+        executor._submit_reserved_hrs_entry = submit
         return executor
 
     @pytest.mark.asyncio
@@ -545,6 +557,7 @@ class TestHRSFillFactsAndOutcomeRecord:
             quantity=Decimal('1'),
             score=80.0,
             entry_mode='standard',
+            risk_decision=MagicMock(exit_ratios=(Decimal('.5'), Decimal('.3'))),
         )
 
         assert result.order_filled is False
@@ -573,6 +586,7 @@ class TestHRSFillFactsAndOutcomeRecord:
             quantity=Decimal('10'),    # 计划 10
             score=80.0,
             entry_mode='standard',
+            risk_decision=MagicMock(exit_ratios=(Decimal('.5'), Decimal('.3'))),
         )
 
         assert result.order_filled is True

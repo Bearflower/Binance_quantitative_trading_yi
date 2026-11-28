@@ -10,6 +10,7 @@ K线服务客户端单元测试
 """
 import pytest
 import json
+import os
 from decimal import Decimal
 from unittest.mock import patch, AsyncMock, MagicMock
 import aiohttp
@@ -505,9 +506,21 @@ class TestIntegration:
     """集成测试：需要 K 线服务在运行"""
 
     @pytest.mark.asyncio
-    @pytest.mark.skipif(True, reason="需要 K 线服务运行，默认跳过")
+    @pytest.mark.skipif(not os.environ.get('KLINE_INTEGRATION_URL'), reason="需显式设置 KLINE_INTEGRATION_URL 后运行真实只读联调")
     async def test_real_get_klines(self):
-        async with KLineService(service_url="http://43.156.242.184:8765/api/v1") as service:
+        async with KLineService(service_url=os.environ['KLINE_INTEGRATION_URL']) as service:
             klines = await service.get_klines("BTCUSDT", "1h", 10)
-            assert len(klines) > 0
-            assert klines[0]["symbol"] == "BTCUSDT"
+            assert len(klines) == 10
+            # 客户端公开契约为归一化 bar；symbol/interval 是请求参数，不在返回 bar 中重复。
+            timestamps = [bar['open_time'] for bar in klines]
+            assert all(isinstance(stamp, int) for stamp in timestamps)
+            assert all(right - left == 3_600_000 for left, right in zip(timestamps, timestamps[1:]))
+            for bar in klines:
+                for field in ('open', 'high', 'low', 'close'):
+                    assert bar[field].is_finite() and bar[field] > 0
+                assert bar['low'] <= min(bar['open'], bar['close'])
+                assert bar['high'] >= max(bar['open'], bar['close'])
+                assert bar['open_time'] <= bar['close_time'] < bar['open_time'] + 3_600_000
+                assert bar['volume'].is_finite() and bar['volume'] >= 0
+                assert bar['quote_volume'].is_finite() and bar['quote_volume'] >= 0
+                assert isinstance(bar['trades'], int) and bar['trades'] >= 0

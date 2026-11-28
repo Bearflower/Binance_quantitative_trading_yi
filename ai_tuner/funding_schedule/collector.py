@@ -213,7 +213,7 @@ class FundingScheduleCollector:
             intervals = await self.binance._request("GET", "/fapi/v1/fundingInfo", signed=False)
             return premiums, intervals
 
-        for _ in range(_BOUNDARY_REFRESH_ATTEMPTS):
+        for attempt in range(_BOUNDARY_REFRESH_ATTEMPTS):
             now = self.clock()
             if not _current_slot(scheduled_at, now) or (deadline - now).total_seconds() <= 1:
                 break
@@ -245,8 +245,17 @@ class FundingScheduleCollector:
                 )
                 return started, received, payload_hash, observations
             except Exception as error:
-                logger.warning("Funding schedule refresh unavailable for %s: %s",
-                               scheduled_at.isoformat(), type(error).__name__)
+                # A settlement boundary can briefly retain the just-expired
+                # forecast. Report that retry as progress, not a failed slot.
+                # Unexpected network/data failures remain visible warnings.
+                pending = (isinstance(error, FundingScheduleDataError)
+                           and error.code == "INVALID_NEXT_FUNDING_TIME")
+                report = logger.info if pending else logger.warning
+                report("Funding schedule refresh attempt %s/%s for %s: %s",
+                       attempt + 1, _BOUNDARY_REFRESH_ATTEMPTS, scheduled_at.isoformat(),
+                       error.code if isinstance(error, FundingScheduleDataError) else type(error).__name__)
+        logger.warning("Funding schedule boundary refresh exhausted for %s; required_fallback=%s",
+                       scheduled_at.isoformat(), required_fallback is not None)
         return required_fallback
 
     async def _failed(

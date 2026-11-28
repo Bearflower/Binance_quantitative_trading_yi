@@ -1,0 +1,350 @@
+{
+  "schema_version": "1",
+  "mode": "workspace",
+  "repository": "/Users/yl/.codex/worktrees/unified-production-20261127",
+  "total_files": 51,
+  "reviewable_count": 21,
+  "excluded_count": 30,
+  "total_insertions": 3566,
+  "total_deletions": 521,
+  "reviewable_files": [
+    {
+      "path": ".github/workflows/dashboard-classic-segments.yml",
+      "status": "added",
+      "insertions": 47,
+      "deletions": 0
+    },
+    {
+      "path": ".github/workflows/history-tolerance-build.yml",
+      "status": "modified",
+      "insertions": 60,
+      "deletions": 1
+    },
+    {
+      "path": ".github/workflows/xau-attribution-release.yml",
+      "status": "modified",
+      "insertions": 7,
+      "deletions": 16
+    },
+    {
+      "path": "ai_tuner/cleanup/orphan_cleanup.py",
+      "status": "modified",
+      "insertions": 14,
+      "deletions": 5
+    },
+    {
+      "path": "dashboard/backend/models/schemas.py",
+      "status": "modified",
+      "insertions": 2,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/exchange_ledger.py",
+      "status": "modified",
+      "insertions": 29,
+      "deletions": 3
+    },
+    {
+      "path": "dashboard/frontend/index.html",
+      "status": "modified",
+      "insertions": 1,
+      "deletions": 1
+    },
+    {
+      "path": "dashboard/frontend/js/main.js",
+      "status": "modified",
+      "insertions": 9,
+      "deletions": 2
+    },
+    {
+      "path": "deploy/history-tolerance/bases.json",
+      "status": "modified",
+      "insertions": 11,
+      "deletions": 29
+    },
+    {
+      "path": "deployment/history-live-gap/activate.py",
+      "status": "added",
+      "insertions": 204,
+      "deletions": 0
+    },
+    {
+      "path": "deployment/xau-attribution/activate.py",
+      "status": "modified",
+      "insertions": 360,
+      "deletions": 273
+    },
+    {
+      "path": "scripts/build_history_tolerance.py",
+      "status": "modified",
+      "insertions": 1,
+      "deletions": 1
+    },
+    {
+      "path": "scripts/deploy_full_regression.py",
+      "status": "modified",
+      "insertions": 6,
+      "deletions": 2
+    },
+    {
+      "path": "scripts/prepare_history_live_gap_release.py",
+      "status": "added",
+      "insertions": 66,
+      "deletions": 0
+    },
+    {
+      "path": "shared/accounting/classic_attribution.py",
+      "status": "modified",
+      "insertions": 29,
+      "deletions": 26
+    },
+    {
+      "path": "strategies/btc_eth/shadow/collector.py",
+      "status": "modified",
+      "insertions": 4,
+      "deletions": 4
+    },
+    {
+      "path": "strategies/btc_eth/shadow/main.py",
+      "status": "modified",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/accepted_live_gap.py",
+      "status": "added",
+      "insertions": 148,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/decision_context.py",
+      "status": "modified",
+      "insertions": 17,
+      "deletions": 2
+    },
+    {
+      "path": "strategies/hrs/equity_history_gap.py",
+      "status": "modified",
+      "insertions": 18,
+      "deletions": 6
+    },
+    {
+      "path": "strategies/hrs/equity_service.py",
+      "status": "modified",
+      "insertions": 138,
+      "deletions": 11
+    }
+  ],
+  "excluded_files": [
+    {
+      "path": "deployment/xau-attribution/Dockerfile.shadow",
+      "status": "modified",
+      "insertions": 1,
+      "deletions": 3,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/knowledge/INDEX.md",
+      "status": "modified",
+      "insertions": 2,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/knowledge/changelog/2026-11-27.md",
+      "status": "modified",
+      "insertions": 21,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/knowledge/issues/Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse.md",
+      "status": "added",
+      "insertions": 50,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/plans/successor-integration-2026-11-28.md",
+      "status": "added",
+      "insertions": 26,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reports/historical-evidence-recovery-2026-11-27.md",
+      "status": "modified",
+      "insertions": 16,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reports/xau-version-provenance-2026-11-27.md",
+      "status": "added",
+      "insertions": 76,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "tests/test_accounting/test_classic_attribution.py",
+      "status": "modified",
+      "insertions": 18,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_accounting/test_dashboard_ledger.py",
+      "status": "modified",
+      "insertions": 49,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_r01_r08_fixes/test_ai_tuner_orphan_cleanup_r08.py",
+      "status": "modified",
+      "insertions": 16,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_scripts/test_full_regression_deploy.py",
+      "status": "modified",
+      "insertions": 18,
+      "deletions": 1,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_scripts/test_history_live_gap_activation.py",
+      "status": "added",
+      "insertions": 149,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_scripts/test_prepare_history_live_gap_release.py",
+      "status": "added",
+      "insertions": 56,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_scripts/test_xau_attribution_release.py",
+      "status": "modified",
+      "insertions": 50,
+      "deletions": 127,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_scripts/test_xau_exact_release.py",
+      "status": "added",
+      "insertions": 295,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_equity_service.py",
+      "status": "modified",
+      "insertions": 122,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_history_gap.py",
+      "status": "modified",
+      "insertions": 98,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_scan_boundary.py",
+      "status": "modified",
+      "insertions": 25,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_shadow_collector.py",
+      "status": "modified",
+      "insertions": 1,
+      "deletions": 1,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_xau_attribution_postgres.py",
+      "status": "modified",
+      "insertions": 12,
+      "deletions": 7,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_xau_version_provenance.py",
+      "status": "added",
+      "insertions": 133,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/business-fix-evidence.json",
+      "status": "added",
+      "insertions": 41,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/business-review.json",
+      "status": "added",
+      "insertions": 110,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/final-coverage.json",
+      "status": "added",
+      "insertions": 173,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/ocr-final-preview.json",
+      "status": "added",
+      "insertions": 287,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/ocr-final-rules.json",
+      "status": "added",
+      "insertions": 66,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/ocr-preview.json",
+      "status": "added",
+      "insertions": 260,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/ocr-rules.json",
+      "status": "added",
+      "insertions": 65,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/ops-fix-result.json",
+      "status": "added",
+      "insertions": 35,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/2026-11-28-successor-integration/ops-review.json",
+      "status": "added",
+      "insertions": 121,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    }
+  ]
+}

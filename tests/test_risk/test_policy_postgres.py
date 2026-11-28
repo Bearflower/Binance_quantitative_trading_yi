@@ -43,7 +43,7 @@ async def test_hrs_exit_ratio_migration_is_idempotent_and_persists_geometry():
         await admin.close()
 
 
-async def setup():
+async def setup_risk_pool():
     admin=await asyncpg.connect(DSN)
     await admin.execute('CREATE SCHEMA IF NOT EXISTS trading')
     await admin.execute('''CREATE TABLE IF NOT EXISTS trading.position_claims(id bigserial primary key,
@@ -73,7 +73,7 @@ async def setup():
 
 @pytest.mark.asyncio
 async def test_hrs_small_lot_reservation_is_durable_and_revision_bound():
-    pool = await setup()
+    pool = await setup_risk_pool()
     try:
         admin = await asyncpg.connect(DSN)
         try:
@@ -113,7 +113,7 @@ async def test_hrs_small_lot_reservation_is_durable_and_revision_bound():
 
 @pytest.mark.asyncio
 async def test_two_connections_one_budget_and_durable_unknown():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         sized=SizedEntry(D(10),D(5),D(100),D(10),D(50),D(25),D(50))
@@ -149,7 +149,7 @@ async def test_two_connections_one_budget_and_durable_unknown():
 
 @pytest.mark.asyncio
 async def test_partial_fill_unknown_keeps_claim_until_terminal_flat():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         async def snapshot():return 0,1000,100
@@ -179,7 +179,7 @@ async def test_partial_fill_unknown_keeps_claim_until_terminal_flat():
 
 @pytest.mark.asyncio
 async def test_zero_symbol_row_cannot_override_nonzero_account_inventory():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         async def snapshot():return 0,1000,100
@@ -200,7 +200,7 @@ async def test_zero_symbol_row_cannot_override_nonzero_account_inventory():
 
 @pytest.mark.asyncio
 async def test_pm_empty_symbol_response_needs_independent_flat_evidence():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         async def snapshot():return 0,1000,100
@@ -234,7 +234,7 @@ async def test_pm_empty_symbol_response_needs_independent_flat_evidence():
 
 @pytest.mark.asyncio
 async def test_empty_symbol_response_releases_only_with_independent_account_proof():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         async def snapshot():return 0,1000,100
@@ -267,7 +267,7 @@ async def test_empty_symbol_response_releases_only_with_independent_account_proo
 
 @pytest.mark.asyncio
 async def test_atomic_activation_cas_and_audit():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         from shared.entry_risk_policy import activate_policy
         candidate=dict(account_id='default',strategy_id='btc_eth_aggressive',mode='monitor_only',allow_add=False,multiplier='0',ratio_cap='.15',entry_ceiling='90',reason='reviewed remediation')
@@ -282,7 +282,7 @@ async def test_atomic_activation_cas_and_audit():
 
 @pytest.mark.asyncio
 async def test_pending_reservations_count_for_slot_limit():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         async def snapshot():return 0,10000,10000,set(),1
@@ -296,7 +296,7 @@ async def test_pending_reservations_count_for_slot_limit():
 async def test_ambiguous_reserved_fill_rebuilds_only_missing_original_hard_stop():
     from unittest.mock import AsyncMock
     from shared.entry_risk_policy import recover_reserved_protection
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         async def snapshot():return 0,1000,100
@@ -318,7 +318,7 @@ async def test_ambiguous_reserved_fill_rebuilds_only_missing_original_hard_stop(
 
 @pytest.mark.asyncio
 async def test_single_connection_snapshot_cannot_deadlock():
-    initial=await setup();await initial.close()
+    initial=await setup_risk_pool();await initial.close()
     async def runtime_role(conn):await conn.execute('SET ROLE risk_runtime')
     pool=await asyncpg.create_pool(DSN,min_size=1,max_size=1,setup=runtime_role)
     try:
@@ -333,7 +333,7 @@ async def test_single_connection_snapshot_cannot_deadlock():
 
 @pytest.mark.asyncio
 async def test_production_runtime_grants_nosuperuser():
-    initial=await setup();await initial.close()
+    initial=await setup_risk_pool();await initial.close()
     admin=await asyncpg.connect(DSN.replace('/postgres','/risk_tests'))
     await admin.execute("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='trading_user') THEN CREATE ROLE trading_user LOGIN NOSUPERUSER; END IF; END $$")
     assert not await admin.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname='trading_user'")
@@ -367,7 +367,7 @@ async def test_reduced_prepare_retry_and_final_submit_uses_exact_reserved_quanti
     from zoneinfo import ZoneInfo
     from unittest.mock import AsyncMock
     from shared.entry_risk_policy import prepare_aggressive_entry,submit_aggressive_entry
-    pool=await setup()
+    pool=await setup_risk_pool()
     admin=await asyncpg.connect(DSN.replace('/postgres','/risk_tests'))
     await admin.execute('CREATE TABLE IF NOT EXISTS public.capital_allocation(month date,status text,entries jsonb,created_at timestamptz default now())')
     await admin.execute('TRUNCATE public.capital_allocation')
@@ -398,7 +398,7 @@ async def test_reduced_prepare_retry_and_final_submit_uses_exact_reserved_quanti
 
 @pytest.mark.asyncio
 async def test_same_symbol_concurrent_intents_cannot_add():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         async def snapshot():return 0,1000,100
@@ -410,7 +410,7 @@ async def test_same_symbol_concurrent_intents_cannot_add():
 
 @pytest.mark.asyncio
 async def test_versioned_policy_and_audit_are_immutable_even_for_administrator():
-    pool=await setup();await pool.close()
+    pool=await setup_risk_pool();await pool.close()
     admin=await asyncpg.connect(DSN.replace('/postgres','/risk_tests'))
     try:
         with pytest.raises(Exception) as immutable:
@@ -428,7 +428,7 @@ async def test_versioned_policy_and_audit_are_immutable_even_for_administrator()
 
 @pytest.mark.asyncio
 async def test_policy_expiry_while_waiting_account_lock_rejects_submission():
-    pool=await setup()
+    pool=await setup_risk_pool()
     admin=await asyncpg.connect(DSN)
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))

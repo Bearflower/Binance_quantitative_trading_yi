@@ -9,6 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
+import asyncpg
+import os
+import signal
 from typing import Optional
 
 from shared.core.database import db_manager
@@ -59,11 +62,10 @@ async def _acquire_startup_lock():
     注意：session 级 advisory lock 在数据库连接断开时自动释放，
     因此 kline 服务崩溃或正常关闭后锁会自动释放，不会产生死锁。
     """
-    async with db_manager.get_connection() as conn:
-        acquired = await conn.fetch_val(
-            "SELECT pg_try_advisory_lock(:lock_id)",
-            {"lock_id": _STARTUP_LOCK_ID}
-        )
+    # 必须持有专用会话；Database.fetch_val 会借还连接，归还时会自动释放锁。
+    conn = await asyncpg.connect(str(db_manager.database.url))
+    try:
+        acquired = await conn.fetchval("SELECT pg_try_advisory_lock($1)", _STARTUP_LOCK_ID)
         if not acquired:
             raise RuntimeError(
                 "启动互斥锁获取失败：另一个 kline 服务实例已在运行中。\n"
@@ -75,6 +77,22 @@ async def _acquire_startup_lock():
                 "  2. 确认数据库连接配置是否正确\n"
             )
         logger.info("✅ 启动互斥锁已获取")
+        conn.add_termination_listener(_on_startup_lock_lost)
+        return conn
+    except BaseException:
+        await conn.close()
+        raise
+
+
+def _on_startup_lock_lost(conn):
+    """锁会话意外断开后停止进程，避免失去互斥的实例继续采集。"""
+    logger.critical("启动锁会话已断开，停止 K 线服务以防止多个实例并行写入")
+    if scheduler:
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            logger.exception("锁丢失后的调度器停止失败")
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 async def _verify_database_identity():
@@ -122,145 +140,151 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     global binance_client, collector, scheduler
 
-    # 启动时
-    logger.info("K 线数据服务启动中...")
-
-    # 初始化数据库
+    startup_lock = None
+    binance_client = collector = scheduler = None
     try:
-        await db_manager.connect()
-        logger.info("数据库连接成功")
-    except Exception as e:
-        logger.error(f"数据库连接失败: {e}", exc_info=True)
-        raise
+        # 启动时
+        logger.info("K 线数据服务启动中...")
 
-    # 获取启动互斥锁，防止同一数据库被多个 kline 实例写入 ⭐⭐⭐
-    try:
-        await _acquire_startup_lock()
-        logger.info("启动互斥锁已获取，确认无其他 kline 实例在运行")
-    except RuntimeError as e:
-        logger.error(f"启动互斥锁获取失败: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"启动互斥锁异常: {e}", exc_info=True)
-        raise
-
-    # 验证数据库身份，确认连接的是预期的 trading_system-postgres ⭐⭐⭐
-    try:
-        await _verify_database_identity()
-    except Exception as e:
-        logger.warning(f"数据库身份验证异常（不阻塞启动）：{e}", exc_info=True)
-
-    # 初始化标的注册管理器
-    try:
-        await registry.initialize()
-        logger.info("标的注册管理器已初始化")
-    except Exception as e:
-        logger.error(f"标的注册管理器初始化失败: {e}", exc_info=True)
-        raise
-
-    # 初始化币安客户端
-    try:
-        binance_client = BinanceClient()
-        await binance_client.connect()
-        logger.info("币安 API 客户端已连接")
-    except Exception as e:
-        logger.error(f"币安 API 客户端连接失败: {e}", exc_info=True)
-        raise
-
-    # 初始化采集器（固定标的）
-    try:
-        # 固定标的与采集周期统一来自配置（config.py），避免多处硬编码漂移
-        fixed_symbols = settings.fixed_symbols_list
-        collect_intervals = settings.intervals_list
-        collector = KlineCollector(
-            binance_client=binance_client,
-            db=db_manager,
-            symbols=fixed_symbols,
-            intervals=collect_intervals,
-        )
-        logger.info("K 线采集器已初始化")
-    except Exception as e:
-        logger.error(f"K 线采集器初始化失败: {e}", exc_info=True)
-        raise
-
-    # 启动时清理无效注册标的
-    try:
-        cleaned = await collector.validate_registered_symbols()
-        if cleaned > 0:
-            logger.info(f"🧹 启动时清理了 {cleaned} 个无效的注册标的（已在币安下架）")
-        else:
-            logger.debug("启动时注册标验证通过，无需清理")
-    except Exception as e:
-        logger.warning(f"启动时注册标验证失败（不影响后续启动）：{e}", exc_info=True)
-
-    # 初始化调度器
-    try:
-        scheduler = TaskScheduler(collector)
-
-        # 添加固定标的的定时任务
-        for symbol in fixed_symbols:
-            for interval in collect_intervals:
-                scheduler.add_job(symbol, interval)
-
-        # 添加已注册标的的定时任务
-        registered = registry.get_active_symbols()
-        for config in registered:
-            for interval in config.intervals:
-                scheduler.add_job(config.symbol, interval)
-            logger.info(f"已添加注册标的 {config.symbol} 的采集任务：{config.intervals}")
-
-        # 启动调度器
-        scheduler.start()
-        logger.info(f"定时任务调度器已启动 ({len(scheduler.get_tasks())} 个任务)")
-    except Exception as e:
-        logger.error(f"调度器初始化失败: {e}", exc_info=True)
-        raise
-
-    # 初始化 API 路由
-    try:
-        routes.init_globals(db_manager, binance_client, collector)
-        
-        # 初始化注册管理 API 的调度器和采集器引用
-        # 调度器：用于动态添加/移除采集任务
-        # 采集器：用于注册后立即创建 K 线表
-        registry_routes.init_scheduler(scheduler)
-        registry_routes.init_collector(collector)
-
-        logger.info("K 线数据服务启动完成")
-    except Exception as e:
-        logger.error(f"API 路由初始化失败: {e}", exc_info=True)
-        raise
-
-    yield
-
-    # 关闭时
-    logger.info("K 线数据服务关闭中...")
-
-    # 停止调度器
-    if scheduler:
+        # 初始化数据库
         try:
-            scheduler.shutdown(wait=False)
-            logger.info("定时任务调度器已停止")
+            await db_manager.connect()
+            logger.info("数据库连接成功")
         except Exception as e:
-            logger.error(f"调度器关闭失败: {e}", exc_info=True)
+            logger.error(f"数据库连接失败: {e}", exc_info=True)
+            raise
 
-    # 关闭币安客户端
-    if binance_client:
+        # 获取启动互斥锁，防止同一数据库被多个 kline 实例写入 ⭐⭐⭐
         try:
-            await binance_client.disconnect()
-            logger.info("币安 API 客户端已关闭")
+            startup_lock = await _acquire_startup_lock()
+            logger.info("启动互斥锁已获取，确认无其他 kline 实例在运行")
+        except RuntimeError as e:
+            logger.error(f"启动互斥锁获取失败: {e}")
+            raise
         except Exception as e:
-            logger.error(f"币安客户端关闭失败: {e}", exc_info=True)
+            logger.error(f"启动互斥锁异常: {e}", exc_info=True)
+            raise
 
-    # 关闭数据库
-    try:
-        await db_manager.disconnect()
-        logger.info("数据库连接已关闭")
-    except Exception as e:
-        logger.error(f"数据库关闭失败: {e}", exc_info=True)
+        # 验证数据库身份，确认连接的是预期的 trading_system-postgres ⭐⭐⭐
+        try:
+            await _verify_database_identity()
+        except Exception as e:
+            logger.warning(f"数据库身份验证异常（不阻塞启动）：{e}", exc_info=True)
 
-    logger.info("K 线数据服务已关闭")
+        # 初始化标的注册管理器
+        try:
+            await registry.initialize()
+            logger.info("标的注册管理器已初始化")
+        except Exception as e:
+            logger.error(f"标的注册管理器初始化失败: {e}", exc_info=True)
+            raise
 
+        # 初始化币安客户端
+        try:
+            binance_client = BinanceClient()
+            await binance_client.connect()
+            logger.info("币安 API 客户端已连接")
+        except Exception as e:
+            logger.error(f"币安 API 客户端连接失败: {e}", exc_info=True)
+            raise
+
+        # 初始化采集器（固定标的）
+        try:
+            # 固定标的与采集周期统一来自配置（config.py），避免多处硬编码漂移
+            fixed_symbols = settings.fixed_symbols_list
+            collect_intervals = settings.intervals_list
+            collector = KlineCollector(
+                binance_client=binance_client,
+                db=db_manager,
+                symbols=fixed_symbols,
+                intervals=collect_intervals,
+            )
+            logger.info("K 线采集器已初始化")
+        except Exception as e:
+            logger.error(f"K 线采集器初始化失败: {e}", exc_info=True)
+            raise
+
+        # 启动时清理无效注册标的
+        try:
+            cleaned = await collector.validate_registered_symbols()
+            if cleaned > 0:
+                logger.info(f"🧹 启动时清理了 {cleaned} 个无效的注册标的（已在币安下架）")
+            else:
+                logger.debug("启动时注册标验证通过，无需清理")
+        except Exception as e:
+            logger.warning(f"启动时注册标验证失败（不影响后续启动）：{e}", exc_info=True)
+
+        # 初始化调度器
+        try:
+            scheduler = TaskScheduler(collector)
+
+            # 添加固定标的的定时任务
+            for symbol in fixed_symbols:
+                for interval in collect_intervals:
+                    scheduler.add_job(symbol, interval)
+
+            # 添加已注册标的的定时任务
+            registered = registry.get_active_symbols()
+            for config in registered:
+                for interval in config.intervals:
+                    scheduler.add_job(config.symbol, interval)
+                logger.info(f"已添加注册标的 {config.symbol} 的采集任务：{config.intervals}")
+
+            # 启动调度器
+            scheduler.start()
+            logger.info(f"定时任务调度器已启动 ({len(scheduler.get_tasks())} 个任务)")
+        except Exception as e:
+            logger.error(f"调度器初始化失败: {e}", exc_info=True)
+            raise
+
+        # 初始化 API 路由
+        try:
+            routes.init_globals(db_manager, binance_client, collector)
+
+            # 初始化注册管理 API 的调度器和采集器引用
+            # 调度器：用于动态添加/移除采集任务
+            # 采集器：用于注册后立即创建 K 线表
+            registry_routes.init_scheduler(scheduler)
+            registry_routes.init_collector(collector)
+
+            logger.info("K 线数据服务启动完成")
+        except Exception as e:
+            logger.error(f"API 路由初始化失败: {e}", exc_info=True)
+            raise
+
+        yield
+    finally:
+        # 关闭时
+        logger.info("K 线数据服务关闭中...")
+
+        # 停止调度器
+        if scheduler:
+            try:
+                scheduler.shutdown(wait=False)
+                logger.info("定时任务调度器已停止")
+            except Exception as e:
+                logger.error(f"调度器关闭失败: {e}", exc_info=True)
+
+        # 关闭币安客户端
+        if binance_client:
+            try:
+                await binance_client.disconnect()
+                logger.info("币安 API 客户端已关闭")
+            except Exception as e:
+                logger.error(f"币安客户端关闭失败: {e}", exc_info=True)
+
+        if startup_lock is not None:
+            startup_lock.remove_termination_listener(_on_startup_lock_lost)
+            await startup_lock.close()
+
+        # 关闭数据库
+        try:
+            await db_manager.disconnect()
+            logger.info("数据库连接已关闭")
+        except Exception as e:
+            logger.error(f"数据库关闭失败: {e}", exc_info=True)
+
+        logger.info("K 线数据服务已关闭")
 
 # 创建 FastAPI 应用
 app = FastAPI(

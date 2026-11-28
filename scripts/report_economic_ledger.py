@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 import os
+from pathlib import Path
 import sys
 
 from ai_tuner.accounting.report_reader import (
@@ -33,6 +34,7 @@ async def _run(
     include_derived_attribution: bool = False,
     include_hrs_provenance: bool = False,
     end_ms_override: int | None = None,
+    output: Path | None = None,
 ) -> int:
     from shared.database import DatabaseManager
 
@@ -64,7 +66,12 @@ async def _run(
             )
     finally:
         await db.disconnect()
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    body = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+    if output is None:
+        print(body)
+    else:
+        with output.open("x", encoding="utf-8") as out:
+            out.write(body + "\n")
     return 0 if report["id_match_and_coverage_complete"] else 2
 
 
@@ -79,6 +86,7 @@ def main() -> None:
                         help="读取证据推导的逐事件归属表；需要先部署对应表")
     parser.add_argument("--include-hrs-provenance", action="store_true",
                         help="附加 HRS 汇总来源分布；需要先部署 pnl_source 列")
+    parser.add_argument("--output", type=Path, help="保存纯 JSON 证据到新文件")
     args = parser.parse_args()
     try:
         code = asyncio.run(_run(
@@ -86,9 +94,9 @@ def main() -> None:
             include_reviewed_overrides=args.use_reviewed_overrides,
             include_derived_attribution=args.use_derived_attribution,
             include_hrs_provenance=args.include_hrs_provenance,
-            end_ms_override=args.end_ms,
+            end_ms_override=args.end_ms, output=args.output,
         ))
-    except (ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         print(f"核对失败：{exc}", file=sys.stderr)
         code = 1
     raise SystemExit(code)

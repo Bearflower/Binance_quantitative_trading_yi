@@ -122,7 +122,9 @@ const fintechLightTheme = {
 };
 
 // 注册主题
-if (typeof echarts !== 'undefined') {
+if (window.echartsReady) {
+    window.echartsReady.then(library => library.registerTheme('fintech-light', fintechLightTheme)).catch(() => {});
+} else if (typeof echarts !== 'undefined') {
     echarts.registerTheme('fintech-light', fintechLightTheme);
 }
 

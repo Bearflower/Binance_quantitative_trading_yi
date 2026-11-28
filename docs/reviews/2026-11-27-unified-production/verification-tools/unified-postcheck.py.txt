@@ -1,0 +1,158 @@
+"""Final read-only verification of the selected unified release and current business contract."""
+import argparse, copy, hashlib, importlib.util, json, pathlib, sys, time
+
+def load(name,path):
+ spec=importlib.util.spec_from_file_location(name,path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+def check_business(before,after):
+ assert after['read_only'] is True and after['superuser'] is False
+ assert 0<=time.time()-after['observed_at']<=180
+ for key in ('acceptance','allocation_sha256','risk_policy_sha256'):
+  assert after[key]==before[key], 'business authority changed: '+key
+ for key in ('segment_id','inception','cash_allocation','units','cash_flows'):
+  assert after['ledger'][key]==before['ledger'][key], 'HRS original economics changed: '+key
+ incomes={r['event_id']:r for r in after['ledger']['incomes']}
+ assert all(incomes.get(r['event_id'])==r for r in before['ledger']['incomes']), 'known incomes changed'
+ assert after['ledger_version']>=before['ledger_version']
+ for key in ('risk_ready','attribution_ready','hrs_ready','hrs_allowed','gate_unexpired','current_coverage_complete'):
+  assert after[key] is True, 'current business condition not ready: '+key
+ assert after['risk_status']=='VERIFIED_WITH_ACCEPTED_HISTORY'
+ assert after['history_status']=='ACCEPTED_GAPS' and after['original_history_complete'] is False
+ assert 0<=after['risk_age_ms']<=120000
+ return dict(history_status=after['history_status'],original_history_complete=False,
+             current_coverage_complete=True,hrs_ready=True,hrs_allowed=True,
+             ai_risk_ready=True,attribution_ready=True,original_economics_preserved=True)
+
+def check_running_runtime(actual, body, predecessor, validate):
+ # Docker create materializes the legacy null OOM flag as false; updating
+ # restart policy returns it to null. Accept only the exact original null
+ # policy. Explicit true, other drift, and the staged validator stay strict.
+ expected=body
+ if (predecessor['HostConfig'].get('OomKillDisable') is None
+     and actual['HostConfig'].get('OomKillDisable') is None
+     and body['HostConfig'].get('OomKillDisable') is False):
+  expected=copy.deepcopy(body)
+  expected['HostConfig']['OomKillDisable']=None
+ validate(actual,expected)
+
+def check_zero_budget_pause(p,local,signal,current,sha,baseline,config_hashes,legacy,now):
+ # This acceptance mode remains PAUSED. It proves a deliberate, consumed
+ # zero-budget WAIT, never authorizes an order or changes the running journal.
+ assert p['source']==sha and p['container']=='trading_system-grid-executor' and p['old_id']==current['id']
+ started=legacy.instant(current['started_at'])
+ assert 0<=now-p['observed_at']<=180 and p['observed_at']>=started
+ assert p['account_mode']=='classic' and p['risk_status']=='ALLOW'
+ for k in ('read_only','ok','reconciled','protected','snapshot_stable','live_journal_untouched','heartbeat_fresh','stream_ready','flat'):assert p[k] is True
+ for k in ('account','account_mode','account_identity_sha256','risk_policy_sha256','continuity_sha256'):assert p[k]==baseline['grid'][k]
+ for r in p['requests']:
+  assert r['method']=='GET' and r['path'].startswith('/fapi/')
+  assert r['signed'] is True or r['path'] in ('/fapi/v1/premiumIndex','/fapi/v2/ticker/price','/fapi/v1/exchangeInfo')
+ assert {'positionRisk','openOrders','openAlgoOrders','account'}<={r['path'].rsplit('/',1)[-1] for r in p['requests']}
+ assert len(p['engine_state'])==1 and p['engine_state'][0]==local['state']==signal['engine_state']
+ assert local['state']['state']=='PAUSED' and local['state']['lock_reason'] is None and local['epoch'] is not None
+ h=local['heartbeat']
+ assert h['state']=='PAUSED' and h['stream_ready'] is True and h['risk_status']=='ALLOW'
+ assert 0<=now*1000-h['updated_at_ms']<=120000 and h['updated_at_ms']/1000>=started
+ assert local['heartbeat_path']==current['safe_env']['GRID_EXECUTION_HEARTBEAT']
+ for k in ('active_orders','active_protections','pending_decisions'):legacy.require_zero_count(local[k])
+ for k in ('ordinary_orders','algo_orders','journal_active_orders','journal_active_protections'):legacy.require_zero_count(p[k])
+ for v in (p['position'],p['journal_net'],local['journal_net']):legacy.require_zero(v)
+ assert signal['read_only'] is True and 0<=now-signal['observed_at']<=180 and signal['observed_at']>=started
+ assert signal['config_hashes']==config_hashes and signal['cursor_matches'] is True
+ assert signal['signal_state'] in ('OSCILLATION','WEAK_TREND') and signal['executable'] is True
+ assert signal['candles_current'] is True and 0<=now*1000-signal['calculated_at_ms']<=90*60000
+ assert signal['feasibility']['feasible'] is False and signal['feasibility']['binding']=='EXECUTION'
+ assert signal['policy_action']=='WAIT'
+ for k in ('margin_used','trend_coeff'):legacy.require_zero(signal[k])
+ base=legacy.Decimal(signal['base_margin']);assert base.is_finite() and base>0
+ assert type(signal['profit_cap']) is int and type(signal['minimum_grid_count']) is int
+ assert signal['profit_cap']>=signal['minimum_grid_count']>0
+ receipt=signal['receipt']
+ assert receipt['decision_id']==signal['decision_id'] and receipt['processed'] is True
+ assert started<=receipt['updated_at_ms']/1000<=now
+ assert receipt['state']=='PAUSED' and receipt['reason'] is None and receipt['stream_ready'] is True and receipt['risk']=='ALLOW'
+ return dict(observed_at=p['observed_at'],request_count=len(p['requests']),account_mode='classic',grid_state='PAUSED',
+  acceptance_mode='paused_zero_budget',waiting_for_new_signal=True,journal_net=p['journal_net'],ordinary_orders=0,algo_orders=0,
+  reconciled=True,policy_action='WAIT',margin_used='0',trend_coeff='0',current_signal_processed=True)
+
+def main():
+ p=argparse.ArgumentParser();p.add_argument('--bundle',type=pathlib.Path,required=True);p.add_argument('--sha',required=True);a=p.parse_args()
+ folder=pathlib.Path(__file__).resolve().parent
+ hashes=json.loads((folder/'helper-hashes.json').read_text())
+ for name,expected in hashes.items():assert hashlib.sha256((folder/name).read_bytes()).hexdigest()==expected, name
+ driver=load('unified_read_driver',folder/'rollout_driver.py');legacy=load('unified_grid_checks',folder/'postdeploy-trading-check-v2.py')
+ plan,_=driver.verify_bundle(a.bundle,a.sha)
+ from scripts.deploy_full_regression import Release, runtime_fingerprint, build_container_body, validate_staged_runtime, runtime_code_probe, digest
+ release=Release(a.bundle,a.sha);directory=release.directory
+ pin=json.loads((release.project/'.deploy_tmp/full-regression-active.json').read_text())
+ assert pin['source']==a.sha
+ names=[n for r in plan['images'] for n in r['containers']]
+ assert len(names)==len(set(names))==23 and set(pin['services'])==set(names)
+ result=dict(source=a.sha,read_only=True,started_at=time.time(),checks=[],logs_for_review=[])
+ before_rows=legacy.inspect_all()
+ for name in names:
+  active=json.loads((directory/(name+'-activation.json')).read_text())
+  old=json.loads((directory/(name+'-before.json')).read_text())
+  staged=json.loads((directory/(name+'-staged.json')).read_text())
+  actual=driver.inspect(name)
+  assert active['source']==a.sha and active['status']=='active'
+  assert actual['Id']==active['new_id']==pin['services'][name]['container_id']
+  assert actual['Image']==staged['image']==pin['services'][name]['image']
+  assert actual['State']['Running'] and actual['State']['Health']['Status']=='healthy' and actual['RestartCount']==0
+  assert not driver.inspect(old['Id'])['State']['Running'], 'old writer still running'
+  body=build_container_body(old,actual['Image'],a.sha,source_removals=staged['source_mount_removals'])
+  body['HostConfig']['RestartPolicy']=old['HostConfig']['RestartPolicy']
+  check_running_runtime(actual,body,old,validate_staged_runtime)
+  proof=json.loads((directory/(name+'-image-proof.json')).read_text())
+  assert digest(proof)==staged['image_proof_sha256']
+  driver.command(['docker','exec','-i',name,'python','-B','-'],text=runtime_code_probe(proof),diagnostic_dir=directory)
+  result['checks'].append(dict(container=name,health='healthy',restarts=0,source_files=proof['source_count'],runtime_preserved=True,old_writer_stopped=True))
+  # docker logs also uses stderr; collect both channels privately.
+  import subprocess
+  proc=subprocess.run(['docker','logs','--since',actual['State']['StartedAt'],name],capture_output=True,text=True,timeout=30)
+  assert proc.returncode==0
+  raw=proc.stdout+proc.stderr
+  driver.private_write(folder/(name+'-logs.private.json'),dict(text=raw))
+  markers=[line[:500] for line in raw.splitlines() if legacy.ERROR_MARKER.search(line)]
+  if markers:result['logs_for_review'].append(dict(container=name,count=len(markers),markers=markers[-15:]))
+ for record in plan['preserve_existing']:
+  name=record['container'];actual=driver.inspect(name)
+  expected=pin['predecessors'][name]
+  assert actual['State']['Running'] and expected==dict(id=actual['Id'],image=actual['Image'],runtime_sha256=runtime_fingerprint(actual))
+  result['checks'].append(dict(container=name,preserved=True))
+ release.audit('final-unified')
+ baseline=json.loads((directory/'live-baseline.json').read_text())
+ driver.wait_headroom(grid_last=True)
+ main_name='trading_system-btc_eth';grid_name='trading_system-grid-executor'
+ mainproof=driver.main_proof(a.bundle,a.sha,'trading_system-execution-facts',main_name,before_rows[main_name]['id'])
+ driver.private_write(folder/'main-proof.json',mainproof)
+ code=(a.bundle/'scripts/full_regression_live_gate.py').read_text()
+ output=driver.command(['docker','exec','-i',grid_name,'python','-B','-','--kind','grid','--source',a.sha,'--container',grid_name,'--old-id',before_rows[grid_name]['id']],text=code,timeout=120,diagnostic_dir=directory)
+ lines=[s.split('=',1)[1] for s in output.splitlines() if s.startswith('LIVE_GATE_RESULT=')];assert len(lines)==1
+ gridproof=json.loads(lines[0]);driver.private_write(folder/'grid-proof.json',gridproof)
+ local=legacy.in_container(grid_name,legacy.GRID_READ)
+ output=driver.command(['docker','exec','-i','trading_system-hrs','python','-B','-'],text=(folder/'business-probe.py').read_text(),timeout=60,diagnostic_dir=directory)
+ lines=[s.split('=',1)[1] for s in output.splitlines() if s.startswith('BUSINESS_RESULT=')];assert len(lines)==1
+ business=json.loads(lines[0]);driver.private_write(folder/'business-post.private.json',business)
+ result['business']=check_business(json.loads((folder/'business-baseline.private.json').read_text()),business)
+ for name,key,default in [('trading_system-grid-pg-projector','GRID_PG_HEARTBEAT','/app/data/grid_pg_heartbeat.json'),('trading_system-grid-notifier','GRID_NOTIFICATION_HEARTBEAT','/app/data/grid_notification_heartbeat.json')]:
+  h=legacy.in_container(name,"import os,json,pathlib;print(pathlib.Path(os.environ.get(%r,%r)).read_text())"%(key,default))
+  assert h['status']=='ok' and 0<=time.time()*1000-h['updated_at_ms']<=120000
+  assert h['updated_at_ms']/1000>=legacy.instant(before_rows[name]['started_at'])
+ after_rows=legacy.inspect_all()
+ for name in names+[r['container'] for r in plan['preserve_existing']]:assert after_rows[name]==before_rows[name], 'runtime changed during verification: '+name
+ result['main_exchange']=legacy.check_proof(folder/'main-proof.json',main_name,after_rows[main_name],a.sha,'main',baseline,time.time())
+ if gridproof.get('engine_state',[{}])[0].get('state')=='PAUSED':
+  output=driver.command(['docker','exec','-i','trading_system-grid','python','-B','-'],text=(folder/'grid-signal-probe.py').read_text(),timeout=30,diagnostic_dir=directory)
+  signal_rows=[s.split('=',1)[1] for s in output.splitlines() if s.startswith('GRID_SIGNAL_RESULT=')];assert len(signal_rows)==1
+  signal=json.loads(signal_rows[0]);driver.private_write(folder/'grid-signal-proof.json',signal)
+  result['grid_exchange']=check_zero_budget_pause(gridproof,local,signal,after_rows[grid_name],a.sha,baseline,json.loads((folder/'grid-config-baseline.json').read_text()),legacy,time.time())
+ else:
+  result['grid_exchange']=legacy.check_proof(folder/'grid-proof.json',grid_name,after_rows[grid_name],a.sha,'grid',baseline,time.time(),grid_local=local)
+ result['business']=check_business(json.loads((folder/'business-baseline.private.json').read_text()),business)
+ final_rows=legacy.inspect_all()
+ for name in names+[r['container'] for r in plan['preserve_existing']]:assert final_rows[name]==before_rows[name], 'runtime changed during final proof: '+name
+ result.update(ok=True,completed_at=time.time(),log_review_required=bool(result['logs_for_review']))
+ driver.private_write(folder/'result.private.json',result)
+ print(json.dumps(dict(event='unified_postcheck',source=a.sha,ok=True,containers=23,preserved=2,business=result['business'],grid=result['grid_exchange'],log_review_required=result['log_review_required'])))
+if __name__=='__main__':main()

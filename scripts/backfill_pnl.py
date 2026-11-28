@@ -70,7 +70,7 @@ async def backfill_pnl():
     # 初始化 BinanceClient
     api_key = os.getenv("BINANCE_API_KEY", "")
     api_secret = os.getenv("BINANCE_API_SECRET", "")
-    client = BinanceClient(api_key, api_secret, use_unified_account=True)
+    client = BinanceClient(api_key, api_secret)
     await client._init_session()
 
     try:

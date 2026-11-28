@@ -7,7 +7,7 @@
 - R02-AC4：同一交易意图复用相同 newClientOrderId；不同意图 ID 不同
 - R02-AC5：现有调用方接口向后兼容
 - R02-F5：条件单写接口的分级/幂等策略一致（PM 不传 newClientOrderId）
-- D4：api_retry.enabled=false 时回退既有「按读重试」语义
+- D4：关闭重试总闸也不重发未知下单
 
 所有测试使用假 HTTP：直接替换 client._request_once / client._request，不访问真实交易所。
 """
@@ -16,6 +16,8 @@ import asyncio
 from decimal import Decimal
 
 import aiohttp
+from unittest.mock import AsyncMock
+
 import pytest
 
 from shared import api_retry_config
@@ -97,7 +99,7 @@ class TestWriteGradeRetry:
             calls["n"] += 1
             raise asyncio.TimeoutError("下单超时")
 
-        found = {"orderId": 999, "status": "NEW", "executedQty": "0", "origQty": "1"}
+        found = {"symbol": "BTCUSDT", "clientOrderId": "sq1", "orderId": 999, "status": "NEW", "executedQty": "0", "origQty": "1"}
 
         async def fake_by_cid(symbol, client_order_id):
             verify_calls["n"] += 1
@@ -135,32 +137,18 @@ class TestWriteGradeRetry:
         await client.close()
 
     @pytest.mark.asyncio
-    async def test_disabled_falls_back_to_read_retry(self):
-        """D4：api_retry.enabled=false → POST 走读路径重试（回退既有语义）"""
-        import os
-
-        os.environ["API_RETRY_ENABLED"] = "false"
+    async def test_disabled_retry_does_not_resubmit_unknown_order(self, monkeypatch):
+        monkeypatch.setenv("API_RETRY_ENABLED", "false")
+        monkeypatch.setenv("API_RETRY_WRITE_MAX_RETRIES", "2")
         reset_cache()
-        try:
-            client = _make_client()
-            calls = {"n": 0}
-
-            async def fake_once(method, endpoint, params=None, signed=True):
-                calls["n"] += 1
-                if calls["n"] == 1:
-                    raise asyncio.TimeoutError("瞬时超时")
-                return {"ok": True}
-
-            client._request_once = fake_once
-            result = await client._request(
-                "POST", "/papi/v1/um/order", {"symbol": "BTCUSDT"}, True, idempotency_key="sq1"
-            )
-            assert result == {"ok": True}
-            assert calls["n"] == 2  # 回退为“全 method 重试”
-            await client.close()
-        finally:
-            os.environ.pop("API_RETRY_ENABLED", None)
-            reset_cache()
+        client = _make_client()
+        client._request_once = AsyncMock(side_effect=asyncio.TimeoutError())
+        client.get_order_by_client_id = AsyncMock(return_value=None)
+        with pytest.raises(UnknownOrderResultError):
+            await client._request("POST", "/papi/v1/um/order", {"symbol": "BTCUSDT"},
+                                  idempotency_key="sq1")
+        client._request_once.assert_awaited_once()
+        client.get_order_by_client_id.assert_awaited_with("BTCUSDT", "sq1")
 
 
 class TestPlaceOrderIdempotency:
@@ -280,7 +268,8 @@ class TestConditionalOrderIdempotency:
         await client.place_conditional_order(
             "BTCUSDT", "SELL", Decimal("90"), Decimal("0.001"), order_type="STOP_MARKET"
         )
-        assert captured[0].get("newClientOrderId")
+        assert captured[0].get("clientAlgoId")
+        assert "newClientOrderId" not in captured[0]
         await client.close()
 
 

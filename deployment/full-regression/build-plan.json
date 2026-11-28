@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "platform": "linux/amd64",
+  "images": [
+    {"name": "btc-eth", "dockerfile": "strategies/btc_eth/Dockerfile", "modules": ["strategies.btc_eth", "strategies.btc_eth.shadow.main"], "containers": ["trading_system-btc_eth", "trading_system-mtcps-xau-shadow", "trading_system-mtcps-xau-calibrated-shadow"]},
+    {"name": "btc-eth-aggr", "dockerfile": "strategies/btc_eth_aggressive/Dockerfile", "modules": ["strategies.btc_eth_aggressive"], "containers": ["trading_system-btc_eth_aggressive"]},
+    {"name": "new-coin", "dockerfile": "strategies/new_coin/Dockerfile", "modules": ["strategies.new_coin"], "containers": ["trading_system-new_coin"]},
+    {"name": "grid", "dockerfile": "strategies/grid/Dockerfile", "modules": ["strategies.grid", "strategies.grid.execution.main", "strategies.grid.execution.dashboard_snapshot", "strategies.grid.execution.pg_projection", "strategies.grid.execution.notification_worker", "strategies.grid.realtime.main", "scripts.grid_release_guard", "scripts.full_regression_live_gate"], "containers": ["trading_system-grid", "trading_system-grid-executor", "trading_system-grid-dashboard-exporter", "trading_system-grid-pg-projector", "trading_system-grid-notifier", "trading_system-grid-realtime"]},
+    {"name": "hrs", "dockerfile": "strategies/hrs/Dockerfile", "modules": ["strategies.hrs.main", "strategies.hrs.acceptance_report", "scripts.collect_execution_facts", "services.market_cap.main"], "containers": ["trading_system-hrs", "trading_system-hrs-acceptance", "trading_system-execution-facts", "trading_system-market-cap"]},
+    {"name": "ai-tuner", "dockerfile": "ai_tuner/Dockerfile", "modules": ["ai_tuner.main", "ai_tuner.snapshots.cli", "ai_tuner.funding_schedule.cli", "ai_tuner.replay.adapters.hrs", "ai_tuner.replay.adapters.mtpcs_aggressive"], "containers": ["ai-tuner", "ai-tuner-snapshot", "ai-tuner-funding-schedule"]},
+    {"name": "data-backend", "dockerfile": "services/data_backend/Dockerfile", "modules": ["src.main"], "containers": ["data-backend"]},
+    {"name": "dashboard-api", "dockerfile": "dashboard/backend/Dockerfile", "modules": ["main_docker"], "containers": ["dashboard-api"]},
+    {"name": "kline-service", "dockerfile": "services/kline_service/Dockerfile", "modules": ["src.main"], "containers": ["trading_system-kline"]},
+    {"name": "kline-monitor", "dockerfile": "services/kline_monitor/Dockerfile", "modules": ["src.monitor"], "containers": ["trading_system-kline-monitor"]},
+    {"name": "aggtrade-collector", "dockerfile": "services/aggtrade_collector/Dockerfile", "modules": ["services.aggtrade_collector.cli"], "containers": ["trading_system-aggtrade-collector"]}
+  ],
+  "preserve_existing": [
+    {"container": "trading_system-hrs-research-observer", "reason": "Independent experiment entry strategies.hrs.research_liquidity is absent from this release; preserve existing image and runtime."},
+    {"container": "trading_system-mtpcs-direction-shadow", "reason": "Independent experiment entry strategies.btc_eth.shadow.entry_ledger is absent from this release; preserve existing image and runtime."}
+  ]
+}

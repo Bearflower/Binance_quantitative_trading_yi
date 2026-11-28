@@ -184,6 +184,7 @@ async function loadData() {
     try {
         // 显示加载状态
         showLoading();
+        await window.echartsReady;
 
         // 并行加载数据
         const [overview, trend] = await Promise.all([
@@ -307,8 +308,11 @@ function updateOverview(data) {
         quality.className = 'stat-label';
         totalPnl.parentElement.appendChild(quality);
     }
+    const cutoverGap = data.cutover_income_gap;
+    const classicIncome = data.verified_classic_income;
     quality.textContent = [
-        data.account_coverage_complete ? '交易所 USDT 收入已核对' : '覆盖不完整，期间收益待核对',
+        cutoverGap ? '主汇总截至 PM 已核对水位' :
+            data.account_coverage_complete ? '交易所 USDT 收入已核对' : '覆盖不完整，期间收益待核对',
         `未归属 ${data.unattributed_count ?? "—"} 笔 · 净额 ${formatNumber(data.unattributed_pnl, 8)} / 绝对额 ${formatNumber(data.unattributed_absolute, 8)} USDT`,
         data.income_archive_end_ms ? '含币安历史收入归档，部分归属已核对' : '',
         data.manual_attribution_count ? `含人工规则归属 ${data.manual_attribution_count} 条` : '',
@@ -316,7 +320,11 @@ function updateOverview(data) {
         data.as_of ? `数据截至 ${formatEquityTime(data.as_of)}` : '',
         data.publication_status === 'stale' ? '刷新失败，显示上次核实报告' : '',
         data.stale_seconds > 0 ? `落后 ${Math.ceil(data.stale_seconds / 60)} 分钟` : '',
-        Object.keys(data.other_asset_totals || {}).length ? '含非 USDT 收入，折算待核对' : ''
+        Object.keys(data.other_asset_totals || {}).length ? '含非 USDT 收入，折算待核对' : '',
+        cutoverGap ? `PM 尾段待核 ${formatEquityTime(new Date(cutoverGap.start_ms).toISOString())} 至 ${formatEquityTime(new Date(cutoverGap.end_ms).toISOString())}` : '',
+        classicIncome ? `Classic 分段净收益 ${formatNumber(classicIncome.account_components.net_usdt, 8)} USDT，${classicIncome.income_count} 条流水，待归属 ${classicIncome.unattributed_count} 条，截至 ${formatEquityTime(classicIncome.as_of)}` :
+            cutoverGap ? 'Classic 分段等待核对' : '',
+        classicIncome?.publication_status === 'stale' ? 'Classic 分段显示上次核实结果' : ''
     ].filter(Boolean).join(' · ');
     totalPnl.textContent = formatNumber(pnlValue);
     totalPnl.className = 'stat-value ' + (pnlValue >= 0 ? 'positive' : 'negative');
@@ -427,7 +435,8 @@ async function loadGridSubaccount() {
         const state = data.engine_state === 'FLAT' ? '空仓待机'
             : data.engine_state === 'ACTIVE' ? '网格运行中' : data.engine_state;
         set('grid-live-state', `${state} · 风控 ${data.risk_status}`);
-        set('grid-live-time', `PM 快照 ${formatEquityTime(new Date(data.as_of_ms).toISOString())}`);
+        const accountMode = data.account_scope === 'grid_subaccount_classic' ? '经典合约' : 'PM';
+        set('grid-live-time', `${accountMode} 快照 ${formatEquityTime(new Date(data.as_of_ms).toISOString())}`);
         const qty = Number(data.net_qty);
         set('grid-live-position', qty === 0 ? '空仓' : `${qty > 0 ? '多' : '空'} ${Math.abs(qty)} ETH`);
         set('grid-live-orders', String(data.open_order_count));
@@ -635,6 +644,7 @@ async function loadPositionUtilTrend() {
     const trendEl = document.querySelector('#position-utilization-trend-chart');
     if (!trendEl) return;
     try {
+        await window.echartsReady;
         // 占用比对账每小时更新一次，趋势取近30天
         const trendData = await api.getPositionUtilizationTrend(30);
         if (posUtilTrendChart) {

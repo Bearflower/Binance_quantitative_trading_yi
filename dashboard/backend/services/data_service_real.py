@@ -68,7 +68,6 @@ class DataService:
             api_key=os.getenv("BINANCE_API_KEY", ""),
             api_secret=os.getenv("BINANCE_API_SECRET", ""),
             testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
-            use_unified_account=os.getenv("USE_UNIFIED_ACCOUNT", "true").lower() == "true",
         )
 
         self._trade_logger = TradeLogger(self._db_manager, "Dashboard采集器")

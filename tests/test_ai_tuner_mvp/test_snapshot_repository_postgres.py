@@ -316,6 +316,12 @@ async def test_aggressive_signal_requires_matching_account_fill(repository_and_p
                  status text, quantity numeric, price numeric, side text);
             CREATE TABLE trading.execution_fact_fill
                 (account_id text, symbol text, order_id bigint, side text, qty numeric, trade_time_utc timestamptz);
+            -- 新增签名回执证据分支也参与解析；本用例保持该分支为空，单独验证成交归属。
+            CREATE TABLE trading.entry_risk_reservation
+                (account_id text, strategy_id text, client_order_id text, symbol text, created_at timestamptz);
+            CREATE TABLE trading.entry_order_observation
+                (id bigint, account_id text, symbol text, client_order_id text, order_id text,
+                 side text, outcome text, source text, status text, raw_payload jsonb, executed_qty numeric);
             INSERT INTO btc_eth_aggressive.trade_signals
             SELECT 'BTCUSDT', 'LONG', jsonb_build_object('entry_order_id', id), 'executed',
                    timestamp '2026-11-01' FROM generate_series(1,6) AS id;

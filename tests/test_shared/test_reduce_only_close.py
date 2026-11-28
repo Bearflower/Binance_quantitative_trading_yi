@@ -206,7 +206,10 @@ class TestReduceOnlyRejection:
     """R03-AC6/D1：-2022 被拒 → 先撤同向条件单后重试成功"""
 
     @pytest.mark.asyncio
-    async def test_minus_2022_cancel_conditional_and_retry(self):
+    async def test_minus_2022_cancel_conditional_and_retry(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        cancel_owned = AsyncMock()
+        monkeypatch.setattr("shared.reduce_only_close.cancel_strategy_algos", cancel_owned)
         client = FakeExchange(
             position=-1,
             fills=[{"executed": "1", "status": "FILLED"}],
@@ -214,7 +217,8 @@ class TestReduceOnlyRejection:
         )
         outcome = await _close(client, 1)
         assert outcome.success is True
-        assert client.cancel_all_calls == 1  # 已撤该币种条件单以解除冲突
+        assert client.cancel_all_calls == 0
+        cancel_owned.assert_awaited_once_with(client, "BTCUSDT")
         assert len(client.submissions) == 1  # 被拒的一笔不计入提交记录
 
 

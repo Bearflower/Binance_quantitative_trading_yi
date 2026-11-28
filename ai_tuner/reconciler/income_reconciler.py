@@ -28,6 +28,9 @@
 
 import os
 import structlog
+from asyncpg import Range
+from shared.accounting.account_cutover import account_cutover_ms
+from shared.binance_account_mode import verify_cutover_ledger
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Dict, Optional, Tuple
@@ -50,6 +53,10 @@ _EXIT_ORDER_TYPES = (
 
 class ExecutionFactsPending(ValueError):
     """Exchange evidence has not arrived within the collection interval yet."""
+
+
+class CutoverEvidencePending(ValueError):
+    """The verified account still lacks its historical equity anchors."""
 
 
 class IncomeReconciler:
@@ -84,6 +91,15 @@ class IncomeReconciler:
         if self.fact_wait_minutes <= 0:
             raise ValueError("fact_wait_minutes must be positive")
         self.account_id = self.cfg.get("account_id") or os.environ.get("TRADE_ACCOUNT_ID", "default")
+        self.pm = getattr(binance_client, "use_unified_account", True) is not False
+        self.cutover = account_cutover_ms(self.account_id)
+        if not self.pm and self.cutover is None:
+            raise ValueError("经典收益校准需要签名账户的切换时间")
+        self.progress_id = self.account_id if self.pm else f"classic:{self.cutover}:{self.account_id}"
+        boundary = datetime.fromtimestamp(self.cutover / 1000, timezone.utc) if self.cutover else None
+        local = _to_beijing_naive(self.cutover) if self.cutover else None
+        self.fact_epoch = Range(None, boundary) if self.pm else Range(boundary, None)
+        self.record_epoch = Range(None, local) if self.pm else Range(local, None)
 
     async def run_once(self) -> None:
         """执行一次校准任务：拉取 Binance 权威盈亏，补齐缺失的 realized_pnl"""
@@ -91,6 +107,16 @@ class IncomeReconciler:
             logger.info("PnL 校准器已禁用，跳过本次校准")
             return
         try:
+            if not self.pm:
+                try:
+                    await verify_cutover_ledger(self.binance, self.db)
+                except ValueError as exc:
+                    # Identity, signature and inconsistent evidence failures
+                    # remain errors. Only this known missing-anchor denial is
+                    # a pending-data state, before any cursor or PnL write.
+                    if str(exc) != "缺少有效的 PM 期末或经典期初权益":
+                        raise
+                    raise CutoverEvidencePending(str(exc)) from exc
             await self._ensure_state_table()
             last_ts = await self._get_last_reconciled_ts()
             now_ms = _utc_now_ms()
@@ -101,6 +127,13 @@ class IncomeReconciler:
             else:
                 start_ms = now_ms - self.lookback_days * _DAY_MS
             end_ms = now_ms
+            if self.cutover is not None:
+                if self.pm:
+                    end_ms = min(end_ms, self.cutover - 1)
+                else:
+                    start_ms = max(start_ms, self.cutover) if last_ts else self.cutover
+            if start_ms > end_ms:
+                return
             logger.info("开始 PnL 校准", start_ms=start_ms, end_ms=end_ms, last_ts=last_ts)
 
             income = await self._fetch_income_records(start_ms, end_ms)
@@ -118,6 +151,8 @@ class IncomeReconciler:
                 updated=updated,
                 total_pnl=str(total_pnl),
             )
+        except CutoverEvidencePending as e:
+            logger.warning("PnL 校准等待切换权益凭据，保留游标", status="BLOCKED_DATA", reason=str(e))
         except ExecutionFactsPending as e:
             logger.warning("PnL 校准等待事实采集，保留游标", reason=str(e))
         except Exception as e:
@@ -149,17 +184,17 @@ class IncomeReconciler:
         """读取上次校准进度（毫秒时间戳），无记录返回 0"""
         row = await self.db.fetch_one(
             f"""SELECT LEAST(
-                (SELECT NULLIF(last_reconciled_ts,0) FROM {self.state_schema}.{self.state_table}
-                 WHERE account_id=$1),
+                COALESCE((SELECT last_reconciled_ts FROM {self.state_schema}.{self.state_table}
+                 WHERE account_id=$1), 0),
                 (SELECT min(event_ms) FROM {self.state_schema}.{self.state_table}_gaps
                  WHERE account_id=$1)
-            ) AS last_reconciled_ts""", self.account_id
+            ) AS last_reconciled_ts""", self.progress_id
         )
         return int(row["last_reconciled_ts"] or 0) if row else 0
 
     async def _update_reconciled_ts(self, ts_ms: int) -> None:
         """更新校准进度，下次只处理该时间点之后的新数据，避免重复"""
-        await self.db.execute(self._reconciled_ts_upsert_sql(), ts_ms, self.account_id)
+        await self.db.execute(self._reconciled_ts_upsert_sql(), ts_ms, self.progress_id)
 
     def _reconciled_ts_upsert_sql(self) -> str:
         """与盈亏回写事务共用的校准进度 UPSERT。"""
@@ -198,6 +233,11 @@ class IncomeReconciler:
         except Exception as e:
             logger.error("Binance 收入查询失败，本轮不推进校准游标", start_ms=chunk_start, error=str(e))
             raise
+        if self.cutover is not None and (not isinstance(batch, list) or any(
+                not isinstance(row, dict) or type(row.get("time")) is not int
+                or not chunk_start <= row["time"] <= chunk_end or row.get("incomeType") != "REALIZED_PNL"
+                or row.get("asset") != "USDT" for row in batch)):
+            raise ValueError("签名收益响应超出请求范围或资产不符")
         if len(batch) < self.batch_size:
             collected.extend(batch)
             return
@@ -267,11 +307,14 @@ class IncomeReconciler:
         raise ValueError(detail + f"，超过等待上限 {self.fact_wait_minutes} 分钟或事件时间无效")
 
     async def _read_verified_fill(self, symbol, trade_id, tran_id, income, event_ms):
+        event_at = datetime.fromtimestamp(event_ms / 1000, timezone.utc)
+        if self.cutover is not None and (event_ms < self.cutover) != self.pm:
+            raise ValueError("收益时间落在另一账户模式")
         income_facts = await self.db.fetch_all(
             "SELECT symbol, trade_id, income FROM trading.execution_fact_income "
             "WHERE account_id = $1 AND tran_id = $2 "
-            "AND income_type = 'REALIZED_PNL'",
-            self.account_id, tran_id,
+            "AND income_type = 'REALIZED_PNL' AND asset='USDT' AND event_time_utc=$3",
+            self.account_id, tran_id, event_at,
         )
         self._require_arrived_facts(income_facts, symbol, f"tranId={tran_id}", event_ms)
         if (
@@ -284,8 +327,8 @@ class IncomeReconciler:
         fills = await self.db.fetch_all(
             "SELECT account_id, order_id, side, realized_pnl "
             "FROM trading.execution_fact_fill WHERE account_id = $1 "
-            "AND symbol = $2 AND trade_id = $3",
-            self.account_id, symbol, trade_id,
+            "AND symbol = $2 AND trade_id = $3 AND trade_time_utc <@ $4::tstzrange",
+            self.account_id, symbol, trade_id, self.fact_epoch,
         )
         self._require_arrived_facts(fills, symbol, f"tradeId={trade_id}", event_ms)
         if len(fills) != 1 or fills[0]["order_id"] is None:
@@ -330,18 +373,20 @@ class IncomeReconciler:
             order_id = str(fill["order_id"])
             sql = f"""SELECT id, strategy, account_id, order_id, side, realized_pnl, pnl_source,
                     EXISTS (SELECT 1 FROM {self.state_schema}.{self.state_table}_gaps
-                            WHERE account_id=$4 AND symbol=$1 AND trade_id=$5) AS had_gap
-                FROM {self.schema}.{self.table}
+                            WHERE account_id=$7 AND symbol=$1 AND trade_id=$5) AS had_gap
+                FROM {self.schema}.{self.table} tr
                 WHERE symbol = $1 AND order_id = $2 AND side = $3
-                  AND account_id = $4 AND order_type <> 'PNL_SUMMARY'"""
-            args = [symbol, order_id, fill["side"], fill["account_id"], int(trade_id)]
+                  AND account_id = $4 AND executed_at <@ $6::tsrange AND order_type <> 'PNL_SUMMARY'
+                  AND NOT EXISTS (SELECT 1 FROM {self.schema}.{self.table} other WHERE other.account_id=$4
+                    AND other.symbol=$1 AND other.order_id=$2 AND other.id<>tr.id AND other.executed_at <@ $6::tsrange)"""
+            args = [symbol, order_id, fill["side"], fill["account_id"], int(trade_id), self.record_epoch, self.progress_id]
             matches = await self.db.fetch_all(sql, *args)
             if len(matches) != 1:
                 await self.db.execute(
                     f"INSERT INTO {self.state_schema}.{self.state_table}_gaps "
                     "(account_id,symbol,trade_id,order_id,event_ms) VALUES ($1,$2,$3,$4,$5) "
                     "ON CONFLICT (account_id,symbol,trade_id) DO NOTHING",
-                    self.account_id, symbol, int(trade_id), order_id, inc_time,
+                    self.progress_id, symbol, int(trade_id), order_id, inc_time,
                 )
                 unresolved = True
                 continue
@@ -350,7 +395,7 @@ class IncomeReconciler:
                 resolved_gaps.append((
                     f"DELETE FROM {self.state_schema}.{self.state_table}_gaps "
                     "WHERE account_id=$1 AND symbol=$2 AND trade_id=$3",
-                    (self.account_id, symbol, int(trade_id)),
+                    (self.progress_id, symbol, int(trade_id)),
                 ))
             if match.get("strategy") in self.excluded_strategies:
                 continue
@@ -361,12 +406,26 @@ class IncomeReconciler:
             if order_key in order_totals:
                 continue
             all_fills = await self.db.fetch_all(
-                "SELECT realized_pnl FROM trading.execution_fact_fill "
-                "WHERE account_id = $1 AND symbol = $2 AND order_id = $3",
-                fill["account_id"], symbol, fill["order_id"],
+                "SELECT trade_id, qty, side, realized_pnl FROM trading.execution_fact_fill "
+                "WHERE account_id = $1 AND symbol = $2 AND order_id = $3 AND trade_time_utc <@ $4::tstzrange",
+                fill["account_id"], symbol, fill["order_id"], self.fact_epoch,
             )
             if not all_fills or any(row["realized_pnl"] is None for row in all_fills):
                 raise ValueError(f"{symbol} orderId={order_id} 成交盈亏不完整")
+            if self.cutover is not None:
+                order = await self.binance.get_order(symbol, int(order_id))
+                if (not isinstance(order, dict) or str(order.get("orderId")) != order_id
+                        or order.get("symbol") != symbol or order.get("side") != fill["side"]
+                        or order.get("status") not in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}):
+                    raise ExecutionFactsPending(f"{symbol} orderId={order_id} 尚无终态回执")
+                order_ms = order.get("time", order.get("updateTime"))
+                if type(order_ms) is not int or (order_ms < self.cutover) != self.pm:
+                    raise ValueError(f"{symbol} orderId={order_id} 终态回执时间不属于当前账户模式")
+                quantities = [Decimal(str(row["qty"])) for row in all_fills]
+                if (any(row["side"] != fill["side"] for row in all_fills)
+                        or any(not qty.is_finite() or qty <= 0 for qty in quantities)
+                        or sum(quantities) != Decimal(str(order["executedQty"]))):
+                    raise ExecutionFactsPending(f"{symbol} orderId={order_id} 全部成交数量尚未齐备")
             pnl = sum((Decimal(str(row["realized_pnl"])) for row in all_fills), Decimal("0"))
             order_totals[order_key] = pnl
             if match["realized_pnl"] is not None and Decimal(str(match["realized_pnl"])) == pnl \
@@ -374,8 +433,10 @@ class IncomeReconciler:
                 continue
             queries.append((
                 f"UPDATE {self.schema}.{self.table} SET realized_pnl = $1, pnl_source = 'exchange_fill' "
-                "WHERE id = $2 AND order_id = $3 AND account_id = $4",
-                (pnl, match["id"], order_id, fill["account_id"]),
+                "WHERE id = $2 AND order_id = $3 AND account_id = $4 AND executed_at <@ $5::tsrange "
+                f"AND NOT EXISTS (SELECT 1 FROM {self.schema}.{self.table} other WHERE other.account_id=$4 "
+                "AND other.symbol=$6 AND other.order_id=$3 AND other.id<>$2 AND other.executed_at <@ $5::tsrange)",
+                (pnl, match["id"], order_id, fill["account_id"], self.record_epoch, symbol),
                 1,
             ))
             total_pnl += pnl
@@ -388,7 +449,7 @@ class IncomeReconciler:
         queries.extend(resolved_gaps)
         if queries:
             if completed_through is not None and not unresolved:
-                queries.append((self._reconciled_ts_upsert_sql(), (completed_through, self.account_id)))
+                queries.append((self._reconciled_ts_upsert_sql(), (completed_through, self.progress_id)))
             try:
                 await self.db.execute_transaction(queries)
             except Exception as e:

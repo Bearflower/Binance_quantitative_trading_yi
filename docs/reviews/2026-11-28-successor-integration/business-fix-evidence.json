@@ -1,0 +1,41 @@
+{
+  "task": "HRS successor business defect repair",
+  "changes": [
+    "strategies/hrs/equity_service.py",
+    "tests/test_strategies/test_hrs_equity_service.py",
+    "tests/test_strategies/test_hrs_history_gap.py"
+  ],
+  "sha256": {
+    "strategies/hrs/equity_service.py": "371446cdde058f6e50a795e8dde7b878eeaa6151a112422e47a891b56168c31a",
+    "tests/test_strategies/test_hrs_equity_service.py": "b26fbfe986c2a957ef3988ae0c0823f156c46c9219efed09230a764f6fccdb44",
+    "tests/test_strategies/test_hrs_history_gap.py": "44cf50115c63cc1a45a117e7e2aaff68a991728d2cce6396c03c11352c8c247e"
+  },
+  "red": {
+    "passed": 2,
+    "failed": 4,
+    "log": "/tmp/binance-successor-20261128/business-red.log",
+    "causes": [
+      "accepted_live_gap_path_changed",
+      "current_nav_history_incomplete"
+    ]
+  },
+  "green": {
+    "passed": 127,
+    "failed": 0,
+    "skipped": 0,
+    "log": "/tmp/binance-successor-20261128/business-green.log",
+    "command": "HRS_TEST_POSTGRES_DSN=postgresql://yl@127.0.0.1:55432/successor_midnight_review_test PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/tmp/binance-final-localguard:. /tmp/binance-candidate-venv/bin/python -m pytest -q -p no:cacheprovider tests/test_strategies/test_hrs_equity_service.py tests/test_strategies/test_hrs_history_gap.py --tb=short"
+  },
+  "production_access": false,
+  "committed": false,
+  "review_status": "awaiting independent-context parent review",
+  "invariants": [
+    "parent version and evidence digest retained",
+    "all-account final owner conflict validation retained",
+    "original history stays incomplete",
+    "exact midnight NAV obtained from actual closed minute series",
+    "atomic repair is one version increment",
+    "stale parent rejection leaves version and reconciliation unchanged",
+    "unknown or ambiguous ownership round-trip on another symbol still blocked"
+  ]
+}

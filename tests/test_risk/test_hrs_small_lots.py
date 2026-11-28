@@ -54,7 +54,7 @@ def test_hrs_invalid_persisted_exit_ratios_refused():
     with pytest.raises(ValueError):
         TradingExecutor._params_for_exit_ratios({}, ('NaN', '0'))
     with pytest.raises(ValueError):
-        TradingExecutor._params_for_exit_ratios({}, ('0.5', '0'))
+        TradingExecutor._params_for_exit_ratios({}, ('0', '0'))
 
 
 @pytest.mark.asyncio

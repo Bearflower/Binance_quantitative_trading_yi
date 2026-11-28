@@ -7,7 +7,7 @@ import asyncio
 import time
 import uuid
 from typing import Dict, List, Optional, Any
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import aiohttp
 from aiohttp import ContentTypeError
 import hmac
@@ -15,6 +15,8 @@ import hashlib
 from urllib.parse import urlencode
 import structlog
 
+from .accounting.classic_algo_intents import ClassicAlgoIntents
+from .binance_account_mode import configured_pm
 from .utils import retry_on_failure
 from .api_retry_config import get_api_retry, is_api_retry_enabled
 
@@ -26,7 +28,17 @@ logger = structlog.get_logger()
 _NON_RETRYABLE_ERROR_CODES = {-2011, -2013, -2019, -2021, -2022, -4108, -4136, -4507, -9999}  # -2011/-2013=订单不存在（已成交或已撤销）, -4108=交割/结算中, -4136=PM账户不支持STOP+closePosition, -4507=限价超出触发价倍数上限, -9999=废弃API端点
 
 # 写请求“结果未知”的异常：网络超时/连接中断，不能据此断定交易所未受理（R02-F3）
-_UNKNOWN_RESULT_EXCEPTIONS = (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError)
+class _AmbiguousWriteResponse(Exception):
+    """交易所响应无法证明请求已受理或已拒绝。"""
+
+
+_UNKNOWN_RESULT_EXCEPTIONS = (
+    aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError,
+    _AmbiguousWriteResponse,
+)
+_ALGO_WRITE_ENDPOINTS = {"/fapi/v1/algoOrder", "/papi/v1/um/algo/order"}
+_ORDER_WRITE_ENDPOINTS = _ALGO_WRITE_ENDPOINTS | {"/fapi/v1/order", "/papi/v1/um/order"}
+_CONDITIONAL_TYPES = {"STOP", "TAKE_PROFIT", "STOP_MARKET", "TAKE_PROFIT_MARKET", "TRAILING_STOP_MARKET"}
 
 
 class BinanceAPIError(Exception):
@@ -43,6 +55,56 @@ class LocalOrderValidationError(ValueError):
 
 class PreSubmissionError(Exception):
     """Conditional order failed before the exchange POST was attempted."""
+
+
+def _position_rows(data: Any) -> List[Dict]:
+    if not isinstance(data, list):
+        raise ValueError("仓位快照缺少持仓列表")
+    for row in data:
+        if not isinstance(row, dict) or not isinstance(row.get("symbol"), str) or not row["symbol"]:
+            raise ValueError("仓位快照缺少交易对")
+        try:
+            amount = Decimal(str(row["positionAmt"]))
+        except (KeyError, InvalidOperation) as exc:
+            raise ValueError("仓位快照缺少有效数量") from exc
+        if not amount.is_finite():
+            raise ValueError("仓位快照数量无效")
+    return data
+
+
+def _validate_position_risk(data, symbol, classic):
+    rows = _position_rows(data)
+    if symbol and any(row["symbol"] != symbol for row in rows):
+        raise ValueError("仓位响应交易对与请求不符")
+    if classic and not rows:
+        raise ValueError("经典合约 positionRisk V2 缺少持仓行，无法确认空仓")
+    return rows
+
+
+async def symbol_has_zero_position(exchange, symbol: str) -> bool:
+    """在两个签名仓位接口上交叉确认无敞口。"""
+    scoped = _position_rows(await exchange.get_position(symbol))
+    if any(row["symbol"] != symbol or Decimal(str(row["positionAmt"])) != 0 for row in scoped):
+        return False
+    all_positions = _position_rows(await exchange.get_position())
+    # 经典 positionRisk V2 含零仓行；PM 可省略零仓，须用独立账户快照共同核实。
+    if getattr(exchange, "use_unified_account", True) is False:
+        if not scoped or not any(row["symbol"] == symbol for row in all_positions):
+            return False
+    account = _position_rows(await exchange.get_um_account_positions())
+    if any(row["symbol"] == symbol and Decimal(str(row["positionAmt"])) != 0
+           for inventory in (all_positions, account) for row in inventory):
+        return False
+    return True
+
+
+async def symbol_is_confirmed_flat(exchange, symbol: str) -> bool:
+    """同时确认零敞口和两类空挂单。"""
+    if not await symbol_has_zero_position(exchange, symbol):
+        return False
+    ordinary = await exchange.get_open_orders(symbol)
+    algos = await exchange.get_open_algo_orders(symbol)
+    return ordinary == [] and algos == []
 
 
 class UnknownOrderResultError(Exception):
@@ -104,7 +166,7 @@ class BinanceClient:
         api_secret: str,
         testnet: bool = False,
         base_url: str = None,
-        use_unified_account: bool = True
+        use_unified_account: Optional[bool] = None
     ):
         if not api_key or not api_key.strip():
             raise ValueError("API密钥不能为空")
@@ -114,6 +176,8 @@ class BinanceClient:
         self._api_key = api_key.strip()
         self._api_secret = api_secret.strip()
         self.testnet = testnet
+        if use_unified_account is None:
+            use_unified_account = configured_pm()
         self.use_unified_account = use_unified_account
         
         if base_url:
@@ -180,6 +244,10 @@ class BinanceClient:
         endpoint_map = {
             # ----- 签名请求端点（交易/账户）：PM 账户需要映射到 papi -----
             "/fapi/v2/balance": "/papi/v1/um/account",
+            "/fapi/v1/income": "/papi/v1/um/income",
+            "/fapi/v1/userTrades": "/papi/v1/um/userTrades",
+            "/fapi/v1/allOrders": "/papi/v1/um/allOrders",
+            "/fapi/v1/allAlgoOrders": "/papi/v1/um/algo/allAlgoOrders",
             "/fapi/v1/openOrders": "/papi/v1/um/openOrders",
             "/fapi/v1/order": "/papi/v1/um/order",
             "/fapi/v2/positionRisk": "/papi/v1/um/positionRisk",
@@ -246,12 +314,9 @@ class BinanceClient:
 
         - GET / 幂等 POST（如 set_leverage，`idempotent=True`）/ DELETE（撤单，天然幂等）
           → `_request_read`，按配置对瞬时错误重试（沿用既有重试语义）。
-        - 非幂等 POST（下单等）→ `_request_write`，默认不盲重发，结果未知时先按
-          `idempotency_key`（newClientOrderId）核对，确认未受理才允许重发。
-
-        `api_retry.enabled=false` 时全部走读路径，`不改代码`即回退到既有“全 method 重试”语义（D4）。
+        - 下单 POST 始终使用写路径，结果未知时只按原客户端标识查证。
         """
-        if not is_api_retry_enabled():
+        if not is_api_retry_enabled() and endpoint not in _ORDER_WRITE_ENDPOINTS:
             return await self._request_read(method, endpoint, params, signed)
 
         if method.upper() != "POST" or idempotent:
@@ -289,38 +354,40 @@ class BinanceClient:
     ) -> Dict:
         """非幂等写请求路径：默认不重试（R02-F1）
 
-        结果未知（超时/断连）时（R02-F3）：先按 `newClientOrderId` 查单，
-        查到即返回（不重发）；确认未受理且仍有重试额度才允许按同一幂等 ID 重发；
-        仍无法确认则抛 `UnknownOrderResultError`（保守，不重复提交）。
+        结果未知时查验普通订单或 Algo 订单，核验失败则保留原客户端标识。
         """
         cfg = get_api_retry()
-        write_cfg = cfg["write"]
-        max_retries = int(write_cfg["max_retries"])
         symbol = (params or {}).get("symbol")
-        can_verify = bool(idempotency_key and symbol and write_cfg["retry_after_verify"])
-        last_error: Optional[Exception] = None
-
-        for _ in range(max_retries + 1):
+        is_algo = endpoint in _ALGO_WRITE_ENDPOINTS
+        idempotency_key = idempotency_key or (params or {}).get("clientAlgoId" if is_algo else "newClientOrderId")
+        try:
+            result = await self._request_once(method, endpoint, params, signed)
+            if endpoint in _ORDER_WRITE_ENDPOINTS:
+                key = "algoId" if is_algo else "orderId"
+                if (not isinstance(result, dict) or not str(result.get(key, "")).isdigit()
+                        or int(result[key]) <= 0):
+                    raise _AmbiguousWriteResponse(f"下单响应缺少有效 {key}")
+                client_key = "clientAlgoId" if is_algo else "clientOrderId"
+                if (result.get("symbol", symbol) != symbol or
+                        idempotency_key and result.get(client_key, idempotency_key) != idempotency_key):
+                    raise _AmbiguousWriteResponse("下单响应的交易对或客户端标识不匹配")
+            return result
+        except BinanceAPIError as exc:
+            # 币安网络/撮合超时或客户端标识重复，均须查原单。
+            if exc.code not in (-1000, -1006, -1007, -4116):
+                raise
+            last_error = exc
+        except _UNKNOWN_RESULT_EXCEPTIONS as exc:
+            last_error = exc
+        logger.warning("写请求结果未知，核查原单", endpoint=endpoint, symbol=symbol,
+                       client_id=idempotency_key, error=str(last_error))
+        if idempotency_key and symbol and cfg["write"]["retry_after_verify"]:
             try:
-                return await self._request_once(method, endpoint, params, signed)
-            except _UNKNOWN_RESULT_EXCEPTIONS as exc:
-                last_error = exc
-                logger.warning(
-                    "写请求结果未知，先核对是否已受理",
-                    method=method,
-                    endpoint=endpoint,
-                    symbol=symbol,
-                    idempotency_key=idempotency_key,
-                    error=str(exc),
-                )
-            if can_verify:
-                found = await self._verify_write_by_client_id(symbol, idempotency_key, cfg)
+                found = await self._verify_write_by_client_id(symbol, idempotency_key, cfg, is_algo)
+            except Exception as exc:
+                logger.warning("未知写请求核验失败", endpoint=endpoint, error=str(exc))
+            else:
                 if found is not None:
-                    logger.info(
-                        "核对到已受理订单，直接返回（不重发）",
-                        symbol=symbol,
-                        idempotency_key=idempotency_key,
-                    )
                     return found
 
         raise UnknownOrderResultError(
@@ -343,8 +410,7 @@ class BinanceClient:
         
         await self.rate_limiter.acquire()
         
-        if params is None:
-            params = {}
+        params = dict(params or {})
         
         if signed:
             endpoint = self._get_endpoint(endpoint)
@@ -378,10 +444,29 @@ class BinanceClient:
         if not signed and 'openInterest' in endpoint:
             logger.debug(f"API请求URL: {url}", symbol=params.get('symbol', ''), base_url=base_url, endpoint=endpoint)
         
+        # Strategy-specific final authorization runs AFTER the last awaited
+        # preparation and before the HTTP write. Reduce-only policy belongs to
+        # the injected guard; clients without a guard retain existing behavior.
+        from shared.order_submission_authorization import (
+            authorize_submission, reject_before_transport, mark_transport_started)
+        await authorize_submission(method, endpoint, params)
+        submit_guard = getattr(self, '_new_risk_submit_guard', None)
+        try:
+            if submit_guard is not None:
+                submit_guard(method, endpoint, params)
+        except Exception:
+            reject_before_transport(method, endpoint, params)
+            raise
+        mark_transport_started(method, endpoint, params)
         async with self.session.request(method, url, params=params) as response:
+            order_write = method.upper() == "POST" and endpoint in _ORDER_WRITE_ENDPOINTS
+            if order_write and (response.status >= 500 or response.status == 408):
+                raise _AmbiguousWriteResponse(f"下单收到 HTTP {response.status}")
             try:
                 data = await response.json()
-            except ContentTypeError:
+            except (ContentTypeError, ValueError) as exc:
+                if order_write and response.status == 200:
+                    raise _AmbiguousWriteResponse("下单成功响应无法解码") from exc
                 # API返回非JSON内容（如废弃端点返回HTML），转换为非重试错误
                 raise BinanceAPIError(-9999, f"API返回非JSON格式(type={response.content_type}), 该端点可能已废弃")
             
@@ -389,7 +474,7 @@ class BinanceClient:
             # 部分 Binance 端点（如 PM 条件单取消）在 HTTP 200 中返回错误码
             # 注意：有些端点（如 DELETE /papi/v1/um/algo/allOpenOrders）返回 code=200 表示成功
             code = data.get('code', 0) if isinstance(data, dict) else 0
-            if code not in (0, 200):
+            if code not in (0, 200, "0", "200"):
                 message = data.get('msg', response.reason) if isinstance(data, dict) else response.reason
                 raise BinanceAPIError(code, message)
 
@@ -398,6 +483,8 @@ class BinanceClient:
                 message = data.get('msg', response.reason) if isinstance(data, dict) else response.reason
                 raise BinanceAPIError(code, message)
             
+            if signed and method.upper() == "GET" and endpoint in ("/fapi/v2/positionRisk", "/papi/v1/um/positionRisk"):
+                return _validate_position_risk(data, params.get("symbol"), not self.use_unified_account)
             return data
 
     async def _verify_write_by_client_id(
@@ -405,13 +492,26 @@ class BinanceClient:
         symbol: str,
         client_order_id: str,
         cfg: Dict,
+        is_algo: bool = False,
     ) -> Optional[Dict]:
         """写请求结果未知后，按客户端订单号有限次核对（次数/间隔来自配置）"""
         attempts = max(int(cfg["order_verify_max_attempts"]), 1)
         interval = float(cfg["order_verify_interval_seconds"])
         for index in range(attempts):
-            order = await self.get_order_by_client_id(symbol, client_order_id)
+            if is_algo:
+                try:
+                    order = await self.get_algo_order(client_algo_id=client_order_id)
+                except BinanceAPIError as exc:
+                    if exc.code not in (-2011, -2013):
+                        raise
+                    order = None
+            else:
+                order = await self.get_order_by_client_id(symbol, client_order_id)
             if order is not None:
+                order_key, client_key = ("algoId", "clientAlgoId") if is_algo else ("orderId", "clientOrderId")
+                if (order.get("symbol") != symbol or order.get(client_key) != client_order_id
+                        or not str(order.get(order_key, "")).isdigit() or int(order[order_key]) <= 0):
+                    raise ValueError("核验响应的交易对或订单标识不匹配")
                 return order
             if index < attempts - 1:
                 await asyncio.sleep(max(interval, 0.0))
@@ -434,12 +534,24 @@ class BinanceClient:
             data = await self._request("GET", "/papi/v1/account", signed=True)
             # PM账户返回单条记录，包含 totalAvailableBalance
             if isinstance(data, dict):
-                total_available = data.get('totalAvailableBalance', '0')
-                return {'USDT': Decimal(str(total_available))}
+                total_available = Decimal(str(data['totalAvailableBalance']))
+                if not total_available.is_finite():
+                    raise ValueError("统一账户可用余额无效")
+                return {'USDT': total_available}
         else:
-            endpoint = "/fapi/v2/balance"
+            rows = await self._request("GET", "/fapi/v3/balance", signed=True)
+            if not isinstance(rows, list):
+                raise ValueError("经典合约余额响应缺少资产列表")
+            balances = {}
+            for row in rows:
+                amount = Decimal(str(row["availableBalance"]))
+                if not amount.is_finite():
+                    raise ValueError("经典合约可用余额无效")
+                if amount > 0:
+                    balances[row["asset"]] = amount
+            return balances
 
-        data = await self._request("GET", "/fapi/v2/balance" if not self.use_unified_account else "/papi/v1/balance", signed=True)
+        data = await self._request("GET", "/papi/v1/balance", signed=True)
 
         balance = {}
         for item in data:
@@ -476,13 +588,26 @@ class BinanceClient:
         if self.use_unified_account:
             endpoint = "/papi/v1/account"
         else:
-            endpoint = "/fapi/v2/account"
+            endpoint = "/fapi/v3/account"
         
         data = await self._request("GET", endpoint, signed=True)
-        
+        if not isinstance(data, dict):
+            raise ValueError("账户信息响应必须为对象")
+        required = (("totalAvailableBalance", "accountEquity") if self.use_unified_account
+                    else ("totalMarginBalance", "totalUnrealizedProfit", "totalWalletBalance", "availableBalance"))
+        balances = {}
+        for key in required:
+            try:
+                value = Decimal(str(data[key]))
+            except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError(f"账户信息缺少有效数值字段: {key}") from exc
+            if not value.is_finite():
+                raise ValueError(f"账户信息字段不是有限数值: {key}")
+            balances[key] = value
+
         if self.use_unified_account:
-            total_available = Decimal(str(data.get('totalAvailableBalance', 0)))
-            account_equity = Decimal(str(data.get('accountEquity', 0)))
+            total_available = balances['totalAvailableBalance']
+            account_equity = balances['accountEquity']
             
             logger.info(
                 "PM账户API返回数据",
@@ -499,18 +624,12 @@ class BinanceClient:
                 'totalUnrealizedProfit': Decimal(0),
                 'totalWalletBalance': account_equity,
                 'availableBalance': total_available,
+                'accountStatus': data.get('accountStatus'),
                 'assets': [],
                 'positions': []
             }
         else:
-            return {
-                'totalMarginBalance': Decimal(data.get('totalMarginBalance', 0)),
-                'totalUnrealizedProfit': Decimal(data.get('totalUnrealizedProfit', 0)),
-                'totalWalletBalance': Decimal(data.get('totalWalletBalance', 0)),
-                'availableBalance': Decimal(data.get('availableBalance', 0)),
-                'assets': data.get('assets', []),
-                'positions': data.get('positions', [])
-            }
+            return {**data, **balances}
     
     async def get_ticker_price(self, symbol: str) -> Decimal:
         """
@@ -608,15 +727,11 @@ class BinanceClient:
 
     async def get_open_algo_orders(self, symbol: Optional[str] = None) -> List[Dict]:
         """读取交易所真实在挂条件单；旧 conditional 端点已被 algo 端点替代。"""
-        if not self.use_unified_account:
-            logger.warning("非统一账户条件单查询尚未接入，沿用空列表")
-            return []
         params = {"algoType": "CONDITIONAL"}
         if symbol:
             params["symbol"] = symbol.strip().upper()
-        data = await self._request(
-            "GET", "/papi/v1/um/algo/openAlgoOrders", params, signed=True
-        )
+        endpoint = "/papi/v1/um/algo/openAlgoOrders" if self.use_unified_account else "/fapi/v1/openAlgoOrders"
+        data = await self._request("GET", endpoint, params, signed=True)
         if not isinstance(data, list):
             raise ValueError(f"响应数据格式错误: 期望列表，实际为 {type(data).__name__}")
         return data
@@ -624,13 +739,11 @@ class BinanceClient:
     async def get_algo_order(
         self, algo_id: Optional[int] = None, *, client_algo_id: Optional[str] = None,
     ) -> Dict:
-        """Read one PM UM conditional order, including its actualOrderId after trigger.
+        """查询条件单及触发后生成的实际订单号 actualOrderId。
 
         A triggered STOP is not evidence of a fill; callers must separately verify
         the ordinary order and userTrades before treating it as an exit.
         """
-        if not self.use_unified_account:
-            raise NotImplementedError("PM UM algo order lookup requires a unified account")
         if (algo_id is None) == (client_algo_id is None):
             raise ValueError("必须且只能提供 algoId 或 clientAlgoId")
         if algo_id is not None and (
@@ -643,9 +756,8 @@ class BinanceClient:
             raise ValueError("clientAlgoId 必须为非空字符串")
         params = ({"algoId": algo_id} if algo_id is not None
                   else {"clientAlgoId": client_algo_id})
-        data = await self._request(
-            "GET", "/papi/v1/um/algo/algoOrder", params, signed=True
-        )
+        endpoint = "/papi/v1/um/algo/algoOrder" if self.use_unified_account else "/fapi/v1/algoOrder"
+        data = await self._request("GET", endpoint, params, signed=True)
         expected_key = "algoId" if algo_id is not None else "clientAlgoId"
         expected_value = algo_id if algo_id is not None else client_algo_id
         if not isinstance(data, dict) or str(data.get(expected_key)) != str(expected_value):
@@ -686,8 +798,22 @@ class BinanceClient:
         
         if side not in ["BUY", "SELL"]:
             raise ValueError(f"无效的订单方向: {side}")
+
+        if order_type in _CONDITIONAL_TYPES:
+            if order_type == "TRAILING_STOP_MARKET":
+                trigger = kwargs.pop("activatePrice", None)
+            else:
+                trigger = kwargs.pop("triggerPrice", kwargs.pop("stopPrice", None))
+            return await self.place_conditional_order(
+                symbol, side, trigger, quantity, price, order_type,
+                working_type=kwargs.pop("workingType", "CONTRACT_PRICE"),
+                client_order_id=client_order_id, **kwargs,
+            )
         
         close_position = str(kwargs.get("closePosition", "")).lower() == "true"
+
+        if close_position and not self.use_unified_account:
+            raise LocalOrderValidationError("普通订单平仓须指定 quantity 和 reduceOnly")
         
         if not close_position and quantity is None:
             raise ValueError("非平仓单必须提供数量")
@@ -695,7 +821,7 @@ class BinanceClient:
         if not close_position and quantity is not None and quantity <= 0:
             raise ValueError(f"数量必须大于0: {quantity}")
         
-        if order_type not in ["MARKET", "LIMIT", "STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET"]:
+        if order_type not in ("MARKET", "LIMIT"):
             raise ValueError(f"无效的订单类型: {order_type}")
         
         if order_type == "LIMIT" and price is None:
@@ -757,8 +883,11 @@ class BinanceClient:
             params["price"] = str(adjusted_price)
             params["timeInForce"] = kwargs.get("timeInForce", "GTC")
         
+        reduce_only = str(kwargs.pop("reduce_only", kwargs.pop("reduceOnly", False))).lower() == "true"
+        if reduce_only and kwargs.get("positionSide", "BOTH") != "BOTH":
+            raise LocalOrderValidationError("双向持仓不能发送 reduceOnly")
         for key, value in kwargs.items():
-            if key not in params and key not in ("closePosition",):
+            if key not in params and key != "closePosition":
                 params[key] = str(value)
 
         # 平仓单需要显式传递 closePosition 参数
@@ -769,7 +898,7 @@ class BinanceClient:
             params["quantity"] = str(adjusted_quantity)
 
         # reduce-only 订单
-        if kwargs.get("reduce_only"):
+        if reduce_only:
             params["reduceOnly"] = "true"
 
         endpoint = "/papi/v1/um/order" if self.use_unified_account else "/fapi/v1/order"
@@ -793,7 +922,7 @@ class BinanceClient:
         self,
         symbol: str,
         side: str,
-        stop_price: Decimal,
+        stop_price: Optional[Decimal] = None,
         quantity: Optional[Decimal] = None,
         price: Optional[Decimal] = None,
         order_type: str = "STOP_MARKET",
@@ -806,7 +935,7 @@ class BinanceClient:
         条件单下单（止盈止损单，自动调整精度）
         
         统一账户使用 /papi/v1/um/algo/order 端点，
-        普通合约账户使用 /fapi/v1/order 端点。
+        普通合约账户使用 /fapi/v1/algoOrder 端点。
         
         Args:
             symbol: 交易对名称
@@ -836,14 +965,24 @@ class BinanceClient:
         if side not in ["BUY", "SELL"]:
             raise LocalOrderValidationError(f"无效的订单方向: {side}")
         
-        valid_types = ["STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET", "TRAILING_STOP_MARKET"]
-        if order_type not in valid_types:
-            raise LocalOrderValidationError(f"无效的条件单类型: {order_type}，有效类型: {', '.join(valid_types)}")
+        if order_type not in _CONDITIONAL_TYPES:
+            raise LocalOrderValidationError(f"无效的条件单类型: {order_type}")
         
         if working_type not in ["CONTRACT_PRICE", "MARK_PRICE"]:
             raise LocalOrderValidationError(f"无效的触发价格类型: {working_type}，有效类型: CONTRACT_PRICE, MARK_PRICE")
         
-        if stop_price <= 0:
+        trailing = order_type == "TRAILING_STOP_MARKET"
+        if trailing:
+            stop_price = kwargs.pop("activatePrice", stop_price)
+            try:
+                rate = Decimal(str(kwargs.get("callbackRate")))
+                if not rate.is_finite() or not Decimal("0.1") <= rate <= 20:
+                    raise InvalidOperation()
+            except InvalidOperation as exc:
+                raise LocalOrderValidationError("追踪止损必须提供有效 callbackRate") from exc
+        if stop_price is not None:
+            stop_price = Decimal(str(stop_price))
+        if (not trailing and stop_price is None) or (stop_price is not None and stop_price <= 0):
             raise LocalOrderValidationError(f"触发价格必须大于0: {stop_price}")
         
         # 限价类型需要提供价格
@@ -852,6 +991,16 @@ class BinanceClient:
         
         # 检查是否平仓单
         close_position = str(kwargs.get("closePosition", "")).lower() == "true"
+        reduce_only = str(kwargs.pop("reduce_only", kwargs.pop("reduceOnly", False))).lower() == "true"
+        if not self.use_unified_account:
+            if close_position and (order_type not in ("STOP_MARKET", "TAKE_PROFIT_MARKET")
+                                   or quantity is not None or reduce_only):
+                raise LocalOrderValidationError("closePosition 仅适用于不带 quantity 和 reduceOnly 的市价止盈止损单")
+            position_side = kwargs.get("positionSide", "BOTH")
+            if reduce_only and position_side != "BOTH":
+                raise LocalOrderValidationError("双向持仓不能发送 reduceOnly")
+            if close_position and (side, position_side) in (("BUY", "LONG"), ("SELL", "SHORT")):
+                raise LocalOrderValidationError("closePosition 方向与持仓不符")
         
         if not close_position and quantity is None:
             raise LocalOrderValidationError("非平仓条件单必须提供数量")
@@ -874,7 +1023,7 @@ class BinanceClient:
         
         # 自动调整触发价格精度
         try:
-            adjusted_stop_price = self._adjust_price_precision(stop_price, tick_size)
+            adjusted_stop_price = self._adjust_price_precision(stop_price, tick_size) if stop_price is not None else None
         except Exception as exc:
             raise PreSubmissionError("conditional order stop precision failed before POST") from exc
 
@@ -895,8 +1044,8 @@ class BinanceClient:
 
         logger.debug(
             f"{symbol} 触发价格精度调整",
-            original_stop_price=float(stop_price),
-            adjusted_stop_price=float(adjusted_stop_price),
+            original_stop_price=stop_price,
+            adjusted_stop_price=adjusted_stop_price,
             tick_size=float(tick_size)
         )
         
@@ -945,52 +1094,34 @@ class BinanceClient:
             "workingType": working_type,
         }
 
-        # R02-F5：条件单同样为“非幂等写请求”，结果未知时不得盲重发。
-        # 普通合约账户使用 newClientOrderId；PM algo 端点使用独立的
-        # clientAlgoId（由上层预写持久日志后经 kwargs 传入）。不可把后者
-        # 送到普通订单的 idempotency_key 核验路径。
-        client_order_id = client_order_id or kwargs.pop("newClientOrderId", None)
-        if not self.use_unified_account and not client_order_id:
-            client_order_id = self._generate_client_order_id()
-        if client_order_id and not self.use_unified_account:
-            params["newClientOrderId"] = client_order_id
-
-        if self.use_unified_account:
-            params["algoType"] = "CONDITIONAL"
-            params["triggerPrice"] = str(adjusted_stop_price)
-            endpoint = "/papi/v1/um/algo/order"
-
-            if close_position:
-                # PM账户（统一账户）条件单参数：
-                #   - TAKE_PROFIT/TAKE_PROFIT_MARKET: 支持 closePosition=true
-                #   - STOP/STOP_MARKET: 旧版不支持 closePosition=true（返回 -4136），
-                #     但新版 API 已拒绝 reduceOnly（-1106），改为统一使用 closePosition=true
-                #     若仍返回 -4136，则由上游重试逻辑处理
-                params["closePosition"] = "true"
-            elif adjusted_quantity is not None:
-                params["quantity"] = str(adjusted_quantity)
+        identifiers = [
+            value for value in (client_order_id, kwargs.pop("clientAlgoId", None),
+                                kwargs.pop("newClientOrderId", None)) if value is not None
+        ]
+        if len(set(identifiers)) > 1:
+            raise LocalOrderValidationError("条件单客户端标识冲突")
+        algo_client_id = identifiers[0] if identifiers else self._generate_client_order_id()
+        params.update(algoType="CONDITIONAL", clientAlgoId=algo_client_id)
+        if adjusted_stop_price is not None:
+            params["activatePrice" if trailing else "triggerPrice"] = str(adjusted_stop_price)
+        if close_position:
+            params["closePosition"] = "true"
         else:
-            params["stopPrice"] = str(adjusted_stop_price)
-            endpoint = "/fapi/v1/order"
+            params["quantity"] = str(adjusted_quantity)
 
-            if not close_position and adjusted_quantity is not None:
-                params["quantity"] = str(adjusted_quantity)
-        
         if order_type in ("STOP", "TAKE_PROFIT"):
             params["price"] = str(adjusted_price)
             params["timeInForce"] = kwargs.get("timeInForce", "GTC")
-        
-        # reduce-only 订单（防止反手单）
-        if kwargs.get("reduce_only"):
+        if reduce_only:
             params["reduceOnly"] = "true"
-        
         for key, value in kwargs.items():
-            if key not in params:
+            if key not in params and key != "closePosition":
                 params[key] = str(value)
 
-        result = await self._request(
-            "POST", endpoint, params, idempotency_key=client_order_id
-        )
+        endpoint = "/papi/v1/um/algo/order" if self.use_unified_account else "/fapi/v1/algoOrder"
+        if not self.use_unified_account and self.trade_logger:
+            return await self._post_owned_classic_algo(params)
+        result = await self._request("POST", endpoint, params, idempotency_key=algo_client_id)
 
         # 自动记录条件单交易到统一交易记录表（失败不影响正常流程）
         if self.trade_logger:
@@ -1004,6 +1135,43 @@ class BinanceClient:
             except Exception as e:
                 logger.warning("条件单交易记录失败", error=str(e))
 
+        return result
+
+    async def _post_owned_classic_algo(self, params):
+        """Retain the original client ID across strategy retries and process restarts."""
+        journal = ClassicAlgoIntents()
+        endpoint = "/fapi/v1/algoOrder"
+        symbol = params["symbol"]
+        account, strategy = self.trade_logger.account_id, self.trade_logger.strategy_name
+        client_id = params["clientAlgoId"]
+        try:
+            existing = journal.claim(account, strategy, params)
+        except Exception as exc:
+            raise PreSubmissionError("无法持久化经典条件单意图，暂停提交") from exc
+        if existing:
+            raise UnknownOrderResultError("POST", endpoint, symbol=symbol, client_order_id=existing,
+                                          original_error=ValueError("同类保护单仍待核对原始客户端标识"))
+        try:
+            result = await self._request("POST", endpoint, params, idempotency_key=client_id)
+        except BinanceAPIError as exc:
+            # Only definite parameter, balance and trigger rejections permit a new intent.
+            if exc.code in (-1013, -1021, -1022, -1100, -1102, -1111, -2019, -2021, -2022, -4136, -4507):
+                journal.resolve(account, strategy, symbol, client_id)
+                raise
+            raise UnknownOrderResultError("POST", endpoint, symbol=symbol, client_order_id=client_id,
+                                          original_error=exc) from exc
+        try:
+            if (result.get("clientAlgoId") != client_id or result.get("symbol") != symbol
+                    or result.get("side") != params["side"] or result.get("orderType") != params["type"]
+                    or not str(result.get("algoId", "")).isdigit() or int(result["algoId"]) <= 0):
+                raise ValueError("经典 Algo 回执与持久化委托参数不匹配")
+            logged = await self.trade_logger.log_order(result, symbol, params["side"], params["type"])
+            if logged is not True or result.get("algoStatus") != "NEW":
+                raise ValueError("须核对条件单状态及策略归属回执")
+            journal.resolve(account, strategy, symbol, client_id)
+        except Exception as exc:
+            raise UnknownOrderResultError("POST", endpoint, symbol=symbol, client_order_id=client_id,
+                                          original_error=exc) from exc
         return result
 
     def _validate_stop_price(
@@ -1095,19 +1263,19 @@ class BinanceClient:
         """查询持仓"""
         params = {}
         if symbol:
-            params["symbol"] = symbol
+            params["symbol"] = symbol.strip().upper()
         
         endpoint = "/papi/v1/um/positionRisk" if self.use_unified_account else "/fapi/v2/positionRisk"
-        return await self._request("GET", endpoint, params)
+        data = await self._request("GET", endpoint, params)
+        return _validate_position_risk(data, params.get("symbol"), not self.use_unified_account)
 
     async def get_um_account_positions(self) -> List[Dict]:
-        """Return the complete PM UM account position array for flat-state checks."""
-        if not self.use_unified_account:
-            raise ValueError("UM account V2 positions require Portfolio Margin")
-        account = await self._request("GET", "/papi/v2/um/account", {})
+        """取账户快照中的全部仓位，独立于 positionRisk 核验。"""
+        endpoint = "/papi/v2/um/account" if self.use_unified_account else "/fapi/v3/account"
+        account = await self._request("GET", endpoint, {})
         if not isinstance(account, dict) or not isinstance(account.get("positions"), list):
             raise ValueError("UM account V2 positions response is incomplete")
-        return account["positions"]
+        return _position_rows(account["positions"])
     
     async def cancel_order(
         self,
@@ -1178,6 +1346,9 @@ class BinanceClient:
         if not self.trade_logger or not order_id:
             return
         try:
+            if (result.get("symbol", symbol.strip().upper()) != symbol.strip().upper()
+                or str(result.get("orderId", order_id)) != str(order_id)):
+                return
             status = result.get("status", "")
             # F5 加固：若响应缺 executedQty 键（某些交易所实现），且 status==CANCELED，
             # 无法区分"真 0 成交"和"键缺失"——保守不标记并告警。否则部分成交记录
@@ -1188,8 +1359,10 @@ class BinanceClient:
                     symbol=symbol, order_id=order_id, status=status,
                 )
                 return
-            executed_qty = float(result.get("executedQty", 0))
-            if status == "CANCELED" and executed_qty == 0:
+            executed_qty = Decimal(str(result["executedQty"]))
+            if not executed_qty.is_finite() or executed_qty < 0:
+                return
+            if status in ("CANCELED", "EXPIRED") and executed_qty == 0:
                 await self.trade_logger.mark_entry_canceled(order_id, symbol)
             elif status == "FILLED":
                 logger.info(
@@ -1237,7 +1410,15 @@ class BinanceClient:
             return
         status = order.get("status", "")
         if status in ("CANCELED", "EXPIRED"):
-            await self.trade_logger.mark_entry_canceled(order_id, symbol)
+            # 即便已撤销，部分成交仍属于该策略。核对该交易对及委托自身的零成交回执。
+            if str(order.get("orderId")) != str(order_id) or order.get("symbol") != symbol.strip().upper():
+                return
+            try:
+                quantity = Decimal(str(order["executedQty"]))
+            except (KeyError, ArithmeticError, ValueError):
+                return
+            if quantity.is_finite() and quantity == 0:
+                await self.trade_logger.mark_entry_canceled(order_id, symbol)
         elif status in ("FILLED", "NEW", "PARTIALLY_FILLED"):
             logger.info(
                 "撤单 -2011 后 get_order 显示未取消，跳过标记",
@@ -1254,21 +1435,7 @@ class BinanceClient:
         symbol: str,
         algo_id: int
     ) -> Dict:
-        """
-        撤销条件单（仅统一账户支持）
-        
-        使用 DELETE /papi/v1/um/algo/order 端点取消条件止盈止损单。
-        
-        Args:
-            symbol: 交易对名称
-            algo_id: 条件单ID
-        
-        Returns:
-            撤销结果字典，包含 algoId, algoStatus 等字段
-        """
-        if not self.use_unified_account:
-            raise ValueError("撤销条件单仅支持统一账户模式")
-        
+        """按交易所 Algo ID 撤销单笔条件单。"""
         if not symbol or not symbol.strip():
             raise ValueError("交易对不能为空")
         
@@ -1281,35 +1448,39 @@ class BinanceClient:
         }
         
         endpoint = "/papi/v1/um/algo/order"
-        return await self._request("DELETE", endpoint, params)
+        if self.trade_logger is not None or not self.use_unified_account:
+            order = await self.get_algo_order(algo_id)
+            if order.get("symbol") != params["symbol"] or str(order.get("algoId")) != str(algo_id):
+                raise ValueError("撤单 Algo ID 或交易对不符")
+            if self.trade_logger is not None:
+                from .condition_orders import strategy_owned_algos
+                if not await strategy_owned_algos(self, symbol=params["symbol"], orders=[order]):
+                    raise ValueError("不能撤销其他策略的条件单")
+        if not self.use_unified_account:
+            endpoint = "/fapi/v1/algoOrder"
+        result = await self._request("DELETE", endpoint, {"algoId": algo_id})
+        if self.trade_logger is not None:
+            confirmed = (result.get("complete") is True if self.use_unified_account else
+                         str(result.get("code")) == "200" and str(result.get("algoId")) == str(algo_id))
+            if not confirmed:
+                raise ValueError("撤单回执缺少已确认的 Algo ID")
+            from .condition_orders import mark_owned_algo
+            await mark_owned_algo(self, symbol.strip().upper(), algo_id, "CANCELED")
+        return result
     
     async def cancel_all_algo_orders(
         self,
         symbol: str
     ) -> Dict:
-        """
-        批量撤销指定交易对的所有条件单（仅统一账户支持）
-        
-        使用 DELETE /papi/v1/um/algo/allOpenOrders 端点，一次取消该币种的所有 OPEN 条件单。
-        相比逐个取消，此端点更可靠，不会出现"API 返回成功但订单未实际取消"的问题。
-        
-        Args:
-            symbol: 交易对名称
-        
-        Returns:
-            撤销结果字典，code=200 表示成功
-        """
-        if not self.use_unified_account:
-            raise ValueError("批量撤销条件单仅支持统一账户模式")
-        
+        """撤销指定交易对的全部条件单。"""
         if not symbol or not symbol.strip():
             raise ValueError("交易对不能为空")
         
-        params = {
-            "symbol": symbol.strip().upper(),
-        }
-        
-        endpoint = "/papi/v1/um/algo/allOpenOrders"
+        if self.trade_logger is not None:
+            from .condition_orders import cancel_strategy_algos
+            return await cancel_strategy_algos(self, symbol.strip().upper())
+        params = {"symbol": symbol.strip().upper()}
+        endpoint = "/papi/v1/um/algo/allOpenOrders" if self.use_unified_account else "/fapi/v1/algoOpenOrders"
         return await self._request("DELETE", endpoint, params)
     
     async def get_klines(
@@ -1615,7 +1786,6 @@ class BinanceClient:
         获取账户收入/支出流水
 
         用于日报统计胜率，查询指定时间范围内的已实现盈亏记录。
-        仅 PMC 账户模式支持（papi endpoint）。
 
         Args:
             start_time: 起始时间戳（毫秒），默认当天00:00 UTC
@@ -1626,12 +1796,7 @@ class BinanceClient:
         Returns:
             收入记录列表，每条包含 symbol, incomeType, income, time 等字段
 
-        Raises:
-            ValueError: 非统一账户模式不支持此查询
         """
-        if not self.use_unified_account:
-            raise ValueError("收入查询仅支持统一账户模式（use_unified_account=True）")
-
         params = {
             "incomeType": income_type,
             "limit": limit
@@ -1642,7 +1807,8 @@ class BinanceClient:
         if end_time is not None:
             params["endTime"] = end_time
 
-        data = await self._request("GET", "/papi/v1/um/income", params, signed=True)
+        endpoint = "/papi/v1/um/income" if self.use_unified_account else "/fapi/v1/income"
+        data = await self._request("GET", endpoint, params, signed=True)
 
         if not isinstance(data, list):
             raise TypeError("income API 响应必须为列表")
@@ -1671,10 +1837,6 @@ class BinanceClient:
         Returns:
             订单列表，每条包含 symbol, orderId, status, avgPrice, executedQty 等
         """
-        if not self.use_unified_account:
-            logger.warning("订单历史查询仅支持统一账户模式")
-            return []
-
         params = {
             "symbol": symbol.upper(),
             "limit": limit
@@ -1685,10 +1847,10 @@ class BinanceClient:
         if end_time is not None:
             params["endTime"] = end_time
 
-        data = await self._request("GET", "/papi/v1/um/allOrders", params, signed=True)
-
+        endpoint = "/papi/v1/um/allOrders" if self.use_unified_account else "/fapi/v1/allOrders"
+        data = await self._request("GET", endpoint, params, signed=True)
         if not isinstance(data, list):
-            return []
+            raise TypeError("allOrders API 响应必须为列表")
 
         return data
 
@@ -1722,7 +1884,7 @@ class BinanceClient:
 
         Returns:
             userTrades 成交明细列表，每条包含 id, orderId, commission,
-            commissionAsset, symbol, qty 等字段；非列表响应回退为空列表
+            commissionAsset, symbol, qty 等字段
         """
         if not symbol or not symbol.strip():
             raise ValueError("交易对不能为空")
@@ -1756,7 +1918,7 @@ class BinanceClient:
         data = await self._request("GET", endpoint, params, signed=True)
 
         if not isinstance(data, list):
-            return []
+            raise TypeError("userTrades API 响应必须为列表")
 
         return data
 

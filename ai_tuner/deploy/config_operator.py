@@ -211,12 +211,16 @@ class ConfigOperator:
             if expected_version is not None and (old_active or "base") != expected_version:
                 raise ValueError("proposal baseline version changed")
             effective = deep_merge(self.read_config(config_path), prior)
+            if not adjustments:
+                return False
             clean = {}
             for key, value in adjustments.items():
                 if isinstance(value, dict) and {"from", "to"} <= value.keys():
                     if self.get_nested_value(effective, key) != value["from"]:
                         raise ValueError(f"proposal baseline changed for {key}")
                     value = value["to"]
+                if value is None or not isinstance(key, str) or any(not part for part in key.split(".")):
+                    raise ValueError(f"无效的覆盖参数: {key}")
                 clean[key] = value
             override_config = deep_merge(prior, self._flat_to_nested(clean))
             version = self._generate_version(override_dir)
@@ -230,6 +234,8 @@ class ConfigOperator:
                 # 回滚：删除已创建的覆盖层文件
                 if os.path.exists(override_path):
                     os.unlink(override_path)
+                if os.path.exists(override_path + ".parent"):
+                    os.unlink(override_path + ".parent")
                 logger.error(
                     ".active 写入失败，已回滚覆盖层文件",
                     override_path=override_path,

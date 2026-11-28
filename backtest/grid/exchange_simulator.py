@@ -771,7 +771,7 @@ class ExchangeSimulator:
         获取K线数据（KLineService 兼容，同步版本）
 
         【关键约束】严格防止未来函数：
-        - 只返回 current_time 之前（含当前）的K线数据
+        - 当前 1h K 线收盘时，只返回已经收盘的各周期 K 线
         - 如果当前 index 之后还有数据，不会泄露给策略
 
         Args:
@@ -817,13 +817,15 @@ class ExchangeSimulator:
         # 获取当前时间（用于截断未来数据）
         current_ts = self.current_time
 
-        # 找到当前时间在K线数组中的位置，只返回 <= current_time 的数据
+        if not current_ts:
+            return []
+        from backtest.grid.timeframes import bar_close_time
+        decision_time = bar_close_time(current_ts, "1h")
         cutoff_index = len(all_klines)
-        if current_ts:
-            for i, k in enumerate(all_klines):
-                if k.get("timestamp", "") > current_ts:
-                    cutoff_index = i
-                    break
+        for i, k in enumerate(all_klines):
+            if bar_close_time(k["timestamp"], interval) > decision_time:
+                cutoff_index = i
+                break
 
         # 截断到当前时间
         available_klines = all_klines[:cutoff_index]

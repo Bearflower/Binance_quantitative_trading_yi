@@ -208,7 +208,7 @@ class BacktestExchangeSimulator:
         """
         构建时间框架索引映射
 
-        对于每个 source_tf 的索引 i，找到 target_tf 中时间戳 <= source_tf[i] 的最大索引
+        在源 K 线收盘时，只使用已收盘的目标 K 线；尚无可用数据时为 -1。
 
         Args:
             source_tf: 源时间框架
@@ -224,13 +224,14 @@ class BacktestExchangeSimulator:
             return {}
 
         index_map = {}
-        target_idx = 0
+        from backtest.grid.timeframes import bar_close_time
+        target_idx = -1
 
         for i, sk in enumerate(source_klines):
-            src_ts = pd.to_datetime(sk['timestamp'])
-            # 推进 target_idx 直到 target 时间戳 <= 源时间戳
+            src_ts = bar_close_time(sk['timestamp'], source_tf)
+            # 完整 OHLC 指标必须等目标周期收盘后才可见。
             while target_idx + 1 < len(target_klines):
-                next_ts = pd.to_datetime(target_klines[target_idx + 1]['timestamp'])
+                next_ts = bar_close_time(target_klines[target_idx + 1]['timestamp'], target_tf)
                 if next_ts <= src_ts:
                     target_idx += 1
                 else:
@@ -263,7 +264,9 @@ class BacktestExchangeSimulator:
             当前 K 线数据
         """
         klines = self.tf_data.get(interval, [])
-        mapped_idx = self._index_1h_to_4h.get(self.current_index, 0) if interval == '4h' else self.current_index
+        mapped_idx = self._index_1h_to_4h.get(self.current_index, -1) if interval == '4h' else self.current_index
+        if mapped_idx < 0 or not klines:
+            return {}
         if mapped_idx >= len(klines):
             mapped_idx = len(klines) - 1
         return klines[mapped_idx]
@@ -279,7 +282,7 @@ class BacktestExchangeSimulator:
             K 线数据列表
         """
         klines = self.tf_data.get(interval, [])
-        end_idx = self._index_1h_to_4h.get(self.current_index, self.current_index) if interval == '4h' else self.current_index
+        end_idx = self._index_1h_to_4h.get(self.current_index, -1) if interval == '4h' else self.current_index
         return klines[:end_idx + 1]
 
     def get_mapped_index(self, interval: str) -> int:
@@ -294,7 +297,7 @@ class BacktestExchangeSimulator:
         """
         if interval == '1h':
             return self.current_index
-        return self._index_1h_to_4h.get(self.current_index, 0)
+        return self._index_1h_to_4h.get(self.current_index, -1)
 
 
 class BacktestMarketStateWrapper:
@@ -394,6 +397,8 @@ class BacktestMarketStateWrapper:
 
             # 获取 4h ADX
             index_4h = self.exchange.get_mapped_index('4h')
+            if index_4h < 0:
+                return None
             if not self._adx_4h_series.empty and index_4h < len(self._adx_4h_series):
                 adx_4h_val = self._adx_4h_series.iloc[index_4h]
                 adx_4h = Decimal(str(adx_4h_val)) if not pd.isna(adx_4h_val) else Decimal('0')

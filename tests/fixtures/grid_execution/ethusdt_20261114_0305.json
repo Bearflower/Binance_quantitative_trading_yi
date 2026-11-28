@@ -1,0 +1,73 @@
+{
+  "decision_id": "grid-45bd8d3adf6989794516ca84ff2836f6",
+  "payload": {
+    "calculated_at_ms": 1794596700107,
+    "executable": true,
+    "feasibility": {
+      "binding": "STRUCT",
+      "feasible": true,
+      "grid_count": 12,
+      "qty_per_grid": "0.2589629477186393297833114673",
+      "required_leverage": null,
+      "required_margin": null
+    },
+    "grid_params": {
+      "grid_count": 12,
+      "grid_mode": "ARITHMETIC",
+      "grid_spacing": "23.9727664132191260",
+      "lower_boundary": "1799.8134015206852440",
+      "profit_rate": "0.01233389057351844519332184292",
+      "stop_loss_high": "2135.4321313057530080",
+      "stop_loss_low": "1751.8678686942469920",
+      "stop_move_down_price": "1775.8406351074661180",
+      "stop_move_up_price": "2111.4593648925338820",
+      "upper_boundary": "2087.4865984793147560"
+    },
+    "last_closed_kline_ms": {
+      "15m": 1794596399999,
+      "1h": 1794596399999,
+      "4h": 1794585599999
+    },
+    "margin_used": "604",
+    "market_analysis": {
+      "adx_15m": "38.170997567359315",
+      "adx_1h": "29.703443418641104",
+      "adx_4h": "50.49675552131056",
+      "adx_prev_1h": "35.82666786238261",
+      "atr_2h_ago": "23.32816642508841",
+      "atr_abnormal_count": 0,
+      "atr_peak": "0",
+      "atr_smooth": "23.972766413219126",
+      "confidence": "0.5",
+      "current_price": "1943.65",
+      "ema20_1h": "1957.5848356924498",
+      "ema20_4h": "2026.7752024827453",
+      "ema50_1h": "1994.0543693093798",
+      "ema50_4h": "2112.331032085176",
+      "is_volatility_alarm_active": false,
+      "last_closed_kline_ms": {
+        "15m": 1794596399999,
+        "1h": 1794596399999,
+        "4h": 1794585599999
+      },
+      "price_change_15m": "0.002775427663481975196549802934",
+      "price_change_1h": "0.003236329475890119646120017756",
+      "state": "OSCILLATION",
+      "trend_strength": "0.1567814472880368"
+    },
+    "state": "OSCILLATION",
+    "symbol": "ETHUSDT"
+  },
+  "config_hash": "623ba3ec08e04946f29fc58d9718f3affc5dbb5cbdebd1cff993bff654f15efa",
+  "replay_metadata": {
+    "source": "production journal backup before deployment",
+    "reference_price_source": "signal market_analysis.current_price",
+    "filters_observed_on": "2026-11-14",
+    "filters": {
+      "tick_size": "0.01",
+      "step_size": "0.001",
+      "min_qty": "0.001",
+      "min_notional": "20"
+    }
+  }
+}

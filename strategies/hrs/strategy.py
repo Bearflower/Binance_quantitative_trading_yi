@@ -3,8 +3,10 @@
 继承 BaseStrategy，实现做空和做多双向反转交易逻辑
 """
 import asyncio
+import copy
 import hashlib
 import json
+import math
 import os
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -13,7 +15,7 @@ from typing import Dict, Any, Optional, List, Set, Tuple
 
 import structlog
 
-from shared.entry_risk_policy import entry_allowed
+from shared.entry_risk_policy import RiskPolicyStore, entry_allowed
 from shared.base_strategy import BaseStrategy
 from shared.capital_manager import CapitalManager
 from shared.circuit_breaker import (
@@ -31,12 +33,18 @@ from ai_tuner.snapshots.repository import SnapshotRepository
 
 from .candidate_pool import CandidatePool
 from .executor import TradingExecutor, OpenResult, CloseOutcome
+from .position_exit_plan import validate_exit_plan
+from .decision_context import (capture_scan_financial_context, CLAIM_EVIDENCE_SELECT, decode_claim_evidence,
+                               ScanContextUnavailable, cycle_failure_diagnostics)
 from .market_data import MarketDataProvider
 from .pattern import PatternRecognizer
 from .position_manager import PositionManager
 from .risk_manager import RiskManager
 from .risk_budget import RiskDecision, assess_entry, calculate_open_position_risk
 from .scoring_engine import ScoringEngine, ScoringResult
+from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle, capture_signal, safe_record, record_stage, record_reservation_inventory
+from .core_decision import analyze_standard, analyze_lv_rm, is_shadow_entry_mode
+from .kline_repair import KlineHistoryUnavailable
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -139,6 +147,8 @@ class HRSStrategy(BaseStrategy):
 
         # 累计盈亏（用于回撤熔断检查）
         self._total_pnl: float = 0.0
+        self._accounted_close_pnl: Dict[str, float] = {}
+        self._pending_close_pnl: Set[str] = set()
 
         # K线配置
         kline_config = config.get("kline", {})
@@ -275,6 +285,7 @@ class HRSStrategy(BaseStrategy):
 
         # 组合级熔断器（池=hrs 候选池；enabled=false 时置 None，不拦截任何开仓）
         cb_cfg = load_circuit_breaker_config()
+        self._market_guard_config = cb_cfg if cb_cfg.get('enabled') else None
         if cb_cfg.get("enabled"):
             self.circuit_breaker = CircuitBreaker(cb_cfg, self.db, pool="hrs")
         else:
@@ -282,6 +293,14 @@ class HRSStrategy(BaseStrategy):
 
         # 初始化各模块
         self.market_data = MarketDataProvider(self.binance_client, self.kline_service, self.config)
+        if os.getenv('HRS_EVIDENCE_CAPTURE_ENABLED') == '1':
+            repository = getattr(self, 'snapshot_repository', None)
+            if repository is None:
+                raise RuntimeError('HRS evidence requires independent snapshot writer credentials')
+            await repository.db.fetch_all('SELECT evidence_id FROM hrs.hrs_decision_evidence LIMIT 0')
+            self.decision_recorder = DecisionRecorder(repository.db)
+            self.decision_recorder.attach_public_transport(self.binance_client)
+            self.decision_recorder.attach_market_provider(self.market_data)
         self.candidate_pool = CandidatePool(self.config, self.market_data, self.db)
         self.scoring_engine = ScoringEngine(self.config)
         self.pattern_recognizer = PatternRecognizer(self.config)
@@ -291,6 +310,10 @@ class HRSStrategy(BaseStrategy):
             self.position_manager,
             should_notify_callback=self._should_notify,
         )
+        self.trading_executor.persist_fill = self._persist_entry_before_protection
+        self.trading_executor.decision_recorder = getattr(self, 'decision_recorder', None)
+        if getattr(self, 'decision_recorder', None) is not None:
+            self.decision_recorder.context_provider = lambda: capture_scan_financial_context(self)
         # P1-8: 传入通知回调，使风控模块能在暂停/熔断时发送通知
         self.risk_manager = RiskManager(
             self.config,
@@ -346,7 +369,7 @@ class HRSStrategy(BaseStrategy):
         cap_prov = await self.market_data.get_market_cap_provenance(
             symbol, oi_usd, volume_24h_usd,
         )
-        is_true = cap_prov.source in ("coingecko", "cache_hit")
+        is_true = cap_prov.source in ("coingecko", "coinmarketcap", "cache_hit")
 
         if require_true_for_entry:
             # 开仓侧（D4）：只用真实市值
@@ -516,43 +539,26 @@ class HRSStrategy(BaseStrategy):
         return (current_price - price_1h_ago) / price_1h_ago
 
     def _is_shadow_entry_mode(self, entry_mode: str, signal_origin: Optional[str] = None) -> bool:
-        """
-        B1/B2 (R1): 判断某入场模式当前是否处于影子执行模式
+        return is_shadow_entry_mode(self.config, entry_mode, signal_origin)
 
-        EMM / 半EMM / LV-RM 三类延伸入场模式受各自 config 段 execution_mode 控制；
-        取值为 "shadow" 时只跑决策链、不真实下单。标准模式不受本开关影响。
+    async def _prepare_decision_klines(self, symbol):
+        original_1h = copy.deepcopy(self._klines_cache.get(symbol, []))
+        original_4h = copy.deepcopy(self._klines_4h_cache.get(symbol, []))
+        try:
+            prepared = await self.market_data.prepare_decision_klines(
+                symbol, original_1h, original_4h, decision_at=datetime.now(timezone.utc))
+        except KlineHistoryUnavailable as exc:
+            await record_stage(self, 'kline_repair', {'receipt': exc.receipt,
+                'input_klines_1h': original_1h, 'input_klines_4h': original_4h}, symbol=symbol)
+            raise
+        await record_stage(self, 'kline_repair', {'receipt': prepared.receipt,
+            'input_klines_1h': original_1h, 'input_klines_4h': original_4h}, symbol=symbol)
+        # The scoring view is separate from caches updated by background work.
+        self._klines_cache[symbol] = copy.deepcopy(prepared.klines_1h)
+        self._klines_4h_cache[symbol] = copy.deepcopy(prepared.klines_4h)
+        return prepared.klines_1h, prepared.klines_4h
 
-        R1 扩展：lv_rm 需结合 signal_origin 区分来源——
-          - empty_pool（_run_lv_rm_only_cycle 空池路径）：按 config.lv_rm.execution_mode 判定（D8 影子）
-          - nonempty_pool（_finalize_and_execute_signals 非空池路径）：保持原政策，不影子化
-          - signal_origin 缺失（防御）：fail-closed 返回 True（影子）并告警
-
-        Args:
-            entry_mode: 入场模式（"standard"/"emm"/"semi_emm"/"lv_rm"）
-            signal_origin: lv_rm 信号来源，None 时对非 lv_rm 不影响；
-                          lv_rm 缺失则 fail-closed 视为影子
-
-        Returns:
-            True 表示该模式处于影子（不真实下单）状态
-        """
-        if entry_mode not in SHADOW_CAPABLE_ENTRY_MODES:
-            return False
-        mode_cfg = self.config.get(entry_mode, {}) or {}
-        if entry_mode == "lv_rm":
-            # R1: lv_rm 按 signal_origin 区分影子范围
-            if signal_origin is None:
-                logger.warning(
-                    "lv_rm 信号缺 signal_origin，fail-closed 判为影子",
-                )
-                return True
-            if signal_origin == "nonempty_pool":
-                # 非空池 LV-RM：保持原政策，不影子化
-                return False
-            # empty_pool（或未来扩展来源）：按 config 判定
-            return mode_cfg.get("execution_mode") == "shadow"
-        # emm / semi_emm：按 config 判定（不看 signal_origin）
-        return mode_cfg.get("execution_mode") == "shadow"
-
+    @capture_analysis
     async def analyze(self, symbol: str) -> Dict[str, Any]:
         """
         分析单个币种的做空和做多机会
@@ -564,21 +570,11 @@ class HRSStrategy(BaseStrategy):
             分析结果
         """
         result = {"symbol": symbol, "short": None, "long": None}
+        audit_inputs = None
 
         try:
-            # 获取K线数据
-            klines = self._klines_cache.get(symbol, [])
-            if len(klines) < self.min_klines:
-                # 尝试预热K线
-                klines = await self._warmup_klines(symbol)
-                if len(klines) < self.min_klines:
-                    result["skip"] = True
-                    result["reason"] = f"K线数据不足 ({len(klines)} < {self.min_klines})"
-                    return result
-                self._klines_cache[symbol] = klines
-
-            # V2.8: 获取 4h K 线数据用于趋势过滤（EMA 斜率检查）
-            klines_4h = self._klines_4h_cache.get(symbol, [])
+            klines, klines_4h = await self._prepare_decision_klines(symbol)
+            audit_inputs = {'klines_1h': klines, 'klines_4h': klines_4h}
 
             current_close = float(klines[-1].get("close", 0))
             # P0-4: 资金费率时间对齐，使用K线收盘时间（open_time + 1h）而非开盘时间
@@ -621,86 +617,39 @@ class HRSStrategy(BaseStrategy):
                     symbol=symbol, source=_mc_source,
                 )
 
-            # 检查做空候选
+            directions = []
             if symbol in self.candidate_pool.get_short_candidates():
-                # P0-3: 进场前形态失效检查
-                if self._check_pattern_expiry(symbol, "short", current_close, klines):
-                    result["short"] = {
-                        "score_result": {},
-                        "patterns": {},
-                        "current_price": current_close,
-                        "oi_usd": oi_usd,
-                        "funding_rate": funding_rate,
-                        "market_cap": market_cap,
-                        "should_entry": False,
-                        "veto_reason": "形态失效：价格突破反向极值",
-                    }
-                else:
-                    short_patterns = self.pattern_recognizer.detect_short_patterns(klines)
-                    short_score = self.scoring_engine.score(
-                        symbol=symbol,
-                        direction="short",
-                        oi_market_cap_ratio=oi_market_cap_ratio,
-                        patterns=short_patterns,
-                        funding_rate=funding_rate,
-                        has_market_cap=has_market_cap,
-                        price_change_24h=price_change_24h,
-                        klines_4h=klines_4h,
-                    )
-                    result["short"] = {
-                        "score_result": short_score.to_dict(),
-                        "_scoring_result": short_score,  # R1: 原始 ScoringResult，供 shadows 遍历
-                        "patterns": short_patterns,
-                        "current_price": current_close,
-                        "oi_usd": oi_usd,
-                        "funding_rate": funding_rate,
-                        "market_cap": market_cap,
-                        "should_entry": self.scoring_engine.should_entry(short_score),
-                    }
-
-            # 检查做多候选
+                directions.append('short')
             if symbol in self.candidate_pool.get_long_candidates():
-                # P0-3: 进场前形态失效检查
-                if self._check_pattern_expiry(symbol, "long", current_close, klines):
-                    result["long"] = {
-                        "score_result": {},
-                        "patterns": {},
-                        "current_price": current_close,
-                        "oi_usd": oi_usd,
-                        "funding_rate": funding_rate,
-                        "market_cap": market_cap,
-                        "should_entry": False,
-                        "veto_reason": "形态失效：价格突破反向极值",
-                    }
-                else:
-                    long_patterns = self.pattern_recognizer.detect_long_patterns(klines)
-                    long_score = self.scoring_engine.score(
-                        symbol=symbol,
-                        direction="long",
-                        oi_market_cap_ratio=oi_market_cap_ratio,
-                        patterns=long_patterns,
-                        funding_rate=funding_rate,
-                        has_market_cap=has_market_cap,
-                        price_change_24h=price_change_24h,
-                        klines_4h=klines_4h,
-                    )
-                    result["long"] = {
-                        "score_result": long_score.to_dict(),
-                        "_scoring_result": long_score,  # R1: 原始 ScoringResult，供 shadows 遍历
-                        "patterns": long_patterns,
-                        "current_price": current_close,
-                        "oi_usd": oi_usd,
-                        "funding_rate": funding_rate,
-                        "market_cap": market_cap,
-                        "should_entry": self.scoring_engine.should_entry(long_score),
-                    }
+                directions.append('long')
+            analysis_config = dict(self.config)
+            analysis_config['kline'] = dict(self.config.get('kline', {}), min_klines_for_analysis=self.min_klines)
+            result = analyze_standard(
+                symbol=symbol, klines_1h=klines, klines_4h=klines_4h,
+                oi_market_cap_ratio=oi_market_cap_ratio, funding_rate=funding_rate,
+                has_market_cap=has_market_cap, directions=directions,
+                decision_at=datetime.now(timezone.utc), config=analysis_config,
+                scoring_engine=self.scoring_engine, pattern_recognizer=self.pattern_recognizer,
+            )
+            for direction in directions:
+                result[direction].update(oi_usd=oi_usd, market_cap=market_cap)
+            result['_audit_market'] = dict(oi_usd=oi_usd, funding_rate=funding_rate,
+                volume_24h=volume_24h, market_cap=market_cap, market_cap_source=_mc_source,
+                has_market_cap=has_market_cap)
 
             return result
 
+        except KlineHistoryUnavailable as exc:
+            logger.warning('HRS 分析数据未就绪', symbol=symbol, reason=exc.reason)
+            result.update(skip=True, reason=exc.reason)
+            return result
         except Exception as e:
             logger.error("分析失败", symbol=symbol, error=str(e))
             result["error"] = str(e)
             return result
+        finally:
+            if audit_inputs is not None:
+                result["_audit_input_klines"] = audit_inputs
 
     def _calc_current_total_margin(self) -> float:
         """
@@ -724,6 +673,7 @@ class HRSStrategy(BaseStrategy):
             records.append({"positionAmt": pos_qty, "markPrice": pos_price, "contractSize": 1.0})
         return calc_occupied_margin(records, leverage)
 
+    @capture_signal
     async def execute_signal(self, signal: Dict[str, Any]) -> bool:
         """
         执行交易信号
@@ -739,6 +689,11 @@ class HRSStrategy(BaseStrategy):
             是否执行成功
         """
         try:
+            signal['_audit_stage'] = 'evidence_precheck'
+            recorder = getattr(self, 'decision_recorder', None)
+            if recorder is not None and recorder.failed:
+                logger.warning('HRS 决策证据未完整保存，拒绝新增风险')
+                return False
             symbol = signal.get("symbol")
             direction = signal.get("direction")
             score = signal.get("score", 0)
@@ -776,6 +731,9 @@ class HRSStrategy(BaseStrategy):
                 signal["shadow_blocked"] = True
                 return True
 
+            if getattr(self, "_pending_close_pnl", set()):
+                signal['skip_reason'] = '平仓盈亏待确认，暂缓新增风险'
+                return False
             if not await entry_allowed(self, 'hrs', stage='analysis'):
                 signal['skip_reason'] = 'HRS entry risk policy blocks new positions'
                 return False
@@ -787,6 +745,10 @@ class HRSStrategy(BaseStrategy):
                 index_hour = floor_index_hour() - timedelta(hours=1)
                 pool_index = await self.circuit_breaker.load_index(index_hour)
                 pool_index_12h = await self.circuit_breaker.load_index_12h(index_hour)
+                await record_stage(self, 'entry_stage_inputs', {
+                    'stage': 'pool_circuit', 'index_hour': index_hour,
+                    'pool_index': pool_index, 'pool_index_12h': pool_index_12h,
+                }, symbol=symbol)
                 allow, level = self.circuit_breaker.guard(
                     direction, symbol, signal.get("price_change_1h"), pool_index, pool_index_12h
                 )
@@ -801,6 +763,11 @@ class HRSStrategy(BaseStrategy):
                     )
                     return False
 
+            if await self.trading_executor.timeout_recovery.pending():
+                logger.warning("存在待核对的超时开仓，暂缓新增风险")
+                return False
+
+            signal['_audit_stage'] = 'legacy_risk_gate'
             # 风控检查
             if not self.risk_manager.can_open_position(direction):
                 return False
@@ -826,10 +793,12 @@ class HRSStrategy(BaseStrategy):
             ):
                 return False
 
+            signal['_audit_stage'] = 'pre_entry_oi'
             # P1-2: 进场前OI二次确认（流动性降级放弃）
             if not await self._check_oi_before_entry(symbol, direction):
                 return False
 
+            signal['_audit_stage'] = 'pre_entry_funding'
             # P1-3: 进场前资金费率方向检查（费率逆转放弃）
             if not await self._check_funding_rate_before_entry(symbol, direction):
                 return False
@@ -851,6 +820,7 @@ class HRSStrategy(BaseStrategy):
                 direction, role, current_price, atr, tick_size, params
             ) for role in ('tp1', 'tp2'))
             current_total_margin = self._calc_current_total_margin()
+            signal['_audit_stage'] = 'entry_risk_budget'
             risk_decision = await self._size_entry_with_hrs_budget(
                 symbol=symbol, direction=direction, entry_price=current_price,
                 stop_price=stop_loss_price, occupied_margin=current_total_margin,
@@ -860,7 +830,13 @@ class HRSStrategy(BaseStrategy):
                 take_profit_prices=tp_prices,
                 account_equity=balance,
             )
+            await record_stage(self, 'entry_budget_assessment', {
+                'decision': risk_decision, 'entry_price': current_price, 'stop_price': stop_loss_price,
+                'take_profit_prices': tp_prices, 'account_equity': balance,
+                'occupied_margin': current_total_margin, 'entry_mode': entry_mode,
+            }, symbol=symbol)
             if not risk_decision.allowed:
+                signal['_audit_denial'] = risk_decision.reason
                 logger.warning("HRS 单笔风险预算拒绝开仓", symbol=symbol,
                                reason=risk_decision.reason,
                                risk_limit=str(risk_decision.risk_limit))
@@ -918,6 +894,12 @@ class HRSStrategy(BaseStrategy):
                 signal, risk_decision, current_price, balance)
             if risk_decision is None:
                 return False
+            signal['_risk_client_order_id'] = risk_decision.client_order_id
+            await record_stage(self, 'entry_budget_reserved', {
+                'decision': risk_decision, 'entry_price': current_price, 'stop_price': stop_loss_price,
+                'take_profit_prices': tp_prices, 'account_equity': balance,
+                'occupied_margin': current_total_margin, 'entry_mode': entry_mode,
+            }, symbol=symbol)
 
             # 执行开仓（FR-01: 返回 OpenResult，分离「成交」与「保护单完整性」信号）
             result: Optional[OpenResult] = None
@@ -966,16 +948,16 @@ class HRSStrategy(BaseStrategy):
 
                 # 记录持仓（B5：带上入场模式，供时间止损按模式选择持仓时限；
                 # B6a：quantity 用真实成交量，entry_price 用真实成交均价）
-                self.position_manager.add_position(
-                    symbol=symbol,
-                    direction=direction,
-                    entry_price=actual_entry_price,
-                    quantity=result.filled_quantity,
-                    atr=atr,
-                    entry_mode=entry_mode,
-                    risk_stop_price=stop_loss_price,
-                    exit_ratios=risk_decision.exit_ratios,
-                )
+                position = self.position_manager.get_position(symbol)
+                if not position:
+                    await self._persist_entry_before_protection(
+                        symbol, direction, actual_entry_price, result.filled_quantity, atr,
+                        entry_mode, stop_loss_price, f"hrs:{symbol}:{result.order['orderId']}", risk_decision.exit_ratios,
+                        exit_plan={'version': 1, 'reference_price': current_price, 'atr': atr, 'params': params})
+                    position = self.position_manager.get_position(symbol)
+                if result.order.get("recovery_key") and result.protection_complete:
+                    await self._persist_position_row(symbol, position, int(datetime.now(timezone.utc).timestamp() * 1000))
+                    await self.trading_executor.timeout_recovery.finish(result.order["recovery_key"])
 
                 # 记录风控
                 self.risk_manager.record_open(direction)
@@ -1004,15 +986,26 @@ class HRSStrategy(BaseStrategy):
         entry_price: float, equity: float,
     ) -> Optional[RiskDecision]:
         """Bind one HRS order to a durable risk reservation and symbol claim."""
-        from shared.entry_risk_policy import RiskPolicyStore, SizedEntry
+        from shared.entry_risk_policy import RiskPolicyStore, SizedEntry, ScopedRiskSnapshot, EntryDenied
+        from .entry_occupancy import SLOT_SCOPE, capture_hrs_slot_inputs
         symbol = signal.get('symbol')
         identity = signal.get('signal_id')
         if not isinstance(identity, int) or identity <= 0 or not symbol:
             logger.warning('HRS 信号缺持久身份，拒绝下单', symbol=symbol)
             return None
+        recorder = getattr(self, 'decision_recorder', None)
+        if recorder is not None and recorder.failed:
+            signal['_audit_denial'] = 'decision_evidence_incomplete'
+            return None
         store = RiskPolicyStore(self.db)
         try:
             await store.reconcile('hrs', self.binance_client)
+            from .risk_budget import FLOOR
+            from .margin_budget import ALL_ACCOUNT,HRS_OWNED,policy_margin_scope,account_cash_fields,validate_cash_fields,validate_cash_observation,exact
+            margin_scope=policy_margin_scope(await store.policy('hrs')) if decision.budget_version==FLOOR else ALL_ACCOUNT
+            raw_claims = decode_claim_evidence(await self.db.fetch_all(
+                CLAIM_EVIDENCE_SELECT + ' WHERE c.symbol=$1', symbol))
+            await record_stage(self, 'entry_stage_inputs', {'stage': 'claims', 'claims': raw_claims, 'claim_source_format': 'postgresql_to_jsonb_v1'}, symbol=symbol)
             claim = await try_claim_symbol(self.db, symbol, 'hrs',
                                            intent_id=f'hrs:{identity}')
             if not claim.get('claimed') or not claim.get('claim_id'):
@@ -1028,11 +1021,35 @@ class HRSStrategy(BaseStrategy):
                                    decision.worst_loss, decision.worst_loss,
                                    decision.exit_ratios)
                 async def snapshot():
+                    # Fresh actual account GET is part of the independent receipt;
+                    # the earlier planning equity never supplies free margin.
+                    cash_observed_at=datetime.now(timezone.utc) if margin_scope==HRS_OWNED else None
+                    account = await self.binance_client.get_account_info() if margin_scope==HRS_OWNED else None
+                    snapshot_equity=exact(account.get('totalMarginBalance')) if margin_scope==HRS_OWNED else Decimal(str(equity))
                     positions = await self.binance_client.get_position()
                     if not isinstance(positions, list):
                         raise ValueError('exchange position inventory unavailable')
+                    independent = await self.binance_client.get_um_account_positions()
+                    local = self.position_manager.get_all_positions()
+                    slot_inputs = capture_hrs_slot_inputs(inventory=positions, independent=independent,
+                        local=local, observed_at=datetime.now(timezone.utc))
+                    inventory_payload = dict(stage='reservation_inventory', exchange_positions=positions,
+                        slot_scope=SLOT_SCOPE, slot_inputs=slot_inputs)
+                    from .risk_budget import FLOOR
+                    financial_receipt = None
+                    if decision.budget_version == FLOOR:
+                        inventory_payload.update(account_id=store.account,signal_id=str(identity),
+                            account_equity=snapshot_equity,effective_allocation=decision.effective_allocation)
+                        if margin_scope==HRS_OWNED:
+                            inventory_payload.update(hrs_margin_scope=margin_scope,account_cash_observed_at=cash_observed_at,
+                                **account_cash_fields(account,getattr(self.binance_client,'use_unified_account',False)))
+                            validate_cash_fields(inventory_payload)
+                            validate_cash_observation(inventory_payload,checked_at=datetime.now(timezone.utc),
+                                observed_at=slot_inputs['observed_at'])
+                        financial_receipt = await record_reservation_inventory(self,inventory_payload,symbol=symbol)
+                    else:
+                        await record_stage(self,'entry_stage_inputs',inventory_payload,symbol=symbol)
                     holdings = Decimal(0)
-                    symbols = set()
                     for pos in positions:
                         amount = Decimal(str(pos['positionAmt']))
                         if amount == 0:
@@ -1042,20 +1059,44 @@ class HRSStrategy(BaseStrategy):
                         if not all(x.is_finite() and x > 0 for x in (abs(amount), mark, lev)):
                             raise ValueError('exchange position exposure invalid')
                         holdings += abs(amount) * mark / lev
-                        symbols.add(pos['symbol'])
-                    return (holdings, Decimal(str(equity)), decision.effective_allocation,
-                            symbols, int(self.config.get('trading', {}).get('max_positions', 3)))
+                    return ScopedRiskSnapshot(account_margin=holdings, equity=snapshot_equity,
+                        allocation=decision.effective_allocation,
+                        max_slots=self.config.get('trading', {}).get('max_positions', 3),
+                        slot_scope=SLOT_SCOPE, slot_evidence=slot_inputs, financial_receipt=financial_receipt)
+                geometry = {'signal_id': identity,
+                            'exit_ratios': [str(x) for x in decision.exit_ratios],
+                            'entry_price': str(price), 'quantity': str(quantity)}
+                from .risk_budget import FLOOR
+                if margin_scope==HRS_OWNED:geometry['hrs_margin_scope']=margin_scope
+                if decision.budget_version == FLOOR:
+                    geometry.update(hrs_risk_budget_version=FLOOR,
+                        hrs_budget_inputs=dict(decision.budget_inputs),
+                        hrs_budget_decision=decision, hrs_budget_source='hrs_live_assessor_v1')
                 client_id = await store.reserve('hrs', symbol, str(identity), sized,
                                                 decision.policy_revision, snapshot,
-                                                geometry={'signal_id': identity,
-                                                          'exit_ratios':[str(x) for x in decision.exit_ratios],
-                                                          'entry_price':str(price),
-                                                          'quantity':str(quantity)})
+                                                geometry=geometry)
                 reserved = True
-                return replace(decision, client_order_id=client_id)
+                audit = getattr(store, 'reservation_audit', None)
+                if not isinstance(audit, dict) or audit.get('client_order_id') != client_id:
+                    raise ValueError('reservation_audit_missing')
+                await record_stage(self, 'entry_stage_inputs',
+                    dict(stage='reservation_success', **audit), symbol=symbol)
+                committed = audit.get('risk_decision') if decision.budget_version == FLOOR else decision
+                if decision.budget_version == FLOOR and not isinstance(committed, RiskDecision):
+                    raise ValueError('reservation_budget_decision_missing')
+                return replace(committed, client_order_id=client_id)
             finally:
                 if not reserved:
                     await release_claim(self.db, symbol, 'hrs', reason='reservation_failed')
+        except EntryDenied as exc:
+            await record_stage(self, 'entry_stage_inputs', {
+                'stage': 'reservation_denial', 'reason_code': exc.reason_code,
+                'reason': str(exc), 'risk_context': exc.context,
+            }, symbol=symbol)
+            signal['_audit_denial'] = exc.reason_code
+            logger.info('HRS 风控拒绝开仓', symbol=symbol, reason=str(exc),
+                        reason_code=exc.reason_code, risk_context=exc.context)
+            return None
         except Exception as exc:
             logger.warning('HRS 风险预留失败，拒绝下单', symbol=symbol, error=str(exc))
             return None
@@ -1074,6 +1115,10 @@ class HRSStrategy(BaseStrategy):
         try:
             from shared.entry_risk_policy import RiskPolicyStore
             policy = await RiskPolicyStore(self.db).policy('hrs')
+            from .risk_budget import policy_budget_version
+            budget_version = policy_budget_version(policy)
+            from .margin_budget import policy_margin_scope
+            policy_margin_scope(policy)
             if policy['mode'] != 'reduced' or policy['allow_add']:
                 return RiskDecision(False, 'risk_policy_not_reduced')
             equity = Decimal(str(account_equity))
@@ -1105,6 +1150,7 @@ class HRSStrategy(BaseStrategy):
             if existing_open_risk is None:
                 return RiskDecision(False, "open_position_risk_unknown")
             decision = assess_entry(
+                budget_version=budget_version,
                 allocation=Decimal(str(allocation)),
                 entry_price=Decimal(str(entry_price)), stop_price=Decimal(str(stop_price)),
                 direction=direction, existing_open_risk=existing_open_risk,
@@ -1133,12 +1179,67 @@ class HRSStrategy(BaseStrategy):
             logger.warning("HRS 风险预算输入无效", symbol=symbol, error=str(exc))
             return RiskDecision(False, "invalid_risk_inputs")
 
+    async def _persist_entry_before_protection(self, symbol, direction, price, quantity,
+                                               atr, mode, stop, identity, exit_ratios=None, exit_plan=None):
+        self.position_manager.add_position(symbol, direction, price, quantity, atr,
+                                           entry_mode=mode, risk_stop_price=stop, exit_ratios=exit_ratios, exit_plan=exit_plan)
+        position = self.position_manager.get_position(symbol)
+        position["position_id"] = identity
+        await self._persist_position_row(symbol, position, int(datetime.now(timezone.utc).timestamp() * 1000))
+
+    async def _recover_timeout_entries(self):
+        recovery = self.trading_executor.timeout_recovery
+        for row in await recovery.pending():
+            key = row["key"]
+            try:
+                data = json.loads(row["value"])
+                symbol = data["symbol"]
+                identity = f"hrs:{symbol}:{data['order_id']}"
+                pos = self.position_manager.get_position(symbol)
+                if pos and pos["position_id"] != identity:
+                    raise ValueError("持仓归属冲突")
+                if not pos:
+                    order = await recovery.reconcile(key, data)
+                    if not order:
+                        continue
+                    price = float(order["avgPrice"])
+                    if price <= 0 or data["atr"] <= 0:
+                        raise ValueError("恢复保护缺少入场价或 ATR")
+                    self.position_manager.add_position(symbol, data["direction"], price,
+                        float(order["executedQty"]), data["atr"], entry_mode=data["entry_mode"], exit_ratios=data.get("exit_ratios"))
+                    pos = self.position_manager.get_position(symbol)
+                    pos["position_id"] = identity
+                if not pos.get("atr"):
+                    pos["atr"] = data["atr"]
+                await self._persist_position_row(symbol, pos, int(datetime.now(timezone.utc).timestamp() * 1000))
+                result = await self._replenish_single_position(symbol)
+                if not result or not result.success or not self.position_manager.has_algo_id(symbol, "sl"):
+                    raise ValueError("恢复仓位止损待确认")
+                await recovery.finish(key)
+            except Exception as exc:
+                logger.warning("超时订单保留待核对记录", key=key, error=str(exc))
+
+    async def _wait_with_timeout_recovery(self, seconds):
+        """在等待下一次扫描时继续核对待处理订单。"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        while self._running:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(remaining, 15))
+            try:
+                await self._recover_timeout_entries()
+            except Exception as exc:
+                logger.warning("待处理订单读取失败", error=str(exc))
+
     async def run(self) -> None:
         """运行策略主循环"""
         logger.info("HRS策略开始运行")
         self._running = True
 
         try:
+            await self._recover_timeout_entries()
             # 对齐到整点
             await self._align_to_hour()
 
@@ -1149,7 +1250,7 @@ class HRSStrategy(BaseStrategy):
                         logger.debug("策略暂停中，仅维护K线数据和持仓监控")
                         await self._monitor_positions()
                         await self._report_positions_to_dashboard()
-                        await asyncio.sleep(self.check_interval)
+                        await self._wait_with_timeout_recovery(self.check_interval)
                         continue
 
                     # V2.5: 候选池为空时，仅跳过标准模式/EMM，LV-RM 继续运行
@@ -1158,17 +1259,21 @@ class HRSStrategy(BaseStrategy):
                         await self._run_lv_rm_only_cycle()
                         await self._monitor_positions()
                         await self._report_positions_to_dashboard()
-                        await asyncio.sleep(self.check_interval)
+                        await self._wait_with_timeout_recovery(self.check_interval)
                         continue
 
                     await self._execute_cycle()
-                    await asyncio.sleep(self.check_interval)
+                    await self._wait_with_timeout_recovery(self.check_interval)
+                except ScanContextUnavailable as exc:
+                    report = logger.warning if exc.expected_source_failure else logger.error
+                    report("HRS 扫描数据未就绪，本轮不评分", **cycle_failure_diagnostics(exc))
+                    await asyncio.sleep(self.retry_delay)
                 except Exception as e:
-                    logger.error("执行周期异常", error=str(e))
+                    logger.error("执行周期异常", **cycle_failure_diagnostics(e))
                     await asyncio.sleep(self.retry_delay)
 
         except Exception as e:
-            logger.error("策略运行异常", error=str(e))
+            logger.error("策略运行异常", **cycle_failure_diagnostics(e))
             raise
 
     async def stop(self) -> None:
@@ -1297,6 +1402,7 @@ class HRSStrategy(BaseStrategy):
 
         return False
 
+    @capture_cycle
     async def _execute_cycle(self) -> None:
         """
         执行一个周期
@@ -1315,6 +1421,11 @@ class HRSStrategy(BaseStrategy):
             # Fix #8: 资金费率结算时间安全检查
             if self._is_settlement_skip_window():
                 logger.info("资金费率结算窗口，跳过本周期评分")
+                await record_stage(self, 'scan_denial', {'reason': 'settlement_window'})
+                return
+
+            if getattr(self, "_pending_close_pnl", set()):
+                logger.warning("平仓盈亏待确认，仅继续持仓保护和对账")
                 return
 
             # 检查回撤熔断
@@ -1323,6 +1434,7 @@ class HRSStrategy(BaseStrategy):
                 balance = float(account_info.get("totalMarginBalance", 0))
                 if balance > 0 and not await self.risk_manager.check_drawdown(self._total_pnl, balance):
                     logger.warning("回撤熔断触发，跳过本周期")
+                    await record_stage(self, 'scan_denial', {'reason': 'legacy_drawdown_pause'})
                     return
             except Exception as e:
                 logger.warning("回撤检查失败，继续执行", error=str(e))
@@ -1340,6 +1452,7 @@ class HRSStrategy(BaseStrategy):
                     )
                 else:
                     logger.info("策略暂停中，跳过本周期")
+                await record_stage(self, 'scan_denial', {'reason': 'legacy_pause', 'pause_info': pause_info})
                 return
 
             # 检查是否需要在8:05更新候选池
@@ -1350,8 +1463,12 @@ class HRSStrategy(BaseStrategy):
             if not active_symbols:
                 logger.debug("无活跃候选币种，仅执行 LV-RM 检查")
                 # B2: 空池分支只跑 LV-RM（含统一收尾链），持仓监控/上报交由 finally 统一调度
+                await record_stage(self, 'scan_denial', {'reason': 'empty_standard_pool_lv_rm_delegated'})
                 await self._run_lv_rm_only_cycle()
                 return
+
+            scan_symbols = await self.candidate_pool.get_lv_rm_scan_range()
+            await self.market_data.preload_market_caps(sorted(set(active_symbols) | set(scan_symbols)))
 
             logger.info("开始评分周期", symbols=list(active_symbols)[:10])
 
@@ -1359,10 +1476,13 @@ class HRSStrategy(BaseStrategy):
             short_signals = []
             long_signals = []
 
+            await record_stage(self, 'standard_scan_scope', {'symbols': list(active_symbols)})
             for symbol in list(active_symbols):
+                terminal_reason = 'analysis_error'
                 try:
                     # P2-6: 检查极端行情熔断
                     if self.risk_manager.is_circuit_breaker_active(symbol):
+                        terminal_reason = 'symbol_circuit_breaker'
                         cb_info = self.risk_manager.get_circuit_breaker_info(symbol)
                         logger.debug(
                             "熔断中，跳过评分",
@@ -1378,11 +1498,14 @@ class HRSStrategy(BaseStrategy):
                     if price_change_1h is not None:
                         if not self.risk_manager.check_price_change(symbol, price_change_1h):
                             # 触发熔断，跳过评分
+                            terminal_reason = 'price_change_circuit_breaker'
                             continue
 
                     analysis = await self.analyze(symbol)
                     if analysis.get("skip") or analysis.get("error"):
+                        terminal_reason = analysis.get('reason') or ('analysis_error' if analysis.get('error') else 'analysis_skip')
                         continue
+                    terminal_reason = 'scored'
 
                     # 处理做空信号
                     short_data = analysis.get("short")
@@ -1491,6 +1614,11 @@ class HRSStrategy(BaseStrategy):
 
                 except Exception as e:
                     logger.error("分析失败", symbol=symbol, error=str(e))
+                finally:
+                    await record_stage(self, 'standard_candidate_outcome', {
+                        'reason': terminal_reason, 'klines_1h': self._klines_cache.get(symbol, []),
+                        'klines_4h': self._klines_4h_cache.get(symbol, []),
+                    }, symbol=symbol)
 
             # B2: 统一收尾链（超时过滤 → 落库 → LV-RM 追加 → 组合级熔断预过滤 →
             # 冲突解析 → 周期汇总）；空池路径复用同一收尾链，禁止各自复制一份。
@@ -1581,14 +1709,25 @@ class HRSStrategy(BaseStrategy):
             pool_index = await circuit_breaker.load_index(index_hour)
             pool_index_12h = await circuit_breaker.load_index_12h(index_hour)
             if pool_index is not None:
-                short_signals = [
-                    s for s in short_signals
-                    if not circuit_breaker.combined_blocked("short", pool_index, pool_index_12h)
-                ]
-                long_signals = [
-                    s for s in long_signals
-                    if not circuit_breaker.combined_blocked("long", pool_index, pool_index_12h)
-                ]
+                passing = {"short": short_signals, "long": long_signals}
+                for direction, signals in passing.items():
+                    if not signals or not circuit_breaker.combined_blocked(direction, pool_index, pool_index_12h):
+                        continue
+                    for signal in signals:
+                        entry_mode = signal.get("entry_mode", "standard")
+                        origin = signal.get("signal_origin")
+                        proof = dict(
+                            signal_id=signal.get("signal_id"), direction=direction,
+                            entry_mode=entry_mode, signal_origin=origin,
+                            is_shadow=self._is_shadow_entry_mode(entry_mode, origin),
+                            reason="pool_circuit_breaker", index_hour=index_hour,
+                            pool_index=pool_index, pool_index_12h=pool_index_12h,
+                        )
+                        await record_stage(self, 'pool_circuit_preflight_denial', proof, symbol=signal["symbol"])
+                        await self._update_signal_resolution(proof["signal_id"], proof["reason"])
+                        logger.info("HRS 信号在预留前被组合熔断拦截", symbol=signal["symbol"], **proof)
+                    passing[direction] = []
+                short_signals, long_signals = passing["short"], passing["long"]
 
         # ===== R1+R9: 单次遍历分桶 production / shadow，方向分离 =====
         # 只产出 prod_short/prod_long/shadow_short/shadow_long 四个列表，
@@ -1630,6 +1769,53 @@ class HRSStrategy(BaseStrategy):
             list(self.candidate_pool.get_long_candidates()),
         )
 
+    async def _attempt_close_reconciliation(self, store, symbol: str, trigger: str) -> str:
+        try:
+            outcome = await store.reconcile_hrs_flat(symbol, self.binance_client)
+        except Exception as exc:
+            outcome = "reconciliation_failed"
+            logger.warning("hrs_close_reconciliation", symbol=symbol, trigger=trigger,
+                           outcome=outcome, error_type=type(exc).__name__)
+            return outcome
+        if outcome != "no_reservation":
+            log = logger.info if outcome == "released" else logger.warning
+            log("hrs_close_reconciliation", symbol=symbol, trigger=trigger, outcome=outcome)
+        return outcome
+
+    async def _reconcile_closed_position(self, symbol: str, trigger: str = "full_close") -> None:
+        db = getattr(self, "db", None)
+        strategy = getattr(self, "strategy_name", "hrs")
+        if db is None:
+            await release_claim(db, symbol, strategy, reason="position_closed")
+            return
+        try:
+            store = RiskPolicyStore(db)
+        except Exception as exc:
+            outcome = "reconciliation_failed"
+            logger.warning("hrs_close_reconciliation", symbol=symbol, trigger=trigger,
+                           outcome=outcome, error_type=type(exc).__name__)
+        else:
+            outcome = await self._attempt_close_reconciliation(store, symbol, trigger)
+        # Preserve trade-record terminalization for all closes. For a durable
+        # reservation, the exact claim is released only by the account transaction.
+        kwargs = {} if outcome == "no_reservation" else {"release_occupancy": False}
+        await release_claim(db, symbol, strategy, reason="position_closed", **kwargs)
+
+    async def _retry_closed_reservations(self, tracked_symbols) -> None:
+        db = getattr(self, "db", None)
+        if db is None:
+            return
+        try:
+            store = RiskPolicyStore(db)
+            pending = await store.pending_hrs_symbols()
+        except Exception as exc:
+            logger.warning("hrs_close_reconciliation", symbol="*", trigger="position_sync",
+                           outcome="reservation_scan_failed", error_type=type(exc).__name__)
+            return
+        for symbol in pending:
+            if symbol not in tracked_symbols:
+                await self._attempt_close_reconciliation(store, symbol, "position_sync")
+
     async def _report_positions_to_dashboard(self) -> None:
         """上报当前持仓与策略状态到看板聚合表（strategy_states / strategy_open_positions）
 
@@ -1663,6 +1849,7 @@ class HRSStrategy(BaseStrategy):
         await save_strategy_state(self.db, "hrs", positions)
         # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
         await sync_open_positions(self.db, "hrs", margin_dict, qty_dict)
+        await self._retry_closed_reservations(positions)
 
     async def _check_candidate_update(self, now: datetime) -> None:
         """
@@ -2152,8 +2339,16 @@ class HRSStrategy(BaseStrategy):
                         )
                         logger.info("双向信号冲突且无法区分，放弃", symbol=symbol)
 
+        # Capture the actual batch boundary and insertion order. Scoring a symbol
+        # earlier does not mean its order existed before conflict resolution.
+        ordered_signals = list(short_by_symbol.values()) + list(long_by_symbol.values())
+        recorder = getattr(self, 'decision_recorder', None)
+        if recorder is not None:
+            observed = datetime.now(timezone.utc)
+            await safe_record(recorder, recorder.run_id, 'execution_batch',
+                {'ordered_signals': ordered_signals}, as_of=observed, available_at=observed)
         # 执行无冲突的信号
-        for signal in list(short_by_symbol.values()) + list(long_by_symbol.values()):
+        for signal in ordered_signals:
             success = await self.execute_signal(signal)
             # P2-1: 更新信号结果
             if success:
@@ -2205,12 +2400,36 @@ class HRSStrategy(BaseStrategy):
             direction_upper = "LONG" if direction == "long" else "SHORT"
             close_side = "SELL" if direction == "long" else "BUY"
 
-            pnl = TradeLogger.calculate_pnl(
-                direction=direction_upper,
-                entry_price=Decimal(str(entry_price)),
-                exit_price=Decimal(str(exit_price)),
-                quantity=Decimal(str(quantity)),
-            )
+            order_id = str(close_order.get("orderId") or "") if close_order else ""
+            live = getattr(self.binance_client, "testnet", None) is False
+            if live:
+                if not order_id:
+                    return
+                from shared.entry_fill_evidence import verified_fill
+                order = await self.binance_client.get_order(symbol, int(order_id))
+                fills = await self.binance_client.get_user_trades(symbol, order_id=order_id, limit=1000)
+                executed, _ = verified_fill(dict(symbol=symbol, side=close_side, order_id=order_id), order, fills)
+                if executed != Decimal(str(quantity)):
+                    return
+                from shared.accounting.account_cutover import account_cutover_ms
+                cutover = account_cutover_ms(os.environ.get('TRADE_ACCOUNT_ID', 'default'))
+                classic = self.binance_client.use_unified_account is False
+                if classic and cutover is None:
+                    return
+                if cutover is not None and any(
+                    (int(receipt['time']) >= cutover) != classic for receipt in [order, *fills]
+                ):
+                    return
+                pnl = sum((Decimal(str(row["realizedPnl"])) for row in fills), Decimal(0))
+                if not pnl.is_finite():
+                    return
+            else:
+                pnl = TradeLogger.calculate_pnl(
+                    direction=direction_upper,
+                    entry_price=Decimal(str(entry_price)),
+                    exit_price=Decimal(str(exit_price)),
+                    quantity=Decimal(str(quantity)),
+                )
 
             # 获取 trade_logger 实例
             trade_logger = getattr(self.binance_client, 'trade_logger', None)
@@ -2218,14 +2437,12 @@ class HRSStrategy(BaseStrategy):
                 logger.warning("trade_logger 未设置，跳过PnL回写", symbol=symbol)
                 return
 
-            order_id = str(close_order.get("orderId", "")) if close_order else ""
-
             await trade_logger.update_realized_pnl(
                 order_id=order_id,
                 realized_pnl=pnl,
                 side=close_side,
                 symbol=symbol,
-                executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None),
+                executed_at=None if live else datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None),
             )
 
             logger.info(
@@ -2244,12 +2461,15 @@ class HRSStrategy(BaseStrategy):
         self,
         symbol: str,
         opened_at: datetime,
+        *,
+        direction: Optional[str] = None,
+        entry_quantity: Optional[float] = None,
     ) -> Optional[Decimal]:
         """
         从币安API获取该持仓的实际已实现盈亏
 
         仅在收入事件、成交明细和同账户 HRS 订单能逐笔核对时返回实盘值。
-        任一缺失、满页或共享币种歧义均返回 None，交给理论值兜底。
+        退出成交累计量必须覆盖本轮入场量；缺失、满页或归属歧义均返回 None。
 
         Args:
             symbol: 交易对
@@ -2259,9 +2479,23 @@ class HRSStrategy(BaseStrategy):
             实际 PnL 总和（USDT），API 失败或未找到记录返回 None
         """
         try:
+            if direction not in ("long", "short") or entry_quantity is None:
+                return None
+            expected_quantity = Decimal(str(entry_quantity))
+            if not expected_quantity.is_finite() or expected_quantity <= 0:
+                return None
+            close_side = "SELL" if direction == "long" else "BUY"
             # 将开仓时刻转换为毫秒时间戳
             start_ms = int(opened_at.timestamp() * 1000)
             end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+            from shared.accounting.account_cutover import account_cutover_ms, order_epoch
+            account_id = os.environ.get("TRADE_ACCOUNT_ID", "").strip()
+            cutover = account_cutover_ms(account_id)
+            classic = getattr(self.binance_client, "use_unified_account", True) is False
+            if ((classic and (cutover is None or start_ms < cutover))
+                    or (not classic and cutover is not None and end_ms >= cutover)):
+                return None
 
             income_records = await self.binance_client.get_income_history(
                 start_time=start_ms,
@@ -2279,10 +2513,6 @@ class HRSStrategy(BaseStrategy):
                 return None
 
             relevant = [row for row in income_records if row.get("symbol") == symbol]
-            if not relevant:
-                logger.warning("未找到该symbol的实际PnL记录", symbol=symbol)
-                return None
-
             account_id = os.environ.get("TRADE_ACCOUNT_ID", "").strip()
             db = getattr(self, "db", None)
             if not account_id or db is None:
@@ -2296,15 +2526,39 @@ class HRSStrategy(BaseStrategy):
                 logger.warning("成交响应异常或已满页，放弃实盘PnL", symbol=symbol)
                 return None
             fill_by_id = {}
+            seen_fill_ids = set()
+            exit_order_ids = set()
+            closed_quantity = Decimal("0")
             for fill in fills:
                 trade_id = fill.get("id")
-                if trade_id is None or str(trade_id) in fill_by_id:
+                if (trade_id is None or str(trade_id) in seen_fill_ids
+                        or (cutover is not None and not start_ms <= int(fill["time"]) <= end_ms)
+                        or fill.get("symbol") != symbol or fill.get("side") not in ("BUY", "SELL")):
                     return None
+                seen_fill_ids.add(str(trade_id))
+                if fill["side"] != close_side:
+                    continue
+                qty = Decimal(str(fill["qty"]))
+                realized = Decimal(str(fill["realizedPnl"]))
+                if not qty.is_finite() or qty <= 0 or not realized.is_finite() or fill.get("orderId") is None:
+                    return None
+                closed_quantity += qty
+                exit_order_ids.add(str(fill["orderId"]))
                 fill_by_id[str(trade_id)] = fill
+
+            # 持仓数量历史字段为 float，只容忍其一个表示步长，不能采用百分比成交容差。
+            expected_float = float(expected_quantity)
+            if not math.isfinite(expected_float):
+                return None
+            representation_error = Decimal(str(math.ulp(expected_float)))
+            if abs(closed_quantity - expected_quantity) > representation_error:
+                logger.warning("退出成交数量尚未完整，保留待结算状态", symbol=symbol,
+                               expected=str(expected_quantity), observed=str(closed_quantity))
+                return None
 
             seen_tran_ids = set()
             matched_trade_ids = set()
-            order_ids = set()
+            order_ids = set(exit_order_ids)
             total_pnl = Decimal("0")
             for record in relevant:
                 tran_id = record.get("tranId")
@@ -2312,7 +2566,9 @@ class HRSStrategy(BaseStrategy):
                 if record.get("incomeType") != "REALIZED_PNL" or record.get("asset") != "USDT":
                     return None
                 if (tran_id is None or str(tran_id) in seen_tran_ids
-                        or trade_id is None or str(trade_id) not in fill_by_id):
+                        or trade_id is None or str(trade_id) not in fill_by_id
+                        or str(trade_id) in matched_trade_ids
+                        or (cutover is not None and not start_ms <= int(record["time"]) <= end_ms)):
                     return None
                 seen_tran_ids.add(str(tran_id))
                 matched_trade_ids.add(str(trade_id))
@@ -2334,13 +2590,35 @@ class HRSStrategy(BaseStrategy):
                 return None
 
             rows = await db.fetch_all(
-                "SELECT account_id, strategy, order_id FROM trading.trade_records "
+                "SELECT account_id, strategy, order_id, executed_at FROM trading.trade_records "
                 "WHERE account_id = $1 AND symbol = $2 AND order_id = ANY($3::text[])",
                 account_id, symbol, sorted(order_ids),
             )
             owners = {}
             for row in rows:
+                if cutover is not None and order_epoch(row.get("executed_at"), cutover) != ("classic" if classic else "pm"):
+                    continue
                 owners.setdefault(str(row["order_id"]), set()).add(row["strategy"])
+            if classic:
+                from shared.condition_orders import classic_owned_algos
+                links = await db.fetch_all(
+                    "SELECT order_id,strategy,evidence FROM trading.order_strategy_evidence "
+                    "WHERE account_id=$1 AND symbol=$2 AND order_id=ANY($3::bigint[]) AND source_kind='classic_algo_link'",
+                    account_id, symbol, [int(oid) for oid in order_ids])
+                for link in links:
+                    oid = str(link['order_id'])
+                    payload = link['evidence']
+                    if isinstance(payload, str):
+                        payload = json.loads(payload)
+                    parent_id = int(payload['algo_id'])
+                    parent = await self.binance_client.get_algo_order(parent_id)
+                    sides = {f.get('side') for f in fills if str(f.get('orderId')) == oid}
+                    if (str(parent.get('actualOrderId')) != oid or int(parent['algoId']) != parent_id
+                            or parent['algoStatus'] not in ('TRIGGERED','FINISHED') or {parent['side']} != sides
+                            or link['strategy'] != 'hrs' or not await classic_owned_algos(
+                                self.binance_client, symbol=symbol, orders=[parent])):
+                        return None
+                    owners.setdefault(oid, set()).add('hrs')
             if any(owners.get(order_id) != {"hrs"} for order_id in order_ids):
                 logger.warning("实盘PnL含非 HRS 或无归属订单", symbol=symbol)
                 return None
@@ -2355,7 +2633,7 @@ class HRSStrategy(BaseStrategy):
 
         except Exception as e:
             logger.warning(
-                "从币安获取实际PnL失败，将降级到理论计算",
+                "从币安获取实际PnL失败，等待完整成交证据",
                 symbol=symbol,
                 error=str(e),
             )
@@ -2478,11 +2756,11 @@ class HRSStrategy(BaseStrategy):
         pos: Dict[str, Any],
     ) -> Optional[Decimal]:
         """
-        全部平仓时回写完整 PnL（优先从币安API获取实际值，降级到理论计算）
+        全部平仓时回写完整实际 PnL；证据暂缺则等待下轮重试。
 
         当 detect_take_profit_fills 检测到全部平仓（tp_result == 0）时，
         优先从币安API获取该持仓的实际已实现盈亏，写入 trade_records。
-        API 失败时降级到理论计算（合并 TP1+TP2+剩余为 1 个总值，只写入 1 次）。
+        API 失败或成交尚未完整结算时返回 None，保留原持仓身份。
 
         B6a: 返回本次回写使用的已实现盈亏（Decimal），让调用方复用同一值判定
         胜负计数，避免"全平=止盈/止损"的事件名预判错误。
@@ -2508,29 +2786,19 @@ class HRSStrategy(BaseStrategy):
                 return None
 
             pnl_value: Optional[Decimal] = None
-            pnl_source = "theoretical_estimate"
+            pnl_source = "exchange_order_matched"
 
             # 1. 优先从币安 API 获取实际 PnL（B5：取不可变开仓时刻，不受复核延期影响）
             opened_at = pos.get("opened_at")
             if isinstance(opened_at, datetime):
-                pnl_value = await self._get_actual_pnl_from_binance(symbol, opened_at)
+                pnl_value = await self._get_actual_pnl_from_binance(
+                    symbol, opened_at, direction=direction, entry_quantity=entry_quantity)
                 if pnl_value is not None:
                     pnl_source = "exchange_order_matched"
 
-            # 2. 实际 PnL 获取失败，降级到理论计算
+            # 实际成交尚不可见时保留持仓身份，下轮重试；估值不能驱动实盘风控。
             if pnl_value is None:
-                pnl_value = await self._calculate_theoretical_total_pnl(
-                    symbol=symbol,
-                    direction=direction,
-                    entry_price=entry_price,
-                    entry_quantity=entry_quantity,
-                    atr=atr,
-                    current_price=current_price,
-                    pos=pos,
-                )
-
-            if pnl_value is None:
-                logger.warning("PnL计算失败，无法回写", symbol=symbol)
+                logger.warning("实际平仓盈亏待确认，保留结算状态", symbol=symbol)
                 return None
 
             # 3. 直接插入一条 PnL 汇总记录（条件单成交无 trade_records 可 UPDATE）
@@ -2576,6 +2844,7 @@ class HRSStrategy(BaseStrategy):
                     pnl=float(pnl_value),
                     source=pnl_source,
                 )
+                return None
 
             return pnl_value
 
@@ -2626,7 +2895,7 @@ class HRSStrategy(BaseStrategy):
             ) = await self._fetch_market_cap_ratio(
                 symbol, oi_usd, volume_24h, require_true_for_entry=False,
             )
-            if _mc_source != "coingecko" and _mc_source != "cache_hit":
+            if _mc_source not in ("coingecko", "coinmarketcap", "cache_hit"):
                 logger.info(
                     "时间止损重新分析：市值来源非真实值，记录但不阻断退出",
                     symbol=symbol, source=_mc_source,
@@ -2670,6 +2939,33 @@ class HRSStrategy(BaseStrategy):
             )
             return False
 
+    async def _classic_take_profit_change(self, symbol, pos, exchange_qty):
+        from shared.condition_orders import confirm_classic_algo_fill
+
+        remaining = Decimal(str(pos.get('remaining_quantity', pos['entry_quantity'])))
+        actual = Decimal(str(exchange_qty))
+        if actual == remaining:
+            return None
+        if actual > remaining:
+            raise ValueError("账户持仓超过 HRS 可证明的数量")
+        confirmed = []
+        for level in (1, 2):
+            if pos.get(f'target{level}_reached'):
+                continue
+            algo = self.position_manager.get_algo_id(symbol, f'tp{level}')
+            if algo:
+                qty = await confirm_classic_algo_fill(self.binance_client, symbol, algo,
+                    role='TAKE_PROFIT', tp_level=level, return_quantity=True)
+                if qty:
+                    confirmed.append((level, qty))
+        if remaining - sum((qty for _, qty in confirmed), Decimal(0)) != actual:
+            raise ValueError("账户减仓量与 HRS 止盈成交不符")
+        for level, qty in confirmed:
+            remaining -= qty
+            self.position_manager.mark_target_reached(symbol, level, actual_remaining_quantity=float(remaining))
+        self.position_manager.sync_tracked_qty(symbol, exchange_qty)
+        return confirmed[-1][0]
+
     async def _get_exchange_position_qty(self, symbol: str) -> Optional[float]:
         """查询交易所该币种的实际持仓数量（绝对值）
 
@@ -2685,11 +2981,18 @@ class HRSStrategy(BaseStrategy):
         for attempt in range(self._position_query_max_retries + 1):
             try:
                 positions_data = await self.binance_client.get_position(symbol)
-                for pos_data in positions_data:
-                    qty = abs(float(pos_data.get("positionAmt", 0)))
-                    if qty > 0:
-                        return qty
-                return 0.0
+                if not isinstance(positions_data, list):
+                    raise ValueError("账户持仓清单无效")
+                active = [Decimal(str(row["positionAmt"])) for row in positions_data
+                          if row["symbol"] == symbol and Decimal(str(row["positionAmt"])) != 0]
+                if not active:
+                    return 0.0
+                if len(active) != 1 or not active[0].is_finite():
+                    raise ValueError("交易所持仓方向或数量不明确")
+                local = self.position_manager.get_position(symbol)
+                if isinstance(local, dict) and local.get("direction") != ("long" if active[0] > 0 else "short"):
+                    raise ValueError("交易所持仓与 HRS 跟踪方向不符")
+                return float(abs(active[0]))
             except Exception as e:
                 last_err = e
                 if attempt < self._position_query_max_retries:
@@ -2727,6 +3030,15 @@ class HRSStrategy(BaseStrategy):
 
         return await self.capital_mgr.enforce_existing_positions(margins, close)
 
+    async def _position_quantity_step(self, symbol: str) -> Optional[Decimal]:
+        """读取执行器缓存的数量步长，失败时使用未取整的保守档位阈值。"""
+        try:
+            _, step = await self.trading_executor._get_symbol_precision(symbol)
+            step = Decimal(str(step))
+            return step if step.is_finite() and step > 0 else None
+        except Exception:
+            return None
+
     async def _monitor_positions(self) -> None:
         """监控持仓：移动止盈、时间止损"""
         try:
@@ -2761,9 +3073,14 @@ class HRSStrategy(BaseStrategy):
                     position_open = pos_amt > 0
                     try:
                         # 调用 position_manager 的止盈检测方法
-                        tp_result = self.position_manager.detect_take_profit_fills(symbol, pos_amt)
+                        if self.binance_client.use_unified_account is False and position_open:
+                            tp_result = await self._classic_take_profit_change(symbol, pos, pos_amt)
+                        else:
+                            tp_result = self.position_manager.detect_take_profit_fills(
+                                symbol, pos_amt, quantity_step=await self._position_quantity_step(symbol))
                     except Exception as e:
                         logger.warning("止盈成交检测失败", symbol=symbol, error=str(e))
+                        continue
 
                     if tp_result == 0:
                         # B6a: 全部平仓——回写 PnL 并按真实已实现盈亏判定胜负
@@ -2776,15 +3093,14 @@ class HRSStrategy(BaseStrategy):
                             current_price=current_price,
                             pos=pos,
                         )
-                        await self.position_manager.cancel_all_orders(symbol)
+                        if not await self._account_position_close(
+                            symbol, pos, close_pnl, current_price, "全平仓"
+                        ):
+                            continue
+                        if not await self._clear_flat_protection(symbol):
+                            continue
                         self.position_manager.remove_position(symbol)
-                        await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
-
-                        # B6a: 按真实已实现盈亏符号计数，不再假设"全平=止盈"
-                        await self._record_outcome_by_pnl(
-                            close_pnl, symbol, direction,
-                            entry_price, current_price, "全平仓",
-                        )
+                        await self._reconcile_closed_position(symbol)
 
                         await self._save_state()
                         if self._should_unregister(symbol):
@@ -2847,22 +3163,6 @@ class HRSStrategy(BaseStrategy):
                     ):
                         continue
 
-                    # B6a: 按实际已实现盈亏符号判定胜负，不再假设"时间止损=亏损"
-                    time_stop_pnl = pos.get("_last_close_pnl")
-                    await self._record_outcome_by_pnl(
-                        time_stop_pnl, symbol, direction,
-                        entry_price, current_price, "时间止损",
-                    )
-
-                    # 使用 calculate_pnl 统一计算盈亏（支持做多/做空方向）
-                    # 累计 _total_pnl 用于回撤追踪，不影响风控胜负计数
-                    pnl = TradeLogger.calculate_pnl(
-                        direction="LONG" if direction == "long" else "SHORT",
-                        entry_price=Decimal(str(entry_price)),
-                        exit_price=Decimal(str(current_price)),
-                        quantity=Decimal(str(entry_quantity)),
-                    )
-                    self._total_pnl += float(pnl)
                     await self._save_state()
 
                     # P2-4: 发送止损通知
@@ -2909,13 +3209,6 @@ class HRSStrategy(BaseStrategy):
                         # B6a: 移动止盈虽命名为"止盈"，但极端行情下回撤可能超过入场价
                         # 导致净亏损（闪崩/ATR 突增）。这里按实际净盈亏符号判定胜负，
                         # 不再假设"移动止盈=盈利"。
-                        trailing_pnl = pos.get("_last_close_pnl")
-                        await self._record_outcome_by_pnl(
-                            trailing_pnl, symbol, direction,
-                            entry_price, current_price, "移动止盈",
-                        )
-
-                        self._total_pnl += 0  # 盈利暂不累计到回撤计算
                         await self._save_state()
 
                         # P2-4: 发送止盈通知
@@ -2995,6 +3288,7 @@ class HRSStrategy(BaseStrategy):
 
     # ==================== V2.5: LV-RM 独立运行 ====================
 
+    @capture_cycle
     async def _run_lv_rm_only_cycle(self) -> None:
         """
         V2.5: 候选池为空时的轻量级循环
@@ -3006,6 +3300,7 @@ class HRSStrategy(BaseStrategy):
         lv_rm_config = self.config.get("lv_rm", {})
         if not lv_rm_config.get("enabled", True):
             logger.debug("LV-RM 未启用，跳过")
+            await record_stage(self, 'scan_denial', {'reason': 'lv_rm_disabled'})
             return
 
         # B2: 用具名列表承接 LV-RM 信号，并进入统一收尾链
@@ -3023,6 +3318,7 @@ class HRSStrategy(BaseStrategy):
                 )
             else:
                 logger.debug("LV-RM 无低波动候选币种")
+                await record_stage(self, 'scan_denial', {'reason': 'lv_rm_empty_scan_range'})
         except Exception as e:
             logger.error("LV-RM 独立检查失败", error=str(e))
 
@@ -3063,6 +3359,12 @@ class HRSStrategy(BaseStrategy):
             concurrency_limit=concurrency_limit,
         )
 
+        recorder = getattr(self, 'decision_recorder', None)
+        if recorder is not None:
+            observed = datetime.now(timezone.utc)
+            await safe_record(recorder, recorder.run_id, 'lv_rm_scan_scope',
+                {'symbols': list(low_vol_symbols), 'signal_origin': signal_origin},
+                as_of=observed, available_at=observed)
         # 每轮 LV-RM 扫描先批量刷新真实市值，避免缓存过期后并发逐币请求。
         await self.market_data.preload_market_caps(low_vol_symbols)
 
@@ -3071,26 +3373,22 @@ class HRSStrategy(BaseStrategy):
 
         async def check_symbol(symbol: str):
             async with semaphore:
+                terminal_reason = 'analysis_error'
+                audit_inputs = None
                 try:
                     # 已在标准模式中检查过的币种跳过
                     if symbol in self.candidate_pool.get_short_candidates() or \
                        symbol in self.candidate_pool.get_long_candidates():
+                        terminal_reason = 'standard_candidate_overlap'
                         return
 
                     # 检查熔断
                     if self.risk_manager.is_circuit_breaker_active(symbol):
+                        terminal_reason = 'symbol_circuit_breaker'
                         return
 
-                    # 获取K线
-                    klines = self._klines_cache.get(symbol, [])
-                    if len(klines) < self.min_klines:
-                        klines = await self._warmup_klines(symbol)
-                        if len(klines) < self.min_klines:
-                            return
-                        self._klines_cache[symbol] = klines
-
-                    # 合成4h K线
-                    klines_4h = self._klines_4h_cache.get(symbol, [])
+                    klines, klines_4h = await self._prepare_decision_klines(symbol)
+                    audit_inputs = {'klines_1h': klines, 'klines_4h': klines_4h}
 
                     current_close = float(klines[-1].get("close", 0))
                     current_open_time = klines[-1].get("open_time", 0)
@@ -3136,6 +3434,17 @@ class HRSStrategy(BaseStrategy):
                         klines_4h=klines_4h,
                     )
                     should_entry_long = self.scoring_engine.should_entry(score_long)
+                    terminal_reason = 'scored'
+                    recorder = getattr(self, 'decision_recorder', None)
+                    if recorder is not None:
+                        observed = datetime.now(timezone.utc)
+                        await safe_record(recorder, recorder.run_id, 'lv_rm_analysis', {
+                            'signal_origin': signal_origin, 'klines_1h': klines, 'klines_4h': klines_4h,
+                            'oi_usd': oi_usd, 'funding_rate': funding_rate, 'volume_24h': volume_24h,
+                            'market_cap': _mc_value, 'market_cap_source': _mc_source,
+                            'short_score': score.to_dict(), 'long_score': score_long.to_dict(),
+                            'short_should_entry': should_entry_short, 'long_should_entry': should_entry_long,
+                        }, as_of=observed, available_at=observed, symbol=symbol)
 
                     if should_entry_short:
                         # P2-6: 已有持仓时不产生新信号（不加仓）
@@ -3183,8 +3492,20 @@ class HRSStrategy(BaseStrategy):
                     else:
                         self._clear_signal_timestamp(symbol, "long")
 
+                except KlineHistoryUnavailable as exc:
+                    terminal_reason = exc.reason
+                    logger.warning('HRS LV-RM数据未就绪', symbol=symbol, reason=exc.reason)
                 except Exception as e:
                     logger.error("LV-RM分析失败", symbol=symbol, error=str(e))
+                finally:
+                    recorder = getattr(self, 'decision_recorder', None)
+                    if recorder is not None:
+                        observed = datetime.now(timezone.utc)
+                        await safe_record(recorder, recorder.run_id, 'lv_rm_candidate_outcome', {
+                            'reason': terminal_reason, 'signal_origin': signal_origin,
+                            'klines_1h': audit_inputs['klines_1h'] if audit_inputs is not None else self._klines_cache.get(symbol, []),
+                            'klines_4h': audit_inputs['klines_4h'] if audit_inputs is not None else self._klines_4h_cache.get(symbol, []),
+                        }, as_of=observed, available_at=observed, symbol=symbol)
 
         await asyncio.gather(*[check_symbol(s) for s in low_vol_symbols])
 
@@ -3198,7 +3519,7 @@ class HRSStrategy(BaseStrategy):
         wait_seconds = (next_run - now).total_seconds()
         if wait_seconds > 0:
             logger.info(f"对齐到每小时第{target_minute}分钟，等待 {wait_seconds:.0f} 秒")
-            await asyncio.sleep(wait_seconds)
+            await self._wait_with_timeout_recovery(wait_seconds)
 
     async def _execute_ddl_safe(self, sql: str) -> bool:
         """安全执行单条幂等 DDL：失败仅记日志，绝不抛异常中断后续 DDL
@@ -3492,13 +3813,21 @@ class HRSStrategy(BaseStrategy):
                 exit_ratios = tuple(Decimal(str(value)) for value in values)
                 first, second = exit_ratios
                 if (not first.is_finite() or not second.is_finite() or first <= 0
-                        or second < 0 or first + second > 1
-                        or (second == 0 and first != 1)):
+                        or second < 0 or first + second > 1):
                     raise ValueError('invalid exit ratio values')
             except (ValueError, TypeError, ArithmeticError) as exc:
                 logger.error('HRS 持仓出场方案无效，保留原保护单并拒绝自动重建',
                              symbol=symbol, error=str(exc))
                 exit_ratios = (Decimal('NaN'), Decimal('NaN'))
+        frozen = row.get('exit_plan')
+        plan_invalid = False
+        if frozen is not None:
+            try:
+                frozen = json.loads(frozen) if isinstance(frozen, str) else frozen
+                frozen = validate_exit_plan(frozen)
+            except (ValueError, TypeError):
+                plan_invalid = True
+                logger.error('HRS 持仓退出参数损坏，保留跟踪及现有保护，拒绝默认参数重建', symbol=symbol)
         pm.add_position(
             symbol=symbol,
             direction=row["direction"],
@@ -3509,10 +3838,14 @@ class HRSStrategy(BaseStrategy):
             opened_at=opened_at,
             risk_stop_price=row.get("risk_stop_price"),
             exit_ratios=exit_ratios,
+            exit_plan=frozen if not plan_invalid else None,
         )
         pos = pm.get_position(symbol)
         if pos is None:
             return
+        if plan_invalid:
+            pos['exit_plan'] = frozen if frozen is not None else {'invalid_exit_plan': True}
+            pos['exit_plan_invalid'] = True
         # 真实开仓时刻或入场模式缺失 → 打标记，不编造
         pos["opening_time_uncertain"] = (
             bool(row.get("opening_time_uncertain")) or row.get("opened_at") is None
@@ -3556,7 +3889,7 @@ class HRSStrategy(BaseStrategy):
                 "SELECT symbol, direction, entry_price, quantity, entry_time, opened_at, "
                 "next_review_at, entry_mode, entry_config_hash, position_id, "
                 "opening_time_uncertain, entry_mode_unknown, algo_ids, "
-                "remaining_quantity, target1_reached, target2_reached, risk_stop_price, exit_ratios "
+                "remaining_quantity, target1_reached, target2_reached, risk_stop_price, exit_ratios, exit_plan "
                 "FROM hrs.hrs_positions"
             )
             blacklist_rows = await self.db.fetch_all(
@@ -3565,8 +3898,11 @@ class HRSStrategy(BaseStrategy):
             active_symbols_rows = await self.db.fetch_all(
                 "SELECT symbol FROM hrs.hrs_active_symbols"
             )
+            meta_rows = await self.db.fetch_all(
+                "SELECT key, value FROM hrs.hrs_meta WHERE key LIKE $1", "risk.%",
+            )
 
-            if positions_rows or blacklist_rows or active_symbols_rows:
+            if positions_rows or blacklist_rows or active_symbols_rows or meta_rows:
                 restored_from_independent = True
                 logger.info("从独立表恢复状态")
 
@@ -3586,10 +3922,6 @@ class HRSStrategy(BaseStrategy):
                     self._registered_symbols.add(row["symbol"])
 
                 # 恢复风控元数据
-                meta_rows = await self.db.fetch_all(
-                    "SELECT key, value FROM hrs.hrs_meta WHERE key LIKE $1",
-                    "risk.%",
-                )
                 risk_data = {}
                 for row in meta_rows:
                     key = row["key"].replace("risk.", "")
@@ -3602,11 +3934,19 @@ class HRSStrategy(BaseStrategy):
                         "drawdown_pause_until": risk_data.get("drawdown_pause_until") or None,
                         "blacklist": list(blacklist_symbols),
                         "daily_open_count": json.loads(risk_data.get("daily_open_count", '{"short": 0, "long": 0}')),
+                        "daily_reset_date": risk_data.get("daily_reset_date") or None,
                         "stop_loss_monitor": json.loads(risk_data.get("stop_loss_monitor", "{}")),
                         # P2-6: 恢复熔断状态
                         "circuit_breakers": json.loads(risk_data.get("circuit_breakers", "{}")),
                     }
                     self.risk_manager.from_dict(rm_data)
+                    self._total_pnl = float(risk_data.get("total_pnl", 0))
+                    self._accounted_close_pnl = json.loads(risk_data.get("accounted_close_pnl", "{}"))
+                    self._pending_close_pnl = set(json.loads(risk_data.get("pending_close_pnl", "[]")))
+                    accounting = json.loads(risk_data.get("close_accounting", "{}"))
+                    if accounting:
+                        self._total_pnl = float(accounting["total_pnl"])
+                        self._accounted_close_pnl = accounting["positions"]
 
                     # P2-3: 恢复加仓计数
                     try:
@@ -3640,6 +3980,9 @@ class HRSStrategy(BaseStrategy):
                         data = json.loads(data)
 
                     self.risk_manager.from_dict(data.get("risk", {}))
+                    self._total_pnl = float(data.get("total_pnl", 0))
+                    self._accounted_close_pnl = data.get("accounted_close_pnl", {})
+                    self._pending_close_pnl = set(data.get("pending_close_pnl", []))
                     self.position_manager.from_dict(data.get("positions", {}))
                     self._registered_symbols = set(data.get("registered_symbols", []))
                     self._klines_cache = data.get("klines_cache", {})
@@ -3749,6 +4092,9 @@ class HRSStrategy(BaseStrategy):
                     data = json.loads(data)
 
                 self.risk_manager.from_dict(data.get("risk", {}))
+                self._total_pnl = float(data.get("total_pnl", 0))
+                self._accounted_close_pnl = data.get("accounted_close_pnl", {})
+                self._pending_close_pnl = set(data.get("pending_close_pnl", []))
                 self.position_manager.from_dict(data.get("positions", {}))
                 self._registered_symbols = set(data.get("registered_symbols", []))
                 self._klines_cache = data.get("klines_cache", {})
@@ -3817,11 +4163,8 @@ class HRSStrategy(BaseStrategy):
                         symbol=symbol,
                         direction=local_positions[symbol].get("direction"),
                     )
-                    self.position_manager.remove_position(symbol)
-                    await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
-                    # 清理K线服务
-                    if self._should_unregister(symbol):
-                        await self._unregister_single_symbol(symbol)
+                    # 平仓可能发生在停机期间；复用结算路径，不能直接丢弃该仓身份。
+                    await self._replenish_single_position(symbol)
 
             # 差异汇总
             local_only = set(local_positions.keys()) - set(exchange_pos_map.keys())
@@ -3967,14 +4310,14 @@ class HRSStrategy(BaseStrategy):
                 (symbol, direction, entry_price, quantity, entry_time, opened_at, next_review_at,
                  entry_mode, entry_config_hash, position_id, opening_time_uncertain,
                  entry_mode_unknown, algo_ids, remaining_quantity, target1_reached,
-                 target2_reached, risk_stop_price, exit_ratios)
-            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17::jsonb)
+                 target2_reached, risk_stop_price, exit_ratios, exit_plan)
+            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17::jsonb, $18::jsonb)
             ON CONFLICT (symbol, direction) DO UPDATE
             SET entry_price = $3, quantity = $4, entry_time = $5, opened_at = $5,
                 next_review_at = $6, entry_mode = $7, entry_config_hash = $8, position_id = $9,
                 opening_time_uncertain = $10, entry_mode_unknown = $11, algo_ids = $12::jsonb,
                 remaining_quantity = $13, target1_reached = $14, target2_reached = $15,
-                risk_stop_price = $16, exit_ratios = $17::jsonb
+                risk_stop_price = $16, exit_ratios = $17::jsonb, exit_plan = $18::jsonb
             """,
             symbol,
             pos.get("direction", ""),
@@ -3993,6 +4336,7 @@ class HRSStrategy(BaseStrategy):
             bool(pos.get("target2_reached", False)),
             pos.get("risk_stop_price"),
             json.dumps(pos.get('exit_ratios')) if pos.get('exit_ratios') is not None else None,
+            json.dumps(pos.get('exit_plan')) if pos.get('exit_plan') is not None else None,
         )
 
     async def _save_state(self) -> None:
@@ -4013,6 +4357,15 @@ class HRSStrategy(BaseStrategy):
                 "pause_until": risk_data.get("pause_until") or "",
                 "drawdown_pause_until": risk_data.get("drawdown_pause_until") or "",
                 "daily_open_count": json.dumps(risk_data.get("daily_open_count", {})),
+                "daily_reset_date": risk_data.get("daily_reset_date") or "",
+                "total_pnl": str(getattr(self, "_total_pnl", 0)),
+                "accounted_close_pnl": json.dumps(getattr(self, "_accounted_close_pnl", {})),
+                "pending_close_pnl": json.dumps(sorted(getattr(self, "_pending_close_pnl", set()))),
+                # 同一行原子保存累计值与去重明细，避免重启重复累计。
+                "close_accounting": json.dumps({
+                    "total_pnl": getattr(self, "_total_pnl", 0),
+                    "positions": getattr(self, "_accounted_close_pnl", {}),
+                }),
                 "stop_loss_monitor": json.dumps(risk_data.get("stop_loss_monitor", {})),
                 # P2-3: 持久化加仓计数
                 "add_position_count": json.dumps(self._add_position_count),
@@ -4112,6 +4465,9 @@ class HRSStrategy(BaseStrategy):
 
             state_data = {
                 "risk": self.risk_manager.to_dict(),
+                "total_pnl": getattr(self, "_total_pnl", 0),
+                "accounted_close_pnl": getattr(self, "_accounted_close_pnl", {}),
+                "pending_close_pnl": sorted(getattr(self, "_pending_close_pnl", set())),
                 "positions": self.position_manager.to_dict(),
                 "registered_symbols": list(self._registered_symbols),
                 "klines_cache": trimmed_klines,
@@ -4241,7 +4597,7 @@ class HRSStrategy(BaseStrategy):
             signal_id: 由 _log_signal_to_db INSERT RETURNING 取回的唯一主键；
                        None 时跳过更新并 warning（fail-safe，不回退宽范围 WHERE）
             resolution: 结果状态 ('executed', 'abandoned', 'timeout', 'conflict',
-                        'shadow')。'shadow' 表示影子模式：决策链跑完但未真实下单，
+                        'pool_circuit_breaker', 'shadow')。'shadow' 表示影子模式：决策链跑完但未真实下单，
                         严禁与 'executed' 混用（防把未发生的成交写成事实证据）。
         """
         if signal_id is None:
@@ -4369,6 +4725,9 @@ class HRSStrategy(BaseStrategy):
         """
         try:
             oi_usd = await self.market_data.get_oi_usd(symbol)
+            await record_stage(self, 'entry_stage_inputs', {
+                'stage': 'pre_entry_oi', 'pre_entry_oi_usd': oi_usd,
+            }, symbol=symbol)
             pool_config = self.config.get("candidate_pool", {})
             liquidity_config = pool_config.get("liquidity", {})
             min_oi = liquidity_config.get("min_oi_usd", 10000000)
@@ -4408,6 +4767,9 @@ class HRSStrategy(BaseStrategy):
         try:
             # 获取最新资金费率
             funding_rate = await self.market_data.get_funding_rate(symbol)
+            await record_stage(self, 'entry_stage_inputs', {
+                'stage': 'pre_entry_funding', 'pre_entry_funding_rate': funding_rate,
+            }, symbol=symbol)
             threshold = self.abandon_funding_rate_reversal_threshold
 
             if direction == "short" and funding_rate <= threshold:
@@ -4497,43 +4859,27 @@ class HRSStrategy(BaseStrategy):
                 except Exception as e:
                     ghost_price = entry_price  # 取价失败时以开仓价兜底（理论 PnL 趋近 0）
                     logger.warning("取价失败，幽灵平仓以开仓价兜底", symbol=symbol, error=str(e))
-                await self._writeback_pnl_for_full_close(
+                close_pnl = await self._writeback_pnl_for_full_close(
                     symbol=symbol, direction=direction, entry_price=entry_price,
                     entry_quantity=entry_quantity, atr=atr, current_price=ghost_price, pos=pos,
                 )
-                await self.position_manager.cancel_all_orders(symbol)
+                if not await self._account_position_close(symbol, pos, close_pnl, ghost_price, "启动平仓对账"):
+                    return
+                if not await self._clear_flat_protection(symbol):
+                    return
                 self.position_manager.remove_position(symbol)
-                await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
+                await self._reconcile_closed_position(symbol)
                 await self._save_state()
                 return
 
-            # 交易所持仓量明显小于初始开仓量 → 说明 TP1 已部分成交
-            if not target1_reached and exchange_qty < entry_quantity * self._tp1_filled_ratio:
-                # 实际成交量会因交易所数量精度偏离配置比例；若减少幅度接近 TP1，
-                # 以交易所剩余量为准。明显更少时可能停机期间 TP2 也已成交，
-                # 保留理论 TP1 基准，让下一轮继续识别 TP2。
-                expected_tp1_qty = entry_quantity * (
-                    1 - self.position_manager.target1_close_percent
-                )
-                tp2_halfway_qty = expected_tp1_qty * (
-                    1 - self.position_manager.target2_close_percent / 2
-                )
-                actual_qty = exchange_qty if exchange_qty >= tp2_halfway_qty else None
-                self.position_manager.mark_target_reached(
-                    symbol, 1, actual_remaining_quantity=actual_qty
-                )
-                target1_reached = True
-                logger.info(
-                    "检测到TP1已成交，更新状态",
-                    symbol=symbol,
-                    entry_quantity=entry_quantity,
-                    exchange_qty=exchange_qty,
-                )
-                # 若可能同时成交 TP2，跟踪基准仍是理论 TP1 剩余量；
-                # 否则与交易所实际持仓量一致。
-                self.position_manager.sync_tracked_qty(
-                    symbol, pos.get("remaining_quantity", exchange_qty)
-                )
+            if self.binance_client.use_unified_account is False:
+                tp_result = await self._classic_take_profit_change(symbol, pos, exchange_qty)
+            else:
+                tp_result = self.position_manager.detect_take_profit_fills(
+                    symbol, exchange_qty, quantity_step=await self._position_quantity_step(symbol))
+            target1_reached = pos.get("target1_reached", False)
+            target2_reached = pos.get("target2_reached", False)
+            if tp_result in (1, 2):
                 await self._save_state()
 
             # ATR为0时尝试重新计算
@@ -4546,6 +4892,7 @@ class HRSStrategy(BaseStrategy):
 
             # 补单清场由 replenish_position_orders 内部统一执行（FR-09），此处不重复取消
             best_price = pos.get("best_price", 0)
+            previous_sl_id = self.position_manager.get_algo_id(symbol, "sl")
             result = await self.trading_executor.replenish_position_orders(
                 symbol=symbol,
                 direction=direction,
@@ -4555,13 +4902,30 @@ class HRSStrategy(BaseStrategy):
                 target1_reached=target1_reached,
                 target2_reached=target2_reached,
                 best_price=best_price,
+                entry_mode=pos.get("entry_mode", "standard"),
                 exit_ratios=pos.get('exit_ratios'),
+                exit_plan=pos.get('exit_plan'),
             )
 
+            current_sl_id = self.position_manager.get_algo_id(symbol, "sl")
+            if current_sl_id and current_sl_id != previous_sl_id:
+                tick_size, _ = await self.trading_executor._get_symbol_precision(symbol)
+                frozen = validate_exit_plan(pos['exit_plan']) if pos.get('exit_plan') is not None else None
+                params = frozen['params'] if frozen else self.trading_executor._get_lv_rm_params(pos.get("entry_mode", "standard"))
+                reference = frozen['reference_price'] if frozen else entry_price
+                reference_atr = frozen['atr'] if frozen else atr
+                pos["risk_stop_price"] = self.trading_executor._calc_sl_price(
+                    direction, reference, reference_atr, tick_size, params
+                )
+                await self._save_state()
+
             # 价格已过TP2目标，标记target2_reached以激活移动止盈（FR-09: 适配 ReplenishResult.note）
-            if getattr(result, "note", "") == "price_past_tp2":
+            if (getattr(result, "note", "") == "price_past_tp2"
+                    and self.binance_client.use_unified_account is not False):
                 pos["target2_reached"] = True
                 logger.info("价格已过TP2目标，已标记target2_reached，激活移动止盈", symbol=symbol)
+
+            return result
 
         except Exception as e:
             logger.warning("补充持仓保护订单失败", symbol=symbol, error=str(e))
@@ -4703,6 +5067,9 @@ class HRSStrategy(BaseStrategy):
         """
         try:
             positions = await self.binance_client.get_position(symbol)
+            await record_stage(self, 'entry_stage_inputs', {
+                'stage': 'exchange_position', 'exchange_positions': positions,
+            }, symbol=symbol)
             for pos in positions:
                 pos_amt = float(pos.get("positionAmt", 0))
                 if pos_amt == 0:
@@ -4744,6 +5111,29 @@ class HRSStrategy(BaseStrategy):
                 direction=direction,
             )
             return False
+        return True
+
+    async def _account_position_close(self, symbol, pos, pnl, current_price, context) -> bool:
+        """按持仓身份幂等累计实际盈亏；证据缺失时保留结算状态并阻止新增风险。"""
+        pending = getattr(self, "_pending_close_pnl", set())
+        self._pending_close_pnl = pending
+        if pnl is None:
+            if symbol not in pending:
+                pending.add(symbol)
+                await self._save_state()
+            return False
+        pending.discard(symbol)
+        key = pos.get("position_id") or f"{symbol}:{pos.get('direction')}:{pos.get('opened_at')}"
+        accounted = getattr(self, "_accounted_close_pnl", {})
+        self._accounted_close_pnl = accounted
+        value = float(pnl)
+        previous = accounted.get(key)
+        if previous is None:
+            await self._record_outcome_by_pnl(
+                pnl, symbol, pos.get("direction"), pos.get("entry_price", 0), current_price, context,
+            )
+        self._total_pnl = getattr(self, "_total_pnl", 0.0) + value - (previous or 0.0)
+        accounted[key] = value
         return True
 
     async def _record_outcome_by_pnl(
@@ -4797,7 +5187,7 @@ class HRSStrategy(BaseStrategy):
         做明细 UPDATE + remove_position，从不调 insert_pnl_summary 做汇总 INSERT。
         remove_position 后主循环持仓已为 None，永不再触发全平回写。
         修复方式：remove_position 前复用 _writeback_pnl_for_full_close 的
-        "实际值优先→理论兜底→since 去重"取值链，补一条 PNL_SUMMARY。
+        "实际成交核对→since 去重"取值链，补一条 PNL_SUMMARY。
 
         - 完全成交（result.success）：closed_qty>0 时按「实际减仓量」回写明细 PnL →
           补 PNL_SUMMARY 汇总（全平场景） → 撤保护单 → 删持仓 → 返回 True；
@@ -4841,19 +5231,9 @@ class HRSStrategy(BaseStrategy):
                     requested_qty=quantity,
                 )
 
-            # ── H6 修复：全平场景补 PNL_SUMMARY 汇总写入 ─────────────────────────────
-            # 复用 _writeback_pnl_for_full_close 的取值链（实际值优先→理论兜底），
-            # 避免重复实现。pos 为 None 时跳过（单测兼容）。
-            #
-            # 设计限制说明：income 结算延迟（P50=377min，极端 847min）场景下，
-            # _writeback_pnl_for_full_close 的"实际值优先"分支从 Binance 拉 income
-            # 可能尚未结算 → 退回理论值（entry/exit/quantity 计算）兜底。
-            # 回填脚本 hrs_pnl_backfill.py 以 reconcile.match_income_to_trades 归属
-            # 的 income 真值为锚，后续可覆盖更新理论值汇总行（通过 close_reason/
-            # order_id=backfill- 识别批次）。两阶段保证：实时兜底 + 离线校准。
-            #
-            # B6a: 接住 pnl_value 存到 pos 里（可变引用透传），让调用方复用同一值
-            # 判定胜负计数，不再"时间止损=亏损"无条件预判。
+            # 全平后先核对并汇总实际盈亏。收入或成交证据尚未完整时保留仓位身份，
+            # 下一轮继续结算；不能用估值清理仓位或更新回撤累计。
+            # pos 为 None 仅用于兼容不涉及持仓生命周期的调用。
             if pos is not None:
                 try:
                     pnl_from_finalize = await self._writeback_pnl_for_full_close(
@@ -4877,13 +5257,27 @@ class HRSStrategy(BaseStrategy):
                         error=str(e),
                     )
 
-            await self.position_manager.cancel_all_orders(symbol)
+                if not await self._account_position_close(
+                    symbol, pos, pos.get("_last_close_pnl"), exit_price, close_reason
+                ):
+                    return False
+
+            if not await self._clear_flat_protection(symbol):
+                return False
             self.position_manager.remove_position(symbol)
-            await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
+            await self._reconcile_closed_position(symbol)
+            await self._save_state()
             return True
 
         await self._handle_incomplete_close(symbol, direction, result, close_reason)
         return False
+
+    async def _clear_flat_protection(self, symbol):
+        result = await self.position_manager.cancel_all_orders(symbol)
+        if not isinstance(result, dict) or result.get("failed") != 0:
+            logger.warning("仍有保护单待核对，保留持仓和角色记录", symbol=symbol)
+            return False
+        return True
 
     async def _handle_incomplete_close(
         self,

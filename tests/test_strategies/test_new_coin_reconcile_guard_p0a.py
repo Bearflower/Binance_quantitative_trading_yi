@@ -200,7 +200,7 @@ class TestZombieReconcile:
         assert _closed_symbols(strategy) == ['AAAUSDT']
 
     @pytest.mark.asyncio
-    async def test_stale_memory_position_cleared_and_persisted(self):
+    async def test_stale_memory_position_retains_pending_settlement(self):
         """内存脏数据（内存有、交易所无）→ 关闭并持久化。"""
         strategy = _build_strategy()
         strategy.positions = {'BBBUSDT': {'entry_price': 5.0}}
@@ -209,9 +209,9 @@ class TestZombieReconcile:
 
         await strategy._reconcile_positions_with_exchange()
 
-        strategy._handle_position_closed.assert_awaited_once()
-        assert _closed_symbols(strategy) == ['BBBUSDT']
-        assert strategy.positions == {}
+        strategy._handle_position_closed.assert_not_awaited()
+        assert _closed_symbols(strategy) == []
+        assert strategy.positions['BBBUSDT']['settlement_pending'] is True
         strategy._save_state.assert_awaited()
 
     def test_zombie_confirm_cycles_zero_clamped_to_one(self):
@@ -245,13 +245,14 @@ class TestProtectionGuard:
         """真实敞口缺保护单 → 清完成标记并按 DB 入场价增量补挂（strict 核验 + 传 missing）。"""
         strategy = _build_strategy()
         _setup_guard(strategy, ['AAAUSDT'], [{'symbol': 'AAAUSDT', 'entry_price': 100.0, 'opened_at': None}])
+        strategy.trading_executor.position_tracking = {}
         strategy.trading_executor.find_missing_protection = AsyncMock(return_value=['止损单'])
 
         await strategy._guard_protection_orders()
 
         # P0-D：核验用 strict=True（不可判定时返回 None），补挂时把权威 missing 传入
         strategy.trading_executor.find_missing_protection.assert_awaited_once_with(
-            'AAAUSDT', strict=True
+            'AAAUSDT', strict=True, target1_reached=None, target2_reached=None
         )
         strategy.trading_executor.reset_replenish_flag.assert_called_once_with('AAAUSDT')
         strategy.trading_executor.replenish_conditional_orders.assert_awaited_once()
@@ -316,6 +317,7 @@ class TestProtectionGuard:
         """补挂失败 → 累计重试次数 + 告警，不置完成标记。"""
         strategy = _build_strategy()
         _setup_guard(strategy, ['AAAUSDT'], [{'symbol': 'AAAUSDT', 'entry_price': 100.0, 'opened_at': None}])
+        strategy.trading_executor.position_tracking = {}
         strategy.trading_executor.find_missing_protection = AsyncMock(return_value=['止损单'])
         strategy.trading_executor.replenish_conditional_orders = AsyncMock(return_value=False)
 
@@ -329,6 +331,7 @@ class TestProtectionGuard:
         """入场价无效 → 不补挂、直接告警（无法计算阈值）。"""
         strategy = _build_strategy()
         _setup_guard(strategy, ['AAAUSDT'], [{'symbol': 'AAAUSDT', 'entry_price': 0, 'opened_at': None}])
+        strategy.trading_executor.position_tracking = {}
         strategy.trading_executor.find_missing_protection = AsyncMock(return_value=['止损单'])
 
         await strategy._guard_protection_orders()

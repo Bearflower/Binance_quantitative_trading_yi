@@ -1,0 +1,284 @@
+{
+  "source": "c4a0bea5b9304779e4d64a526865541afce764a6",
+  "acceptance_completed_at": "2026-11-27T19:18:21+08:00",
+  "ok": true,
+  "deploy_id": "00000601",
+  "build_run_id": "45981206807",
+  "containers": [
+    {
+      "container": "trading_system-btc_eth",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 173
+    },
+    {
+      "container": "trading_system-mtcps-xau-shadow",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 173
+    },
+    {
+      "container": "trading_system-mtcps-xau-calibrated-shadow",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 173
+    },
+    {
+      "container": "trading_system-btc_eth_aggressive",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 148
+    },
+    {
+      "container": "trading_system-new_coin",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 160
+    },
+    {
+      "container": "trading_system-grid",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-executor",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-dashboard-exporter",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-pg-projector",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-notifier",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-grid-realtime",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 123
+    },
+    {
+      "container": "trading_system-hrs",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 614
+    },
+    {
+      "container": "trading_system-hrs-acceptance",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 614
+    },
+    {
+      "container": "trading_system-execution-facts",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 614
+    },
+    {
+      "container": "trading_system-market-cap",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 614
+    },
+    {
+      "container": "ai-tuner",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 336
+    },
+    {
+      "container": "ai-tuner-snapshot",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 336
+    },
+    {
+      "container": "ai-tuner-funding-schedule",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 336
+    },
+    {
+      "container": "data-backend",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 86
+    },
+    {
+      "container": "dashboard-api",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 614
+    },
+    {
+      "container": "trading_system-kline",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 23
+    },
+    {
+      "container": "trading_system-kline-monitor",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 2
+    },
+    {
+      "container": "trading_system-aggtrade-collector",
+      "health": "healthy",
+      "old_writer_stopped": true,
+      "restarts": 0,
+      "runtime_preserved": true,
+      "source_files": 8
+    },
+    {
+      "container": "trading_system-hrs-research-observer",
+      "preserved": true
+    },
+    {
+      "container": "trading_system-mtpcs-direction-shadow",
+      "preserved": true
+    }
+  ],
+  "business": {
+    "ai_risk_ready": true,
+    "attribution_ready": true,
+    "current_coverage_complete": true,
+    "history_status": "ACCEPTED_GAPS",
+    "hrs_allowed": true,
+    "hrs_ready": true,
+    "original_economics_preserved": true,
+    "original_history_complete": false
+  },
+  "grid": {
+    "acceptance_mode": "paused_zero_budget",
+    "account_mode": "classic",
+    "algo_orders": 0,
+    "current_signal_processed": true,
+    "grid_state": "PAUSED",
+    "journal_net": "0.000",
+    "margin_used": "0",
+    "observed_at": 1795778295.2945592,
+    "ordinary_orders": 0,
+    "policy_action": "WAIT",
+    "reconciled": true,
+    "request_count": 21,
+    "trend_coeff": "0",
+    "waiting_for_new_signal": true
+  },
+  "main_exchange": {
+    "account_mode": "classic",
+    "algo_orders": null,
+    "grid_state": null,
+    "journal_net": null,
+    "observed_at": 1795778294.0412607,
+    "ordinary_orders": null,
+    "protected_positions": 0,
+    "reconciled": null,
+    "request_count": 5,
+    "sha256": "e8ce6456294cd5c2dbc68c12f1983d9a9381c077c11aa8dde671b93f9d34311d",
+    "waiting_for_new_signal": false
+  },
+  "log_error_marker_count": 0,
+  "permissions": {
+    "ok": true,
+    "objects_checked": 1355,
+    "manifest_sha256": "62513735d6954615158f466f8561c1325567efdf3011f6899f75af30849137c1"
+  },
+  "browser": {
+    "ok": true,
+    "status": 200,
+    "responses": 19,
+    "page_errors": 0,
+    "failed_requests": 0
+  },
+  "live_kline": {
+    "tests": 52,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "exit_code": 0,
+    "started_at": 1795777672.458519,
+    "completed_at": 1795777708.8615701,
+    "source": "c4a0bea5b9304779e4d64a526865541afce764a6"
+  },
+  "read_only_verification_helper_tests": 53,
+  "grid_handoff": {
+    "old_writer_stopped": true,
+    "new_writer_healthy": true,
+    "two_flat_samples": true,
+    "sample_interval_seconds": 5.233630895614624,
+    "exchange_write_requests": 0
+  },
+  "private_evidence_sha256": {
+    "final-result.private.json": "3b5c14f10e068c12e2cd65e7cb32e83125881cdd17c5cb7d5ecbd1ccc04f9e0c",
+    "final-grid-proof.json": "0d1656344536dd841b254f8fe387a8cedc15354e7c55270a44f6c249897b756f",
+    "final-main-proof.json": "e8ce6456294cd5c2dbc68c12f1983d9a9381c077c11aa8dde671b93f9d34311d",
+    "final-grid-signal-proof.json": "62422d92c776599c92dd2f6862828e4d7c2af01b833c8f3e82770b75fbdbf506",
+    "final-business-post.private.json": "7c3396ff28c5965b18e98bcf5c23fdbee0e71cad654d6c1c159a6ef68ecd7f4e",
+    "final-version-final.json": "dee42799fb8db3d96d0f5878ed907ed499a404a8e6e6a389822dd8e82d85bc40",
+    "final-final-unified-permissions.json": "eb146b07cbce1abf3d36d9c3dd5a1394e49c8305879d44c2eb1f839167f4a504",
+    "final-trading_system-grid-executor-activation.json": "181fabe6394eecc98b1eda7fd786b155bd7ab0bf2be2b9f306589c08affa5dbc",
+    "final-live-kline.json": "714fcb89c08a141ed609300f79a809138d79d56afdf5cf5d21283e74d59181cc",
+    "frontend-browser-unified-final.json": "67d3606239a2a49ba979209ff6ee1e284d79de4e6aa27c7a6d68b1c6484d6ae7",
+    "helper-hashes.json": "f13b429d544bf148804ba3b58cef32c69b469e562c4f8c9da61db467480330d5"
+  }
+}

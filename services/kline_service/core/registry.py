@@ -236,7 +236,8 @@ class SymbolRegistry:
             logger.warning(f"标的 {symbol} 未注册，无法续期")
             return None
         
-        config = self._cache[symbol]
+        # 写入成功后才替换缓存，数据库失败不得提前延长内存中的有效期。
+        config = self._cache[symbol].model_copy(deep=True)
         config.renew(additional_days)
         
         # 更新数据库
@@ -254,6 +255,7 @@ class SymbolRegistry:
                 "symbol": symbol
             })
         
+        self._cache[symbol] = config
         logger.info(f"✅ 已续期标的：{symbol}，新过期时间：{config.expires_at}，剩余 {config.days_remaining()} 天")
         
         return config

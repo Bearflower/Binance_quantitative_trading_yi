@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -33,7 +34,7 @@ from typing import Any, Dict, List, Optional
 import structlog
 
 from .api_retry_config import is_order_fill_enabled
-from .binance_api import BinanceAPIError
+from .binance_api import BinanceAPIError, symbol_is_confirmed_flat
 from .order_fill_waiter import OrderFillResult, wait_order_final_state
 from .position_ownership import resolve_conflict_owner
 
@@ -369,6 +370,32 @@ async def replenish_protection_round(
     return False
 
 
+def reconcile_classic_protection_ids(position, active):
+    """从同一策略在挂 Algo 恢复缺失槽位，存在冲突时保留原状态。"""
+    slots = {}
+    for order in active:
+        algo_id = order["algo_id"]
+        if order["order_type"] == "TAKE_PROFIT":
+            level = order.get("tp_level")
+            if level not in (1, 2):
+                return False
+            slot = f"tp{level}_order_id"
+        elif algo_id == position.trailing_stop_order_id:
+            slot = "trailing_stop_order_id"
+        else:
+            slot = "stop_loss_order_id"
+        if slot in slots or getattr(position, slot) not in (None, algo_id):
+            return False
+        slots[slot] = algo_id
+    for slot in ("stop_loss_order_id", "tp1_order_id", "tp2_order_id", "trailing_stop_order_id"):
+        if getattr(position, slot) is not None and slot not in slots:
+            # 原槽位可能已触发，成交和撤销必须分别核实。
+            return False
+    for slot, algo_id in slots.items():
+        setattr(position, slot, algo_id)
+    return True
+
+
 async def replenish_missing_protection(strategy, symbol: str, position) -> bool:
     """补挂缺失的保护腿（硬止损/TP1/TP2），复用统一下单助手（R05-F3）
 
@@ -376,6 +403,13 @@ async def replenish_missing_protection(strategy, symbol: str, position) -> bool:
     仍缺失返回 False（保留 pending，交主循环节流收敛）。
     """
     try:
+        if getattr(getattr(strategy, "binance", None), "use_unified_account", True) is False:
+            from .condition_orders import classic_owned_algos
+            active = await classic_owned_algos(strategy.binance, symbol=symbol)
+            if not reconcile_classic_protection_ids(position, active):
+                logger.warning("经典账户保护单角色待核对，暂停补挂", symbol=symbol)
+                return False
+
         (step_size, tick_size, stop_side, partial_cfg,
          stop_offset, tp_offset) = await strategy._load_order_rebuild_params(symbol, position)
 
@@ -579,16 +613,29 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
     )
     if aggressive:
         from shared.entry_risk_policy import submit_aggressive_entry
+        signal['entry_client_order_id'] = signal['_risk_client_id']
         entry_order = await submit_aggressive_entry(strategy, symbol, signal)
     else:
+        entry_kwargs = {}
+        intent_code = {'trend': 't', 'mean_reversion': 'r'}.get(signal.get('entry_intent'))
+        if getattr(strategy, 'my_record_name', None) == 'btc_eth' and intent_code:
+            # Binance retains the intent even if the process dies before saving the ACK.
+            client_id = f"mt1{intent_code}{uuid.uuid4().hex}"
+            signal['entry_client_order_id'] = client_id
+            entry_kwargs['client_order_id'] = client_id
         entry_order = await strategy.binance.place_order(
             symbol=symbol,
             side=entry_side,
             quantity=signal['quantity'],
             price=signal['entry_price'],
-            order_type="LIMIT"
+            order_type="LIMIT",
+            **entry_kwargs,
         )
     entry_order_id = entry_order.get('orderId')
+    if entry_order_id is not None:
+        signal['entry_order_id'] = entry_order_id
+    if entry_order.get('clientOrderId'):
+        signal['entry_client_order_id'] = entry_order['clientOrderId']
     logger.info(
         f"{symbol} 开仓订单已下单",
         order_id=entry_order_id,
@@ -774,19 +821,7 @@ async def _establish_position(strategy, symbol: str, signal: Dict, entry):
                 outcome = None
             if outcome is not None and outcome.success:
                 try:
-                    scoped = await strategy.binance.get_position(symbol)
-                    all_positions = await strategy.binance.get_position()
-                    account_positions = await strategy.binance.get_um_account_positions()
-                    ordinary = await strategy.binance.get_open_orders(symbol)
-                    algos = await strategy.binance.get_open_algo_orders(symbol)
-                    inventories = (scoped, all_positions, account_positions)
-                    flat = (all(isinstance(rows, list) for rows in
-                                (*inventories, ordinary, algos))
-                            and not ordinary and not algos
-                            and all(p.get('symbol') == symbol for p in scoped)
-                            and all(Decimal(str(p['positionAmt'])) == 0
-                                    for rows in inventories for p in rows
-                                    if p.get('symbol') == symbol))
+                    flat = await symbol_is_confirmed_flat(strategy.binance, symbol)
                 except Exception:
                     flat = False
                 if flat:

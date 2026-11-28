@@ -68,7 +68,11 @@ class FakeStrategy:
     """假策略：不预设 _evidence_recorder 属性（getattr 默认 None 可验证空跑）。"""
 
     def __init__(self) -> None:
+        self.instance_id = "btc_eth"
+        self.state_reporting_enabled = False
         self.symbols = ["BTCUSDT"]
+        self.state_reporting_enabled = False
+        self.instance_id = "btc_eth"
         self.db_manager = SimpleNamespace()
         self.frequency_controller = SimpleNamespace(
             ensure_table_exists=AsyncMock(),
@@ -123,7 +127,8 @@ def patched_deps(monkeypatch):
     config_holder: Dict[str, Any] = {}
     strategy_holder: Dict[str, Any] = {}
 
-    monkeypatch.setattr(main_mod, "load_strategy_config", lambda _dir: config_holder["config"])
+    monkeypatch.setattr(main_mod, "load_strategy_config_with_metadata", lambda _dir: (config_holder["config"], {"config_hash": "test"}))
+    monkeypatch.setattr(main_mod, "record_loaded_version", MagicMock())
 
     fake_db_instance = MagicMock(name="db_instance")
     fake_db_instance.connect = AsyncMock()

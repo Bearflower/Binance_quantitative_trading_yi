@@ -336,8 +336,6 @@ class ReportGenerator:
         try:
             # 尝试导入matplotlib
             import matplotlib.pyplot as plt
-            import matplotlib.dates as mdates
-            from datetime import datetime
             
             # 设置中文字体
             plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'DejaVu Sans']
@@ -371,6 +369,7 @@ class ReportGenerator:
             plt: matplotlib.pyplot对象
         """
         import pandas as pd
+        import matplotlib.dates as mdates
         
         # 转换为DataFrame
         df = pd.DataFrame(equity_curve)
@@ -402,6 +401,7 @@ class ReportGenerator:
             plt: matplotlib.pyplot对象
         """
         import pandas as pd
+        import matplotlib.dates as mdates
         
         # 转换为DataFrame
         df = pd.DataFrame(equity_curve)

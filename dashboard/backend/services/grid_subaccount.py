@@ -28,7 +28,7 @@ def read_grid_snapshot(path="/app/grid-dashboard/snapshot.json", now_ms=None):
     except (OSError, ValueError):
         return {"status": "unavailable", "reason": "snapshot_invalid"}
     try:
-        if (payload.get("version") != 1 or payload.get("account_scope") != "grid_subaccount_pm"
+        if (payload.get("version") != 1 or payload.get("account_scope") not in ("grid_subaccount_pm", "grid_subaccount_classic")
                 or payload.get("symbol") not in (None, "ETHUSDT")
                 or not isinstance(payload["as_of_ms"], int)):
             raise ValueError("invalid scope")

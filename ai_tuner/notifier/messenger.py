@@ -470,7 +470,9 @@ class Messenger:
         for entry in result.entries:
             display_name = entry.strategy_name
             # 收益率格式化
-            if entry.return_rate != 0 or not result.is_first_month:
+            if entry.return_rate is None:
+                return_str = "未核定"
+            elif entry.return_rate != 0 or not result.is_first_month:
                 return_str = f"{entry.return_rate * 100:+.2f}%"
             else:
                 return_str = "  N/A  "
@@ -478,7 +480,7 @@ class Messenger:
             amount_str = f"{entry.allocated_amount:,.2f}"
 
             lines.append(
-                f"│  {entry.rank:<3} │ {display_name:<8} │ {return_str:>8} │ {ratio_str:>7}  │ {amount_str:>7}  │"
+                f"│  {str(entry.rank) if entry.rank is not None else '—':<3} │ {display_name:<8} │ {return_str:>8} │ {ratio_str:>7}  │ {amount_str:>7}  │"
             )
 
         lines.append("└──────┴──────────┴──────────┴──────────┴──────────┘")
@@ -487,6 +489,9 @@ class Messenger:
         # 附加说明
         lines.append("注：仅以上策略参与月度资金分配。")
         lines.append("    下月各策略开仓将受上述分配金额限制。")
+
+        if getattr(result, "caliber", "") == "maintain_approved_allocation_due_to_historical_gaps":
+            lines.append("历史容缺：沿用已批准配比，额度受原上限约束；未使用不完整业绩排名。")
 
         # 首月额外说明
         if result.is_first_month:

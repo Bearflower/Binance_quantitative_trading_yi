@@ -664,3 +664,33 @@ def test_signed_other_strategy_order_cannot_count_as_current_strategy_open():
     assert rows['hrs']['coverage_complete'] and rows['hrs']['owned_entry_fills']==0
     assert rows['new_coin']['owned_entry_fills'] is None
     assert 'owned_fill_without_entry_intent' in rows['new_coin']['reasons']
+
+
+@pytest.mark.asyncio
+async def test_pg_classic_orders_keep_strategy_and_pm_provenance(pg_activity, monkeypatch):
+    conn = pg_activity
+    await conn.execute(MIGRATION.read_text())
+    await conn.execute((MIGRATION.parent / '2026-11-25-classic-entry-observation.sql').read_text())
+    await conn.execute("SET ROLE trading_user")
+    exchange = client()
+    exchange.get_order_by_client_id.side_effect = lambda symbol, cid: observation(client=cid)["raw_payload"]
+    first = await collect_entry_activity(PGWrapper(conn), exchange, 'default')
+    assert first["observed"] == 1
+    cutover = await conn.fetchval("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint")
+    monkeypatch.setenv("BINANCE_CLASSIC_CUTOVER_MS", str(cutover))
+    classic = ReadOnlyBinanceClient("key", "secret", use_unified_account=False)
+    classic.entry_activity_account_id = "default"
+    strategies = ["btc_eth", "btc_eth_aggressive", "hrs"]
+    for strategy in strategies:
+        await conn.execute("""INSERT INTO trading.entry_risk_reservation
+          VALUES($1,'default',$1,'AAAUSDT',3,'{}','reserved',clock_timestamp())""", strategy)
+    classic.get_order_by_client_id = AsyncMock(side_effect=lambda symbol, cid:
+        observation(client=cid, order=20 + strategies.index(cid))["raw_payload"])
+    result = await collect_entry_activity(PGWrapper(conn), classic, 'default')
+    assert result['observed'] == 3 and not result['gaps']
+    rows = await conn.fetch("""SELECT r.strategy_id,o.source,o.order_id FROM trading.entry_order_observation o
+        JOIN trading.entry_risk_reservation r USING (account_id,client_order_id) ORDER BY o.order_id""")
+    assert [tuple(r) for r in rows] == [
+        ("hrs", "signed_pm_get_order_v1", "10"),
+        *[(s, "signed_classic_get_order_v1", str(20 + i)) for i, s in enumerate(strategies)],
+    ]

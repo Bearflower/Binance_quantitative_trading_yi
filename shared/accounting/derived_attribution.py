@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from shared.accounting.account_cutover import account_cutover_ms, order_epoch
 from shared.accounting.position_replay import owner_at
 
 
@@ -47,6 +48,9 @@ def derive_income(income, fills_by_trade_id, order_evidence, replay):
         fill = fills_by_trade_id.get(str(trade_id)) or fills_by_trade_id.get(trade_id)
         if not fill or str(fill.get("account_id")) != account_id or str(fill.get("symbol")) != symbol:
             return None, "fill_not_found"
+        cutover = account_cutover_ms(account_id)
+        if order_epoch(event_time, cutover) != order_epoch(fill.get("trade_time_utc"), cutover):
+            return None, "fill_mode_mismatch"
         order_id = fill.get("order_id")
         owner = order_evidence.get(str(order_id)) if order_id is not None else None
         if not owner or str(owner.get("account_id")) != account_id or str(owner.get("symbol")) != symbol or str(owner.get("order_id")) != str(order_id) or not owner.get("strategy"):

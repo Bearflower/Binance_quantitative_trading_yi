@@ -38,10 +38,19 @@ def resolve_order_owner(account_id, symbol, order_id, trade_records, algo_links,
     algo_evidence = None
     if algo_ids:
         algo_id = next(iter(algo_ids))
+        modes = {row.get("account_mode", "pm") for row in links}
+        if len(modes) != 1 or not modes.issubset({"pm", "classic"}):
+            return None, "algo_mode_ambiguous"
+        mode = next(iter(modes))
+        sides = {row.get("side") for row in links}
+        if mode == "classic" and (len(sides) != 1 or not sides.issubset({"BUY", "SELL"})):
+            return None, "algo_side_ambiguous"
         conditions = [row for row in condition_orders
                       if _same(row.get("account_id"), account_id)
                       and _same(row.get("symbol"), symbol)
                       and _same(row.get("algo_id"), algo_id)
+                      and row.get("account_mode", "pm") == mode
+                      and (mode == "pm" or row.get("side") in sides)
                       and row.get("strategy_name")]
         condition_owners = {str(row["strategy_name"]) for row in conditions}
         if not condition_owners:
@@ -52,7 +61,7 @@ def resolve_order_owner(account_id, symbol, order_id, trade_records, algo_links,
         digests = {str(row.get("payload_sha256")) for row in links}
         if len(digests) != 1 or None in digests or "None" in digests:
             return None, "algo_payload_ambiguous"
-        algo_evidence = {"source_kind": "pm_algo_link", "algo_id": algo_id,
+        algo_evidence = {"source_kind": mode + "_algo_link", "algo_id": algo_id,
                          "payload_sha256": next(iter(digests)),
                          "actual_order_id": str(order_id)}
 

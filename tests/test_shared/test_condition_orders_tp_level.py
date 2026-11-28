@@ -17,7 +17,8 @@ async def test_ensure_table_adds_tp_level_to_existing_table():
 
 
 @pytest.mark.asyncio
-async def test_record_tp2_persists_level_with_algo_id():
+async def test_record_tp2_persists_level_with_algo_id(monkeypatch):
+    monkeypatch.setenv('TRADE_ACCOUNT_ID', 'offline-account')
     db = AsyncMock()
     await condition_orders.record_condition_order(
         db, 'btc_eth', 'BTCUSDT', algo_id=900,
@@ -25,7 +26,8 @@ async def test_record_tp2_persists_level_with_algo_id():
     )
     sql, *args = db.execute.await_args.args
     assert 'tp_level' in sql
-    assert args == ['btc_eth', 'BTCUSDT', 900, 'TAKE_PROFIT', 2, None]
+    assert 'account_id' in sql
+    assert args == ['btc_eth', 'BTCUSDT', 900, 'TAKE_PROFIT', 2, 'offline-account']
 
 
 @pytest.mark.asyncio
@@ -35,4 +37,5 @@ async def test_legacy_tp_remains_unlabelled():
         db, 'btc_eth', 'BTCUSDT', algo_id=900,
         order_type='TAKE_PROFIT',
     )
-    assert db.execute.await_args.args[-1] is None
+    # 新增账户列位于末尾；必须核验真正的 TP 等级参数。
+    assert db.execute.await_args.args[-2] is None

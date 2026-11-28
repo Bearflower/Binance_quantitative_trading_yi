@@ -34,9 +34,14 @@ import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import structlog
+
+from shared.accounting.account_cutover import (
+    FILL_SOURCES, INCOME_SOURCES, account_cutover_ms, collection_window,
+)
 
 logger = structlog.get_logger()
 
@@ -91,6 +96,7 @@ class FillFact:
     trade_time_ms: Optional[int]  # 毫秒
     raw_payload: Dict[str, Any]    # 脱敏后原始响应
     payload_sha256: str
+    source: str = FILL_SOURCES[0]
 
 
 @dataclass
@@ -107,6 +113,7 @@ class IncomeFact:
     event_time_ms: Optional[int]  # 毫秒
     raw_payload: Dict[str, Any]
     payload_sha256: str
+    source: str = INCOME_SOURCES[0]
 
 
 @dataclass
@@ -270,7 +277,7 @@ def compute_sha256(payload: Dict[str, Any]) -> str:
 # 响应 → 标准化行
 # ────────────────────────────────────────────────────────────────────
 
-def _parse_fill_row(account_id: str, row: Dict[str, Any]) -> Optional[FillFact]:
+def _parse_fill_row(account_id: str, row: Dict[str, Any], source: str = FILL_SOURCES[0]) -> Optional[FillFact]:
     """把一条 userTrades 响应标准化成 FillFact。
     缺失关键字段（id 或 symbol）时返回 None 表示跳过。
     """
@@ -299,11 +306,12 @@ def _parse_fill_row(account_id: str, row: Dict[str, Any]) -> Optional[FillFact]:
         realized_pnl=_safe_str(row.get("realizedPnl")),
         trade_time_ms=_safe_int(row.get("time")),
         raw_payload=sanitized,
+        source=source,
         payload_sha256=compute_sha256(sanitized),
     )
 
 
-def _parse_income_row(account_id: str, row: Dict[str, Any]) -> Optional[IncomeFact]:
+def _parse_income_row(account_id: str, row: Dict[str, Any], source: str = INCOME_SOURCES[0]) -> Optional[IncomeFact]:
     """把一条 um/income 响应标准化成 IncomeFact。缺失关键字段时跳过。"""
     tran_id_raw = row.get("tranId")
     if tran_id_raw is None:
@@ -324,6 +332,7 @@ def _parse_income_row(account_id: str, row: Dict[str, Any]) -> Optional[IncomeFa
         trade_id=_safe_int(row.get("tradeId")),
         event_time_ms=_safe_int(row.get("time")),
         raw_payload=sanitized,
+        source=source,
         payload_sha256=compute_sha256(sanitized),
     )
 
@@ -360,18 +369,23 @@ class ExecutionFactExporter:
     分页、去重、游标、脱敏逻辑全部在实例方法里——测试直接 new 本类
     传假对象就能全离线覆盖。
 
-    income 采集要求统一账户客户端。若客户端显式声明
-    use_unified_account=False，export_income 在读取或写入游标前报错，
-    避免把“不支持的账户模式”记成成功采集的空结果。
+    游标按接口来源区分；同一账户的交易所事件键跨模式保持稳定。
     """
     account_id: str                              # 账户标识（下游复合键的一部分）
     api_client: Any                              # 需具备 async get_user_trades / get_income_history
     sink: Any = None                             # 可选；需具备 async upsert_fills/upsert_income/save_cursor
     page_limit: int = _DEFAULT_PAGE_LIMIT         # 单页上限；业务参数（默认 1000）
     max_pages: int = _MAX_PAGES_GUARD            # 防无限循环守卫
+    refresh_completed: bool = False  # 滚动采集重查重叠窗口，以便补到延迟入账的事实。
     _cursor_store: Dict[Tuple[str, str, Optional[str], Optional[str], int], CursorRecord] = field(
         default_factory=dict
     )  # 内存游标存储（测试用；真实 sink 提供 save_cursor / load_cursor 时会优先用它）
+
+    def _window_source(self, start, end, sources):
+        pm = getattr(self.api_client, "use_unified_account", True) is not False
+        if collection_window(start, end, pm, account_cutover_ms(self.account_id)) != (start, end):
+            raise ValueError("窗口跨越账户模式切点，请分段采集")
+        return sources[0 if pm else 1]
 
     # ── 分页消费通用函数（抽去 _consume_fill_page / _consume_income_page 的同构代码）
 
@@ -431,19 +445,31 @@ class ExecutionFactExporter:
         window_end_ms: int,
     ) -> ExportResult:
         """拉取某 symbol 在给定时间窗内的全部成交明细。"""
-        source = "userTrades"
+        source = self._window_source(window_start_ms, window_end_ms, FILL_SOURCES)
         seen: Set[Tuple[str, str, int]] = set()
         collected: List[FillFact] = []
         result = ExportResult()
 
-        cursor = await self._load_cursor(source, None, symbol, window_start_ms)
-        cur_start = cursor.covered_until_ms if cursor and cursor.covered_until_ms else window_start_ms
+        fill_observations = {}
+
+        def parse_fill(row):
+            fact = _parse_fill_row(self.account_id, row, source)
+            if fact is None:
+                return None
+            if fact.symbol != symbol:
+                raise ValueError("成交返回的交易对与请求不一致")
+            amounts = (fact.qty, fact.price, fact.quote_qty, fact.commission, fact.realized_pnl)
+            identity = (fact.order_id, fact.side, fact.commission_asset, fact.trade_time_ms,
+                        *(None if value is None else Decimal(value) for value in amounts))
+            if fill_observations.setdefault(fact.trade_id, identity) != identity:
+                raise ValueError("同一成交 ID 的交易所经济字段冲突")
+            return fact
 
         ctx = _PageCtx(
             source=source, account_id=self.account_id,
             income_type=None, symbol=symbol,
             window_start_ms=window_start_ms, window_end_ms=window_end_ms,
-            parse_row=lambda row: _parse_fill_row(self.account_id, row),
+            parse_row=parse_fill,
             dedup_key=lambda f: (f.account_id, f.symbol, f.trade_id),
             time_ms_of=lambda f: f.trade_time_ms,
             event_id_of=lambda f: f.trade_id,
@@ -458,7 +484,7 @@ class ExecutionFactExporter:
             supports_id_cursor=True,
         )
         result.cursor, result.errors = await self._run_export_loop(
-            ctx=ctx, cur_start=cur_start, seen=seen, collected=collected,
+            ctx=ctx, seen=seen, collected=collected,
             sink_upsert=getattr(self.sink, "upsert_fills", None),
         )
         result.records = collected
@@ -473,22 +499,17 @@ class ExecutionFactExporter:
     ) -> ExportResult:
         """拉取给定时间窗内的全部收入流水。"""
         from shared.income_ingestion import income_observation_digest
-        if getattr(self.api_client, "use_unified_account", True) is False:
-            raise ValueError("income 采集要求统一账户客户端（use_unified_account=True）")
-        source = "um/income"
+        source = self._window_source(window_start_ms, window_end_ms, INCOME_SOURCES)
         income_type_arg = income_type or "REALIZED_PNL"
         seen: Set[Tuple[str, int]] = set()
         collected: List[IncomeFact] = []
         result = ExportResult()
 
-        cursor = await self._load_cursor(source, income_type_arg, None, window_start_ms)
-        cur_start = cursor.covered_until_ms if cursor and cursor.covered_until_ms else window_start_ms
-
         ctx = _PageCtx(
             source=source, account_id=self.account_id,
             income_type=income_type_arg, symbol=None,
             window_start_ms=window_start_ms, window_end_ms=window_end_ms,
-            parse_row=lambda row: _parse_income_row(self.account_id, row),
+            parse_row=lambda row: _parse_income_row(self.account_id, row, source),
             dedup_key=lambda f: (f.account_id, f.income_type, f.tran_id,
                                  income_observation_digest(f.raw_payload)),
             time_ms_of=lambda f: f.event_time_ms,
@@ -502,7 +523,7 @@ class ExecutionFactExporter:
             supports_id_cursor=False,
         )
         result.cursor, result.errors = await self._run_export_loop(
-            ctx=ctx, cur_start=cur_start, seen=seen, collected=collected,
+            ctx=ctx, seen=seen, collected=collected,
             sink_upsert=getattr(self.sink, "upsert_income", None),
         )
         result.records = collected
@@ -601,7 +622,6 @@ class ExecutionFactExporter:
     async def _run_export_loop(
         self, *,
         ctx: _PageCtx,
-        cur_start: int,
         seen: Set[Any], collected: List[Any],
         sink_upsert: Optional[Callable[[List[Any]], Any]],
     ) -> Tuple[CursorRecord, List[str]]:
@@ -612,10 +632,28 @@ class ExecutionFactExporter:
         （covered_until_ms 回退到本次起点，重试时可从窗口起点重采）。
         """
         # 前置守卫 + 先加载已有游标 + 按完成态决定是否翻页
-        cursor, errors, loaded_cursor = await self._prepare_cursor_and_fetch(
-            ctx=ctx, cur_start=cur_start,
-            seen=seen, collected=collected,
+        loaded_cursor = await self._load_cursor(
+            ctx.source, ctx.income_type, ctx.symbol, ctx.window_start_ms,
         )
+        if self.refresh_completed and loaded_cursor is not None and loaded_cursor.page_complete:
+            loaded_cursor = None
+        cur_start = (loaded_cursor.covered_until_ms if loaded_cursor is not None
+                     and loaded_cursor.covered_until_ms is not None else ctx.window_start_ms)
+        try:
+            cursor, errors, loaded_cursor = await self._prepare_cursor_and_fetch(
+                ctx=ctx, cur_start=cur_start, loaded_cursor=loaded_cursor,
+                seen=seen, collected=collected,
+            )
+        except (ValueError, TypeError, InvalidOperation) as exc:
+            # 整个观察窗口有冲突，回退水位，防止复用上一次成功游标。
+            collected.clear()
+            errors = [str(exc)[:_ERROR_DETAIL_TRUNCATE]]
+            cursor = _make_cursor(source=ctx.source, account_id=ctx.account_id,
+                                  income_type=ctx.income_type, symbol=ctx.symbol,
+                                  window_start_ms=ctx.window_start_ms, window_end_ms=ctx.window_end_ms,
+                                  covered_until_ms=ctx.window_start_ms, request_status="error",
+                                  error_detail=errors[0])
+
 
         # ═══ 事务边界：先事实后游标（委托 _commit_transaction）═══
         await self._commit_transaction(
@@ -631,7 +669,7 @@ class ExecutionFactExporter:
     async def _prepare_cursor_and_fetch(
         self, *,
         ctx: _PageCtx,
-        cur_start: int,
+        cur_start: int, loaded_cursor: Optional[CursorRecord],
         seen: Set[Any], collected: List[Any],
     ) -> Tuple[CursorRecord, List[str], Optional[CursorRecord]]:
         """前置守卫 + 先加载已有游标 + 按完成态决定是否翻页。
@@ -647,10 +685,6 @@ class ExecutionFactExporter:
         由 `_build_complete` / `_build_unstoppable_result` 判定窗口真实状态，
         不能在入口就假设"无游标=窗口为空"。
         """
-        loaded_cursor = await self._load_cursor(
-            ctx.source, ctx.income_type, ctx.symbol, ctx.window_start_ms,
-        )
-
         # 守卫必须同时命中三件事：到界、有游标、游标已完成 → 才允许幂等 OK 短路。
         # 若 loaded_cursor 为 None（首次查询）或 page_complete=False（partial /
         # incomplete），不得短路——必须进入翻页循环重新判定。
@@ -788,6 +822,23 @@ class ExecutionFactExporter:
                     time_ms=loop_advance.time_ms, event_id=loop_advance.event_id,
                 ),
             )
+        if not isinstance(raw_rows, list) or any(not isinstance(row, dict) for row in raw_rows):
+            raise ValueError("交易所分页响应格式错误")
+        if account_cutover_ms(self.account_id) is not None:
+            for row in raw_rows:
+                if type(row.get("time")) is not int or row["time"] < ctx.window_start_ms:
+                    raise ValueError("交易所返回不属于当前窗口的历史事件，无法确认采集范围")
+                if ctx.symbol:
+                    if (row.get("symbol") != ctx.symbol or type(row.get("id")) is not int or row["id"] < 0
+                            or type(row.get("orderId")) is not int or row["orderId"] <= 0
+                            or row.get("side") not in {"BUY", "SELL"} or not row.get("commissionAsset")):
+                        raise ValueError("成交响应缺少交易对、成交、订单、方向或费用资产证明")
+                    amounts = [Decimal(str(row.get(key))) for key in ("qty", "price", "commission", "realizedPnl")]
+                    if not all(amount.is_finite() for amount in amounts) or min(amounts[:2]) <= 0:
+                        raise ValueError("成交数量、价格或金额无效")
+                elif (row.get("incomeType") != ctx.income_type or row.get("tranId") is None
+                      or not row.get("asset") or not Decimal(str(row.get("income"))).is_finite()):
+                    raise ValueError("收入类型、金额、资产或流水标识不符合请求")
         rows = self._filter_rows_within_window(
             raw_rows, ctx.row_time_ms, ctx.window_end_ms,
         )
@@ -1104,7 +1155,7 @@ def _resolve_window(args: argparse.Namespace) -> Tuple[int, int, List[str]]:
     return start_ms, end_ms, symbols
 
 
-def _build_client_from_env():
+def _build_client_from_env(*, read_only=False):
     """从环境变量构造 BinanceClient；密钥缺失时打印中文报错并返回 (None, exit_code=2)。
 
     返回值二选一：
@@ -1126,10 +1177,11 @@ def _build_client_from_env():
         )
         return None, 2
 
-    # use_unified_account 由 BinanceClient 默认值决定（项目默认 True）。
-    # income 仅支持统一账户；非统一账户模式由 export_income 与
-    # BinanceClient.get_income_history 显式拒绝。
-    client = BinanceClient(api_key=api_key, api_secret=api_secret)
+    if read_only:
+        from shared.readonly_client import ReadOnlyBinanceClient
+        client = ReadOnlyBinanceClient(api_key=api_key, api_secret=api_secret, instance_id="execution-facts-collector")
+    else:
+        client = BinanceClient(api_key=api_key, api_secret=api_secret)
     return client, 0
 
 
@@ -1225,6 +1277,8 @@ async def _run_cli(args: argparse.Namespace) -> int:
     start_ms, now_ms, symbols = _resolve_window(args)
     if args.mode in ("fills", "both") and not symbols:
         raise ValueError("采集 fills 必须提供 --symbols")
+    if (os.getenv("TRADE_ACCOUNT_ID") is not None or os.getenv(_ENV_DB_WRITE, "").lower() in {"1", "true", "yes", "on"}) and args.account_id != os.getenv("TRADE_ACCOUNT_ID", "default"):
+        raise ValueError("采集账户必须与签名账户配置一致")
     client, code = _build_client_from_env()
     if client is None:
         return code
@@ -1232,6 +1286,9 @@ async def _run_cli(args: argparse.Namespace) -> int:
     db_manager = None
     try:
         sink, db_manager = await _maybe_open_sink()
+        if db_manager is not None and getattr(client, "use_unified_account", True) is False:
+            from shared.binance_account_mode import verify_cutover_ledger
+            await verify_cutover_ledger(client, db_manager)
         exporter = ExecutionFactExporter(
             account_id=args.account_id, api_client=client,
             sink=sink, page_limit=args.page_limit,

@@ -7,8 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from os import environ
+import json
 from typing import Optional, Dict, List
 import structlog
+from asyncpg import Range
+
+from .accounting.account_cutover import account_cutover_ms
+from .binance_account_mode import configured_pm
 
 from .database import DatabaseManager
 
@@ -149,7 +154,8 @@ class TradeLogger:
     _PENDING_RECORDS_SQL = """
     SELECT DISTINCT symbol, order_id
     FROM trading.trade_records
-    WHERE executed_at >= $1 AND commission = 0 AND order_id IS NOT NULL
+    WHERE executed_at >= $1 AND commission = 0 AND order_id IS NOT NULL AND account_id = $2
+      AND executed_at <@ $3::tsrange
     """
 
     # 佣金回填：仅更新仍为 0 的行，天然幂等
@@ -157,7 +163,10 @@ class TradeLogger:
     _UPDATE_COMMISSION_SQL = """
     UPDATE trading.trade_records
     SET commission = $1
-    WHERE symbol = $2 AND order_id = $3 AND commission = 0
+    WHERE account_id = $4 AND symbol = $2 AND order_id = $3 AND commission = 0
+      AND id = (SELECT min(id) FROM trading.trade_records
+                WHERE account_id = $4 AND symbol = $2 AND order_id = $3
+                  AND executed_at <@ $5::tsrange HAVING count(*) = 1)
     """
 
     def __init__(
@@ -247,17 +256,34 @@ class TradeLogger:
         try:
             status = order_result.get("status", "NEW")
 
-            # B3 修复：区分条件单（有 algoId 无 orderId）和真实成交单
+            # Algo 查回回执可能同时携带触发后的普通订单号，回执本身只证明 Algo。
             algo_id_raw = order_result.get("algoId")
             order_id_raw = order_result.get("orderId")
 
-            is_conditional = bool(algo_id_raw) and not bool(order_id_raw)
+            is_conditional = order_type in (
+                "STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET", "TRAILING_STOP_MARKET"
+            ) or order_result.get("algoType") == "CONDITIONAL" or bool(algo_id_raw)
+
+            receipt_ms = next((order_result[k] for k in ("createTime", "time", "updateTime")
+                               if order_result.get(k) is not None), None)
+            if receipt_ms is None:
+                exec_stamp = datetime.now(BEIJING_TZ)
+            elif type(receipt_ms) is int and receipt_ms > 0:
+                exec_stamp = datetime.fromtimestamp(receipt_ms / 1000, BEIJING_TZ)
+            else:
+                raise ValueError("订单回执时间无效")
+            executed_at = self._local_time(exec_stamp)
+            if not self._in_epoch(executed_at, self._record_epoch()):
+                raise ValueError("订单回执不属于本账户模式")
+            if order_result.get("symbol", symbol) != symbol or order_result.get("side", side) != side:
+                raise ValueError("订单回执交易对或方向不匹配")
 
             if is_conditional:
+                if not algo_id_raw:
+                    raise ValueError("条件单回执缺少 algoId")
                 # 条件单创建：写入 algo_id，标记为 CONDITIONAL_ORDER，quantity/price 保持 0
                 # 条件单还未成交，没有真实成交数量和价格，不应写假数据
                 algo_id = str(algo_id_raw)
-                executed_at = datetime.now(BEIJING_TZ).replace(tzinfo=None)
                 await self.db.execute(
                     "INSERT INTO trading.trade_records "
                     "(strategy, symbol, order_id, algo_id, side, order_type, "
@@ -287,12 +313,8 @@ class TradeLogger:
             avg_price = Decimal(str(order_result.get("avgPrice", "0")))
             executed_qty = Decimal(str(order_result.get("executedQty", "0")))
 
-            # 手续费可能为 None
-            commission_raw = order_result.get("commission")
-            commission = Decimal(str(commission_raw)) if commission_raw else Decimal("0")
-
-            # 成交时间使用当前北京时间（数据库列无时区，含义是 UTC+8）
-            executed_at = datetime.now(BEIJING_TZ).replace(tzinfo=None)
+            # 订单回执无法证明累计 USDT 手续费，统一由完整的终态成交回填。
+            commission = Decimal("0")
 
             await self.db.execute(
                 "INSERT INTO trading.trade_records "
@@ -367,6 +389,11 @@ class TradeLogger:
         """
         try:
             strategy_name = strategy or self.strategy_name
+            epoch = self._record_epoch()
+            if executed_at is not None:
+                executed_at = self._local_time(executed_at)
+                if not self._in_epoch(executed_at, epoch):
+                    return False
 
             # ── L1 降级匹配守卫：时间窗上限 30min（1800s） ─────────────────────────
             # 防止调用方传过大窗口导致跨持仓命中；默认 5min 不变，仅加守卫
@@ -379,11 +406,14 @@ class TradeLogger:
                 result = await self.db.execute(
                     "UPDATE trading.trade_records "
                     "SET realized_pnl = $1 "
-                    "WHERE order_id = $2 AND strategy = $3 AND side = $4",
+                    "WHERE order_id = $2 AND strategy = $3 AND side = $4 AND account_id = $5 "
+                    "AND id = (SELECT min(id) FROM trading.trade_records WHERE account_id = $5 "
+                    "AND order_id = $2 AND ($6::text IS NULL OR symbol = $6) "
+                    "AND executed_at <@ $7::tsrange HAVING count(*) = 1)",
                     realized_pnl,
                     order_id,
                     strategy_name,
-                    match_side
+                    match_side, self.account_id, symbol, epoch
                 )
                 # 解析 "UPDATE N" 结果，判断是否更新成功
                 rows_affected = self._parse_update_count(result)
@@ -420,21 +450,23 @@ class TradeLogger:
                     "UPDATE trading.trade_records "
                     "SET realized_pnl = $1 "
                     "WHERE id = ("
-                    "    SELECT tr.id FROM trading.trade_records tr"
+                    "    SELECT min(tr.id) FROM trading.trade_records tr"
                     "    WHERE tr.strategy = $2 AND tr.symbol = $3 AND tr.side = $4"
                     "    AND tr.executed_at BETWEEN $5 AND $6"
                     "    AND tr.order_id IS NULL"
                     "    AND tr.realized_pnl IS NULL"
                     "    AND tr.order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')"
-                    "    ORDER BY tr.executed_at DESC"
-                    "    LIMIT 1"
+                    "    AND tr.account_id = $7 AND tr.executed_at <@ $8::tsrange"
+                    "    AND NOT EXISTS (SELECT 1 FROM trading.trade_records exact"
+                    "        WHERE exact.account_id=$7 AND exact.symbol=$3 AND exact.order_id=$9"
+                    "          AND exact.executed_at <@ $8::tsrange) HAVING count(*) = 1"
                     ")",
                     realized_pnl,
                     strategy_name,
                     symbol,
                     match_side,
                     start_time,
-                    end_time
+                    end_time, self.account_id, epoch, order_id or None
                 )
                 rows_affected = self._parse_update_count(result)
                 if rows_affected > 0:
@@ -497,8 +529,8 @@ class TradeLogger:
         当条件单（TP1/TP2/止损）全部成交时，没有对应的 trade_records 可 UPDATE，
         直接 INSERT 一条汇总记录，不会触发模式二的降级匹配。
 
-        **幂等**：`since` 非 None 时先做去重检查——同一 (strategy, symbol, side)
-        自 since 起若已存在金额相同的 PNL_SUMMARY 记录，则跳过插入并返回 True。
+        **幂等**：`since` 非 None 时先做去重检查——同一账户、策略、交易对和方向
+        自 since 起若已存在 PNL_SUMMARY 记录，则跳过插入并返回 True。
         用于「整笔平仓的累计盈亏」这类非幂等回写：进程重启 / 监控循环重复命中同
         一次平仓时会用完全相同的金额再写一遍，去重检查把重复记账挡住。
 
@@ -517,47 +549,35 @@ class TradeLogger:
             raise ValueError("不支持的 PnL 来源")
         try:
             strategy_name = strategy or self.strategy_name
-            exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
+            exec_time = self._local_time(executed_at or datetime.now(BEIJING_TZ))
+            epoch = self._record_epoch()
+            if not self._in_epoch(exec_time, epoch):
+                return False
 
-            if since is not None:
-                # H1 修复：去掉 realized_pnl 作为去重键
-                # 同 symbol 同 side 跨持仓场景，若盈亏金额巧合相等会被误挡
-                # since（entry_time）已足够：同一持仓 entry_time 唯一，全平只一次
-                existed = await self.db.fetch_one(
-                    "SELECT id FROM trading.trade_records"
-                    " WHERE strategy = $1 AND symbol = $2 AND side = $3"
-                    " AND order_type = 'PNL_SUMMARY'"
-                    " AND executed_at >= $4"
-                    " LIMIT 1",
-                    strategy_name,
-                    symbol,
-                    side,
-                    since,
-                )
-                if existed:
-                    logger.info(
-                        "PnL汇总记录已存在，跳过重复插入",
-                        strategy=strategy_name,
-                        symbol=symbol,
-                        side=side,
-                        since=since.isoformat(),
-                    )
-                    return True
-
-            await self.db.execute(
+            insert = (
                 "INSERT INTO trading.trade_records "
                 "(strategy, symbol, order_id, side, order_type, quantity, price, "
                 " commission, status, executed_at, realized_pnl, close_reason, pnl_source, account_id) "
-                "VALUES ($1, $2, '', $3, 'PNL_SUMMARY', 0, 0, 0, 'FILLED', $4, $5, $6, $7, $8)",
-                strategy_name,
-                symbol,
-                side,
-                exec_time,
-                realized_pnl,  # Decimal → asyncpg 直接编码为 numeric
-                close_reason,
-                pnl_source,
-                self.account_id,
+                "SELECT $1::text, $2::text, '', $3::text, 'PNL_SUMMARY', 0, 0, 0, 'FILLED', $4, $5, $6, $7, $8::text"
             )
+            values = (strategy_name, symbol, side, exec_time, realized_pnl, close_reason, pnl_source, self.account_id)
+            if since is None:
+                await self.db.execute(insert, *values)
+            else:
+                since = self._local_time(since)
+                if since > exec_time or not self._in_epoch(since, epoch):
+                    return False
+                # 先锁定账户、策略、币种与方向，再用新语句快照检查同一持仓是否已记账。
+                key = json.dumps(["trade-record-pnl", self.account_id, strategy_name, symbol, side])
+                insert += (
+                    " WHERE NOT EXISTS (SELECT 1 FROM trading.trade_records "
+                    "WHERE account_id IS NOT DISTINCT FROM $8 AND strategy=$1 AND symbol=$2 AND side=$3 "
+                    "AND order_type='PNL_SUMMARY' AND executed_at >= $9 AND executed_at <@ $10::tsrange)"
+                )
+                await self.db.execute_transaction([
+                    ("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", (key,)),
+                    (insert, (*values, since, epoch)),
+                ])
 
             logger.info(
                 "PnL汇总记录插入成功",
@@ -650,23 +670,24 @@ class TradeLogger:
         Returns:
             True 表示成功给真实平仓记录打标
         """
-        exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
+        exec_time = self._local_time(executed_at or datetime.now(BEIJING_TZ))
         window = self.STOP_LOSS_MATCH_WINDOW_SECONDS
         try:
-            # 固定 7 个占位符 + COALESCE，避免条件拼接造成占位符编号错位
+            epoch = self._record_epoch()
+            if not self._in_epoch(exec_time, epoch):
+                return False
             # （realized_pnl=None 时保持原值，非 None 时覆盖）
             result = await self.db.execute(
                 "UPDATE trading.trade_records "
                 "SET close_reason = $1, realized_pnl = COALESCE($2::numeric, realized_pnl)"
                 " WHERE id = ("
-                "    SELECT id FROM trading.trade_records"
+                "    SELECT min(id) FROM trading.trade_records"
                 "    WHERE strategy = $3 AND symbol = $4 AND side = $5"
                 "    AND order_type <> 'PNL_SUMMARY'"
                 "    AND (status <> 'CANCELED' OR quantity > 0)"
                 "    AND executed_at BETWEEN $6 AND $7"
                 "    AND (close_reason IS NULL OR close_reason = '')"
-                "    ORDER BY executed_at DESC"
-                "    LIMIT 1"
+                "    AND account_id = $8 AND executed_at <@ $9::tsrange HAVING count(*) = 1"
                 ")",
                 self.CLOSE_REASON_STOP_LOSS,
                 str(realized_pnl) if realized_pnl is not None else None,
@@ -674,7 +695,7 @@ class TradeLogger:
                 symbol,
                 side,
                 exec_time - timedelta(seconds=window),
-                exec_time + timedelta(seconds=window),
+                exec_time + timedelta(seconds=window), self.account_id, epoch,
             )
             if self._parse_update_count(result) > 0:
                 logger.info(
@@ -877,22 +898,26 @@ class TradeLogger:
             "total_commission": Decimal("0"),
         }
         try:
-            pending = await self._fetch_pending_trade_keys(lookback_hours)
+            since = self._local_time(datetime.now(BEIJING_TZ)) - timedelta(hours=lookback_hours)
+            epoch = self._record_epoch(binance_client)
+            pending = await self._fetch_pending_trade_keys(since, epoch)
             summary["queried_orders"] = len(pending)
             for symbol, order_id in pending:
                 if not order_id:
                     continue
                 try:
                     matched, commission = await self._query_order_commission(
-                        binance_client, symbol, order_id
+                        binance_client, symbol, order_id, epoch
                     )
                     if not matched:
                         continue  # 零佣金或未成交，不做无意义的 0 值覆盖
                     # 佣金统一按负值（支出）落库，与看板聚合口径一致（net = realized_pnl + commission）
                     expense = -commission
-                    await self.db.execute(
-                        self._UPDATE_COMMISSION_SQL, expense, symbol, order_id
+                    updated = await self.db.execute(
+                        self._UPDATE_COMMISSION_SQL, expense, symbol, order_id, self.account_id, epoch
                     )
+                    if self._parse_update_count(updated) != 1:
+                        continue
                     summary["matched_orders"] += 1
                     summary["total_commission"] += expense
                 except Exception as e:
@@ -909,6 +934,25 @@ class TradeLogger:
             logger.error("佣金回填异常", error=str(e))
         return summary
 
+    def _record_epoch(self, client=None):
+        """交易记录为北京时间。PM 为切点前开区间，经典模式包含切点。"""
+        cutover = account_cutover_ms(self.account_id)
+        pm = configured_pm() if client is None else getattr(client, "use_unified_account", True) is not False
+        if cutover is None:
+            if not pm and self.account_id == environ.get("TRADE_ACCOUNT_ID", "default"):
+                raise ValueError("经典账户缺少数据切点")
+            return Range()
+        boundary = datetime.fromtimestamp(cutover / 1000, BEIJING_TZ).replace(tzinfo=None)
+        return Range(None, boundary) if pm else Range(boundary, None)
+
+    @staticmethod
+    def _local_time(value):
+        return value.astimezone(BEIJING_TZ).replace(tzinfo=None) if value.tzinfo else value
+
+    @staticmethod
+    def _in_epoch(stamp, epoch):
+        return (epoch.lower is None or stamp >= epoch.lower) and (epoch.upper is None or stamp < epoch.upper)
+
     async def reconcile_entry_fills(self, client, lookback_hours: int = 24, *,
                                     record_ids=None, dry_run: bool = False) -> list:
         """Scan one rotating page or reconcile explicit account-owned historical IDs.
@@ -921,13 +965,21 @@ class TradeLogger:
                 or any(type(i) is not int or i <= 0 for i in record_ids)):
             raise ValueError("explicit account and 1-100 positive record IDs required")
         evidence = []
-        start = datetime.now(BEIJING_TZ).replace(tzinfo=None) - timedelta(hours=lookback_hours)
+        start = self._local_time(datetime.now(BEIJING_TZ)) - timedelta(hours=lookback_hours)
+        epoch = self._record_epoch(client)
         targeted = record_ids is not None
         predicate = "id = ANY($2::bigint[])" if targeted else "executed_at >= $2 AND id > $3"
         args = (self.account_id, record_ids) if targeted else (self.account_id, start, self._entry_fill_cursor)
+        epoch_param = f"${len(args) + 1}::tsrange"
+        predicate += (f" AND executed_at <@ {epoch_param}"
+                      " AND NOT EXISTS (SELECT 1 FROM trading.trade_records duplicate"
+                      " WHERE duplicate.account_id = tr.account_id AND duplicate.symbol = tr.symbol"
+                      " AND duplicate.order_id = tr.order_id AND duplicate.id <> tr.id"
+                      f" AND duplicate.executed_at <@ {epoch_param})")
+        args += (epoch,)
         try:
             rows = await self.db.fetch_all(
-                "SELECT id, symbol, order_id, side FROM trading.trade_records "
+                "SELECT id, symbol, order_id, side FROM trading.trade_records tr "
                 f"WHERE account_id=$1 AND {predicate} "
                 "AND order_type IN ('LIMIT','MARKET') AND (quantity=0 OR price=0) "
                 "AND order_id IS NOT NULL AND order_id<>'' ORDER BY id LIMIT 100",
@@ -942,18 +994,27 @@ class TradeLogger:
                         continue
                     trades = await client.get_user_trades(
                         row["symbol"], order_id=row["order_id"], limit=1000)
-                    quantity, price = verified_fill(row, order, trades)
-                    evidence.append({"id": row["id"], "quantity": quantity, "price": price})
-                    if dry_run:
+                    if not isinstance(trades, list) or len(trades) >= 1000:
                         continue
-                    await self.db.execute(
+                    if not self._receipt_in_epoch(order, epoch):
+                        continue
+                    quantity, price = verified_fill(row, order, self._epoch_trades(trades, epoch))
+                    verified = {"id": row["id"], "quantity": quantity, "price": price}
+                    if dry_run:
+                        evidence.append(verified)
+                        continue
+                    updated = await self.db.execute(
                         "UPDATE trading.trade_records SET quantity=$1, price=$2, status='FILLED' "
                         "WHERE id=$3 AND account_id=$4 AND symbol=$5 AND order_id=$6 "
                         "AND side=$7 AND order_type IN ('LIMIT','MARKET') "
-                        "AND (quantity=0 OR price=0)",
+                        "AND executed_at <@ $8::tsrange AND (quantity=0 OR price=0) "
+                        "AND NOT EXISTS (SELECT 1 FROM trading.trade_records other WHERE other.account_id=$4 "
+                        "AND other.symbol=$5 AND other.order_id=$6 AND other.id<>$3 AND other.executed_at <@ $8::tsrange)",
                         quantity, price, row["id"], self.account_id, row["symbol"],
-                        row["order_id"], row["side"],
+                        row["order_id"], row["side"], epoch,
                     )
+                    if self._parse_update_count(updated) == 1:
+                        evidence.append(verified)
                 except Exception as exc:
                     logger.warning("入场成交证据回填跳过", order_id=row["order_id"],
                                    error_type=type(exc).__name__)
@@ -963,22 +1024,32 @@ class TradeLogger:
                 raise
         return evidence
 
-    async def _fetch_pending_trade_keys(self, lookback_hours: int) -> List:
-        """查询待回填的 (symbol, order_id) 去重组合
-
-        Args:
-            lookback_hours: 回看时间窗口（小时）
-
-        Returns:
-            [(symbol, order_id), ...]；无记录返回空列表
-        """
-        start_time = datetime.now(BEIJING_TZ).replace(tzinfo=None) - timedelta(
-            hours=lookback_hours
-        )
-        rows = await self.db.fetch_all(self._PENDING_RECORDS_SQL, start_time)
+    async def _fetch_pending_trade_keys(self, start_time: datetime, epoch: Range) -> List:
+        """从当前账户和模式下查找等待回填佣金的订单。"""
+        rows = await self.db.fetch_all(self._PENDING_RECORDS_SQL, start_time, self.account_id, epoch)
         return [(r["symbol"], r["order_id"]) for r in rows]
 
-    async def _query_order_commission(self, binance_client, symbol: str, order_id: str):
+    def _receipt_in_epoch(self, order, epoch):
+        if epoch.lower is None and epoch.upper is None:
+            return True
+        ms = order.get("time", order.get("updateTime"))
+        return type(ms) is int and self._in_epoch(
+            datetime.fromtimestamp(ms / 1000, BEIJING_TZ).replace(tzinfo=None), epoch
+        )
+
+    def _epoch_trades(self, trades, epoch):
+        if epoch.lower is None and epoch.upper is None:
+            return trades
+        scoped = []
+        for trade in trades:
+            if type(trade.get("time")) is not int:
+                raise ValueError("切换后的成交证据缺少交易所毫秒时间戳")
+            stamp = datetime.fromtimestamp(trade["time"] / 1000, BEIJING_TZ).replace(tzinfo=None)
+            if self._in_epoch(stamp, epoch):
+                scoped.append(trade)
+        return scoped
+
+    async def _query_order_commission(self, binance_client, symbol: str, order_id: str, epoch: Range):
         """查询单个订单在 userTrades 中的真实佣金并累加
 
         Args:
@@ -989,14 +1060,37 @@ class TradeLogger:
         Returns:
             (matched, commission)：matched 表示佣金>0；commission 为累计 Decimal
         """
-        trades = await binance_client.get_user_trades(symbol, order_id=order_id)
-        total = Decimal("0")
-        for trade in trades or []:
-            raw = trade.get("commission")
-            if raw is None or raw == "":
-                continue
-            total += Decimal(str(raw))
-        return (total > 0), total
+        trades = await binance_client.get_user_trades(symbol, order_id=order_id, limit=1000)
+        if not isinstance(trades, list) or len(trades) >= 1000:
+            return False, Decimal("0")
+        trades = self._epoch_trades(trades, epoch)
+        if not trades:
+            return False, Decimal("0")
+        order = await binance_client.get_order(symbol, int(order_id))
+        if (not isinstance(order, dict) or str(order.get("orderId")) != order_id
+                or order.get("symbol") != symbol or order.get("side") not in {"BUY", "SELL"}
+                or not self._receipt_in_epoch(order, epoch)
+                or order.get("status") not in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}):
+            return False, Decimal("0")
+        total = Decimal(0)
+        filled = Decimal(0)
+        seen = set()
+        for trade in trades:
+            identity = str(trade.get("id"))
+            if (not identity.isascii() or not identity.isdecimal() or int(identity) in seen
+                    or str(trade.get("orderId")) != order_id or trade.get("symbol") != symbol
+                    or trade.get("side") != order["side"] or trade.get("commissionAsset") != "USDT"):
+                return False, Decimal("0")
+            seen.add(int(identity))
+            fee = Decimal(str(trade["commission"]))
+            qty = Decimal(str(trade["qty"]))
+            if not fee.is_finite() or not qty.is_finite() or qty <= 0:
+                return False, Decimal("0")
+            total += fee
+            filled += qty
+        if filled != Decimal(str(order["executedQty"])):
+            return False, Decimal("0")
+        return total != 0, total
 
     async def mark_entry_canceled(
         self,
@@ -1030,8 +1124,10 @@ class TradeLogger:
             result = await self.db.execute(
                 "UPDATE trading.trade_records "
                 "SET status = 'CANCELED' "
-                "WHERE order_id = $1 AND symbol = $2 AND status = 'NEW'",
-                str(order_id), symbol.strip().upper(),
+                "WHERE order_id = $1 AND symbol = $2 AND status = 'NEW' AND account_id = $3 AND strategy = $4 "
+                "AND id = (SELECT min(id) FROM trading.trade_records WHERE account_id=$3 AND symbol=$2 "
+                "AND order_id=$1 AND executed_at <@ $5::tsrange HAVING count(*)=1)",
+                str(order_id), symbol.strip().upper(), self.account_id, self.strategy_name, self._record_epoch(),
             )
             rows = self._parse_update_count(result)
             if rows > 0:

@@ -22,6 +22,7 @@ from typing import Any, Callable, List, Optional
 
 import structlog
 
+from shared.accounting.account_cutover import FILL_SOURCES, INCOME_SOURCES
 from shared.income_ingestion import commit_income_observations
 
 logger = structlog.get_logger()
@@ -34,8 +35,6 @@ _LOG_ERROR_TRUNCATE = 200
 _LOG_RAW_TRUNCATE = 60
 
 # raw_payload 的来源/entity_key 折叠常量
-_RAW_SOURCE_FILL = "userTrades"
-_RAW_SOURCE_INCOME = "um/income"
 _RAW_KEY_FILL = "fill"
 _RAW_KEY_INCOME = "income"
 
@@ -224,7 +223,7 @@ class PostgresExecutionFactsSink:
             self._build_fill_args,
             lambda f: self._build_raw_args(
                 f,
-                source=_RAW_SOURCE_FILL,
+                source=getattr(f, "source", FILL_SOURCES[0]),
                 entity_key=_RAW_KEY_FILL,
                 entity_id=f"{getattr(f,'account_id','')}:{getattr(f,'symbol','')}:{getattr(f,'trade_id','')}",
             ),
@@ -243,7 +242,7 @@ class PostgresExecutionFactsSink:
         fields = ("account_id", "tran_id", "symbol", "income_type", "income", "asset", "info", "trade_id", "event_time_utc")
         for fact in facts:
             args = self._build_income_args(fact)
-            raw = self._build_raw_args(fact, source=_RAW_SOURCE_INCOME, entity_key=_RAW_KEY_INCOME,
+            raw = self._build_raw_args(fact, source=getattr(fact, "source", INCOME_SOURCES[0]), entity_key=_RAW_KEY_INCOME,
                 entity_id=f"{fact.account_id}:{fact.income_type}:{fact.tran_id}")
             queries.extend([(_SQL_INCOME_UPSERT, args), (_SQL_RAW_UPSERT, raw)])
             observations.append({"fact": dict(zip(fields, args)), "raw": getattr(fact, "raw_payload", {}),

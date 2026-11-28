@@ -9,7 +9,7 @@ from shared.binance_api import BinanceClient
 
 
 @pytest.mark.asyncio
-async def test_pm_conditional_order_passes_client_algo_id_without_ordinary_retry_key():
+async def test_pm_conditional_order_passes_client_algo_id_with_algo_retry_key():
     client = object.__new__(BinanceClient)
     client.use_unified_account = True
     client.trade_logger = None
@@ -27,4 +27,4 @@ async def test_pm_conditional_order_passes_client_algo_id_without_ordinary_retry
     assert (method, endpoint) == ("POST", "/papi/v1/um/algo/order")
     assert params["clientAlgoId"] == "sa123"
     assert params["reduceOnly"] == "true"
-    assert client._request.await_args.kwargs["idempotency_key"] is None
+    assert client._request.await_args.kwargs["idempotency_key"] == "sa123"

@@ -16,6 +16,7 @@ binance.get_position() 返回整个共享账户的全部持仓。此前策略补
 所有 DB 异常/缺参均优雅降级返回 None / False，禁止抛异常中断主循环。
 """
 import structlog
+from shared.binance_account_mode import configured_pm
 import zlib
 from typing import Optional, Dict, List, Any
 
@@ -30,6 +31,28 @@ _TRADE_RECORDS_TABLE = "trading.trade_records"
 # 已终态入场记录 status 值（CANCELED=撤单未成交，EXPIRED=交易所过期，CLOSED=持仓已了结）
 # 这三类记录不再参与归属/互斥判定：终态标记后，互斥 SQL 自动排除（方案 9.3.2）
 _TERMINAL_ENTRY_STATUSES = ("CANCELED", "EXPIRED", "CLOSED")
+
+
+def entry_scope_args():
+    """PM 保留旧运行版本的 default 归属回退，经典只使用已核实空仓后的新记录。"""
+    from datetime import datetime, timedelta, timezone
+    from shared.accounting.account_cutover import classic_cutover_ms
+    from shared.accounting.equity_bridge import main_account
+
+    account = main_account()
+    if configured_pm():
+        return account, None
+    cutoff = classic_cutover_ms()
+    if cutoff is None:
+        raise ValueError("经典持仓归属缺少切换时间")
+    local_time = datetime.fromtimestamp(cutoff / 1000, timezone(timedelta(hours=8)))
+    return account, local_time.replace(tzinfo=None)
+
+
+def _entry_scope_sql(account, since):
+    return (f" AND (account_id = {account} OR (account_id IS NULL AND {account} = 'default' "
+            f"AND {since}::timestamp IS NULL))"
+            f" AND ({since}::timestamp IS NULL OR executed_at >= {since})")
 
 
 def _mark_entry_terminal_sql(status: str) -> str:
@@ -58,6 +81,7 @@ def _mark_entry_terminal_sql(status: str) -> str:
             f" AND order_type IN ({order_types})"
             " AND realized_pnl IS NULL"
             f" AND status NOT IN ({terminal_in})"
+            + _entry_scope_sql("$3", "$4")
         )
     return (
         f"UPDATE {_TRADE_RECORDS_TABLE} SET status = '{status}' "
@@ -67,7 +91,8 @@ def _mark_entry_terminal_sql(status: str) -> str:
         f"  AND order_type IN ({order_types})"
         "  AND realized_pnl IS NULL"
         f"  AND status NOT IN ({terminal_in})"
-        "  ORDER BY executed_at DESC, id DESC LIMIT 1"
+        + _entry_scope_sql("$3", "$4")
+        + "  ORDER BY executed_at DESC, id DESC LIMIT 1"
         ")"
     )
 
@@ -134,6 +159,9 @@ def _parse_update_count(result) -> int:
         return 0
 
 
+_OWNER_CONFLICT = "__ownership_conflict__"
+
+
 def _is_owner_blocking(
     owner: Optional[str],
     my_record_name: Optional[str],
@@ -147,6 +175,8 @@ def _is_owner_blocking(
     - competing_record_names 非空 => 仅当 owner 命中对家列表才互斥
     - competing_record_names 为空 => 与任意其他策略互斥（默认保守口径）
     """
+    if owner == _OWNER_CONFLICT:
+        return True
     if owner is None or owner == my_record_name:
         return False
     if competing_record_names:
@@ -175,14 +205,21 @@ def _open_entry_sql(status_filter: bool) -> str:
         f" AND status NOT IN ({', '.join(repr(s) for s in _TERMINAL_ENTRY_STATUSES)})"
     )
     status_clause = " AND status = 'FILLED'" if status_filter else ""
-    return (
-        f"SELECT strategy FROM {_TRADE_RECORDS_TABLE} "
+    records = (
+        f" FROM {_TRADE_RECORDS_TABLE} "
         "WHERE symbol = $1 AND order_type IN ('LIMIT','MARKET') "
         "AND realized_pnl IS NULL"
+        + _entry_scope_sql("$2", "$3")
         + terminal_clause
         + status_clause
-        + " ORDER BY executed_at DESC, id DESC LIMIT 1"
     )
+    if configured_pm():
+        return "SELECT strategy" + records + " ORDER BY executed_at DESC, id DESC LIMIT 1"
+    # 冲突必须同时阻止策略认领与新开仓；返回显式冲突，避免调用方把空结果当成空仓。
+    return ("SELECT CASE WHEN COUNT(DISTINCT strategy) = 1 AND COUNT(strategy) = COUNT(*) "
+            f"THEN MIN(strategy) ELSE '{_OWNER_CONFLICT}' END AS strategy"
+            + records + " HAVING COUNT(*) > 0")
+
 
 
 def load_ownership_config(config) -> dict:
@@ -283,23 +320,23 @@ async def _resolve_owner_with_lock(db_manager, symbol: str) -> Optional[str]:
     """
     if db_manager is None:
         logger.warning("db_manager 为 None，无法判定互斥归属", symbol=symbol)
-        return None
+        return None if configured_pm() else _OWNER_CONFLICT
     lock_key = zlib.crc32(symbol.encode()) & 0xFFFFFFFF
     advisory_fetcher = getattr(db_manager, 'fetch_one_advisory_lock', None)
     try:
         if advisory_fetcher is not None:
-            row = await advisory_fetcher(lock_key, _open_entry_sql(False), symbol)
+            row = await advisory_fetcher(lock_key, _open_entry_sql(False), symbol, *entry_scope_args())
         else:
             # 未实现 advisory 方法时退化为普通查询；竞态窗口由边界A兜底
-            row = await db_manager.fetch_one(_open_entry_sql(False), symbol)
+            row = await db_manager.fetch_one(_open_entry_sql(False), symbol, *entry_scope_args())
     except Exception as e:
         logger.error(
-            "持仓归属（互斥）查询异常，按无归属处理",
+            "持仓归属（互斥）查询异常，无法核对归属",
             symbol=symbol,
             error=str(e),
             exc_info=True,
         )
-        return None
+        return None if configured_pm() else _OWNER_CONFLICT
     strategy = row.get('strategy') if row else None
     return strategy if strategy else None
 
@@ -358,17 +395,17 @@ async def resolve_position_owner(
     """
     if db_manager is None:
         logger.warning("db_manager 为 None，无法判定持仓归属", symbol=symbol)
-        return None
+        return None if configured_pm() else _OWNER_CONFLICT
     try:
-        row = await db_manager.fetch_one(_open_entry_sql(status_filter), symbol)
+        row = await db_manager.fetch_one(_open_entry_sql(status_filter), symbol, *entry_scope_args())
     except Exception as e:
         logger.error(
-            "持仓归属查询异常，按无归属处理",
+            "持仓归属查询异常，无法核对归属",
             symbol=symbol,
             error=str(e),
             exc_info=True,
         )
-        return None
+        return None if configured_pm() else _OWNER_CONFLICT
     strategy = row.get('strategy') if row else None
     return strategy if strategy else None
 
@@ -402,9 +439,9 @@ async def filter_owned_positions(
     Returns:
         (过滤后的 margin_dict, qty_dict)
     """
-    # 快速失败：缺参或空持仓，直接原样返回
+    allow_unproven = configured_pm()
     if db_manager is None or not my_record_name:
-        return dict(margin_dict or {}), dict(qty_dict or {})
+        return (dict(margin_dict or {}), dict(qty_dict or {})) if allow_unproven else ({}, {})
     margin_dict = dict(margin_dict or {})
     qty_dict = dict(qty_dict or {})
     if not margin_dict and not qty_dict:
@@ -420,13 +457,14 @@ async def filter_owned_positions(
         except Exception:
             # 归属判定异常：保留该 symbol，宁多报不误删自家已成交仓
             logger.warning(
-                "上报归属过滤异常，保留该 symbol",
+                "上报归属过滤异常",
                 symbol=sym,
                 exc_info=True,
             )
-            keep.add(sym)
+            if allow_unproven:
+                keep.add(sym)
             continue
-        if owner is None or owner == my_record_name:
+        if owner == my_record_name or (owner is None and allow_unproven):
             keep.add(sym)
         else:
             logger.info(
@@ -608,6 +646,8 @@ async def release_claim(
     symbol: str,
     my_record_name: str,
     reason: str = "released",
+    *,
+    release_occupancy: bool = True,
 ) -> bool:
     """
     释放本策略对某 symbol 的占用（开仓失败/放弃/平仓归零时调用，R07-F4）
@@ -628,6 +668,7 @@ async def release_claim(
         symbol: 交易对
         my_record_name: 本策略归属名
         reason: 释放原因（写入 reason 字段，如 'open_failed'/'position_closed'）
+        release_occupancy: False 时仅回写入场记录终态，由调用方负责占用对账
 
     Returns:
         True 表示本策略确有占用被释放（或开关关闭/能力不足视为无需释放）；
@@ -639,7 +680,7 @@ async def release_claim(
     terminal_sql = _ENTRY_TERMINAL_SQL_BY_REASON.get(reason)
     if terminal_sql is not None and db_manager is not None:
         try:
-            result = await db_manager.execute(terminal_sql, symbol, my_record_name)
+            result = await db_manager.execute(terminal_sql, symbol, my_record_name, *entry_scope_args())
             if _parse_update_count(result) == 0:
                 logger.warning(
                     "未匹配到可标记终态的入场记录",
@@ -653,6 +694,8 @@ async def release_claim(
             )
 
     # 以下为 R07 占用表释放逻辑（原有行为不变）
+    if not release_occupancy:
+        return False
     if db_manager is None or not _supports_claims(db_manager):
         return True  # 未启用占用互斥时释放视为幂等成功
     try:

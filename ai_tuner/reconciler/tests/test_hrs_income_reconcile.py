@@ -747,3 +747,14 @@ def test_income_identity_preserves_same_time_and_rejects_conflicts():
     assert _dedupe_income([first, second, first]) == [first, second]
     with pytest.raises(ValueError):
         _dedupe_income([first, dict(first, income="2")])
+
+
+def test_legacy_diagnostic_cannot_cross_pm_classic_boundary(monkeypatch, default_cfg):
+    pm = _make_trade_record()
+    instant = _bj_naive_to_utc_ms(pm["executed_at"])
+    monkeypatch.setenv("BINANCE_CLASSIC_CUTOVER_MS",str(instant+1))
+    candidates = [dict(pm,executed_at=pm["executed_at"]+timedelta(milliseconds=1))]
+    matched, _ = match_income_to_trades([_make_income(time_ms=instant)],candidates,default_cfg)
+    assert not matched[0].matched
+    with pytest.raises(ValueError,match="report_economic_ledger"):
+        match_income_to_trades([_make_income(time_ms=instant+1)],[pm],default_cfg)

@@ -1,0 +1,100 @@
+import copy,importlib.util,time
+from pathlib import Path
+import pytest
+p=Path(__file__).with_name('unified-postcheck.py');spec=importlib.util.spec_from_file_location('unified',p);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+
+def good():
+ return dict(read_only=True,superuser=False,observed_at=time.time(),acceptance={'receipt_sha256':'x'},
+  allocation_sha256='a',risk_policy_sha256='r',ledger={'segment_id':'s','inception':'t','cash_allocation':'100','units':'100','cash_flows':[], 'incomes':[dict(event_id='1',amount='2')]},ledger_version=3,risk_ready=True,attribution_ready=True,hrs_ready=True,hrs_allowed=True,gate_unexpired=True,current_coverage_complete=True,risk_status='VERIFIED_WITH_ACCEPTED_HISTORY',history_status='ACCEPTED_GAPS',original_history_complete=False,risk_age_ms=1)
+
+def test_current_facts_can_advance_without_fabricating_history():
+ before=good();after=copy.deepcopy(before);after['ledger']['incomes'].append(dict(event_id='2',amount='3'));after['ledger_version']=4
+ assert m.check_business(before,after)['original_history_complete'] is False
+
+@pytest.mark.parametrize('damage',['receipt','allocation','policy','capital','units','income','history','stale','superuser','current','risk','gate'])
+def test_invalid_success_claims_are_rejected(damage):
+ before=good();after=copy.deepcopy(before)
+ if damage=='receipt':after['acceptance']['receipt_sha256']='new'
+ elif damage in ('allocation','policy'):after['allocation_sha256' if damage=='allocation' else 'risk_policy_sha256']='new'
+ elif damage in ('capital','units'):after['ledger']['cash_allocation' if damage=='capital' else 'units']='0'
+ elif damage=='income':after['ledger']['incomes']=[]
+ elif damage=='history':after['original_history_complete']=True
+ elif damage=='stale':after['risk_age_ms']=120001
+ elif damage=='superuser':after['superuser']=True
+ elif damage=='current':after['current_coverage_complete']=False
+ elif damage=='risk':after['risk_ready']=False
+ elif damage=='gate':after['hrs_allowed']=False
+ with pytest.raises(AssertionError):m.check_business(before,after)
+
+@pytest.mark.parametrize('old_oom,actual_oom,expected_oom,allowed',[
+ (None,None,False,True),(None,False,False,True),(False,False,False,True),
+ (True,True,True,True),(None,True,False,False),(True,None,True,False),
+ (False,None,False,False),
+])
+def test_running_config_uses_exact_predecessor_nullable_oom_policy(old_oom,actual_oom,expected_oom,allowed):
+ import sys
+ sys.path.insert(0,'/Users/yl/.codex/worktrees/unified-production-20261127')
+ from scripts.deploy_full_regression import ReleaseError, validate_staged_runtime
+ old={'HostConfig':{'OomKillDisable':old_oom}}
+ body={'Image':'sha256:test','HostConfig':{'OomKillDisable':expected_oom,'Memory':128},'NetworkingConfig':{'EndpointsConfig':{}}}
+ actual={'Config':{'Image':'sha256:test'},'HostConfig':{'OomKillDisable':actual_oom,'Memory':128},'NetworkSettings':{'Networks':{}}}
+ saved=copy.deepcopy((actual,body))
+ if allowed:m.check_running_runtime(actual,body,old,validate_staged_runtime)
+ else:
+  with pytest.raises(ReleaseError):m.check_running_runtime(actual,body,old,validate_staged_runtime)
+ assert (actual,body)==saved
+
+
+def test_nullable_oom_policy_does_not_hide_other_runtime_changes():
+ import sys
+ sys.path.insert(0,'/Users/yl/.codex/worktrees/unified-production-20261127')
+ from scripts.deploy_full_regression import ReleaseError, validate_staged_runtime
+ old={'HostConfig':{'OomKillDisable':None}}
+ body={'Image':'sha256:test','HostConfig':{'OomKillDisable':False,'Memory':128},'NetworkingConfig':{'EndpointsConfig':{}}}
+ actual={'Config':{'Image':'sha256:test'},'HostConfig':{'OomKillDisable':None,'Memory':256},'NetworkSettings':{'Networks':{}}}
+ with pytest.raises(ReleaseError):m.check_running_runtime(actual,body,old,validate_staged_runtime)
+
+
+def paused_fixture():
+ import datetime
+ now=time.time();state=dict(state='PAUSED',lock_reason=None)
+ current=dict(id='current',started_at=datetime.datetime.fromtimestamp(now-120,datetime.timezone.utc).isoformat(),safe_env={'GRID_EXECUTION_HEARTBEAT':'/heartbeat'})
+ binding=dict(account='grid',account_mode='classic',account_identity_sha256='a',risk_policy_sha256='r',continuity_sha256='c')
+ proof=dict(binding,source='source',container='trading_system-grid-executor',old_id='current',observed_at=now,engine_state=[state],risk_status='ALLOW',position='0',journal_net='0',ordinary_orders=0,algo_orders=0,journal_active_orders=0,journal_active_protections=0,requests=[dict(method='GET',signed=True,path='/fapi/v1/'+x) for x in ['positionRisk','openOrders','openAlgoOrders','account']])
+ for k in ('read_only','ok','reconciled','protected','snapshot_stable','live_journal_untouched','heartbeat_fresh','stream_ready','flat'):proof[k]=True
+ local=dict(state=state,heartbeat=dict(state='PAUSED',risk_status='ALLOW',stream_ready=True,updated_at_ms=now*1000),heartbeat_path='/heartbeat',epoch=1,active_orders=0,active_protections=0,pending_decisions=0,journal_net='0')
+ signal=dict(read_only=True,observed_at=now,engine_state=state,config_hashes={'config':'hash'},decision_id='decision',cursor_matches=True,signal_state='OSCILLATION',executable=True,feasibility=dict(feasible=False,binding='EXECUTION'),calculated_at_ms=now*1000,candles_current=True,margin_used='0',trend_coeff='0',base_margin='500',profit_cap=9,minimum_grid_count=5,policy_action='WAIT',receipt=dict(decision_id='decision',updated_at_ms=now*1000,state='PAUSED',reason=None,processed=True,stream_ready=True,risk='ALLOW'))
+ legacy=m.load('paused_check_legacy',Path(__file__).with_name('postdeploy-trading-check-v2.py'))
+ return proof,local,signal,current,'source',{'grid':binding},{'config':'hash'},legacy,now
+
+
+def test_zero_budget_pause_remains_explicitly_paused():
+ args=paused_fixture();result=m.check_zero_budget_pause(*args)
+ assert result['grid_state']=='PAUSED' and result['acceptance_mode']=='paused_zero_budget'
+ assert args[0]['engine_state'][0]['state']=='PAUSED'
+
+@pytest.mark.parametrize('damage',['account','source','position','order','pending','stale_heartbeat','stale_signal','budget','trend','feasible','receipt','lock','stream','risk','config','cursor','write','identity','reconciled','candles','receipt_start'])
+def test_pause_acceptance_cannot_bypass_a_safety_condition(damage):
+ args=paused_fixture();p,l,s,c,sha,b,cfg,legacy,now=args
+ if damage=='account':p['account']='different'
+ elif damage=='source':p['source']='different'
+ elif damage=='position':p['position']='0.001'
+ elif damage=='order':p['ordinary_orders']=1
+ elif damage=='pending':l['pending_decisions']=1
+ elif damage=='stale_heartbeat':l['heartbeat']['updated_at_ms']=(now-121)*1000
+ elif damage=='stale_signal':s['calculated_at_ms']=(now-5401)*1000
+ elif damage=='budget':s['margin_used']='1'
+ elif damage=='trend':s['trend_coeff']='0.1'
+ elif damage=='feasible':s['feasibility']['feasible']=True
+ elif damage=='receipt':s['receipt']['processed']=False
+ elif damage=='lock':l['state']['lock_reason']='locked'
+ elif damage=='stream':l['heartbeat']['stream_ready']=False
+ elif damage=='risk':p['risk_status']='EXIT_LOCKED'
+ elif damage=='config':s['config_hashes']={'config':'changed'}
+ elif damage=='cursor':s['cursor_matches']=False
+ elif damage=='write':p['requests'][0]['method']='POST'
+ elif damage=='identity':p['old_id']='old'
+ elif damage=='reconciled':p['reconciled']=False
+ elif damage=='candles':s['candles_current']=False
+ elif damage=='receipt_start':s['receipt']['updated_at_ms']=(now-121)*1000
+ with pytest.raises(AssertionError):m.check_zero_budget_pause(*args)

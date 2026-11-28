@@ -38,6 +38,8 @@ def build_strategy():
     strategy.positions = {}
     strategy.binance = MagicMock(spec=BinanceClient)
     strategy.capital_mgr = MagicMock(spec=CapitalManager)
+    strategy._owned_exchange_margin_for_allocation = AsyncMock(return_value=0.0)
+    strategy.capital_mgr.can_open_within_limit = AsyncMock(return_value=(True, None))
     return strategy
 
 

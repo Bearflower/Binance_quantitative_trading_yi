@@ -1,0 +1,121 @@
+{
+  "scope": "successor operations integration diff HEAD",
+  "independence": "同模型独立上下文复审；未声称跨模型审查",
+  "summary": {
+    "total_files": 8,
+    "reviewed_files": 8,
+    "skipped_files": 0,
+    "coverage_rate": 1.0
+  },
+  "files": [
+    {
+      "path": ".github/workflows/dashboard-classic-segments.yml",
+      "status": "added",
+      "review_status": "reviewed",
+      "sha256": "57b0f2170378618e2206b23fcc0a14a88f1cc1c5d38db7f6dfae5871acb8b455"
+    },
+    {
+      "path": ".github/workflows/history-tolerance-build.yml",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "a48f1c1aa15e48d077c8c7395d18d8e441e4b57f08c709e29d308f36be11ce92"
+    },
+    {
+      "path": ".github/workflows/xau-attribution-release.yml",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "5b329fd3868b7df703bf5df6dd548434c539c05a5a5bf1fabb85a248f2518a43"
+    },
+    {
+      "path": "deploy/history-tolerance/bases.json",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "4108ee9b161a38c914616d25f1f558237a6fa2db820010f95eb973ff77cfb24c"
+    },
+    {
+      "path": "deployment/history-live-gap/activate.py",
+      "status": "added",
+      "review_status": "reviewed",
+      "sha256": "c1f386df266dd3a80fa67970469ee39c5186906e1b56ac7d0c320fec171afcb1"
+    },
+    {
+      "path": "deployment/xau-attribution/activate.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "b38836297c744b1491e23dfeb770661e58bef5c7c019c21ac622429a1154556a"
+    },
+    {
+      "path": "scripts/build_history_tolerance.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "26595309efe2e7a16453aa5ca508fd6d7219a9f8ee8d241e530819b8c0b748c7"
+    },
+    {
+      "path": "scripts/prepare_history_live_gap_release.py",
+      "status": "added",
+      "review_status": "reviewed",
+      "sha256": "14644f80049437b0474b55618c4715691b1f9ff6a11222dba2700cd703a7bc0e"
+    }
+  ],
+  "extra_reviewed": [
+    {
+      "path": "deployment/xau-attribution/Dockerfile.shadow",
+      "reason": "OCR unsupported_ext，已人工检查固定base、COPY与执行器FILES一致性"
+    },
+    {
+      "path": "tests/test_scripts/test_prepare_history_live_gap_release.py",
+      "reason": "生成器两项正常/错源测试，当前缺激活错误路径测试"
+    },
+    {
+      "path": "tests/test_scripts/test_xau_attribution_release.py",
+      "reason": "作用域/契约/权限清单hash测试"
+    },
+    {
+      "path": "tests/test_scripts/test_xau_exact_release.py",
+      "reason": "精确ID故障注入、双目标回退、持久恢复及最终验证"
+    }
+  ],
+  "findings": [
+    {
+      "path": "deployment/history-live-gap/activate.py",
+      "start_line": 99,
+      "end_line": 121,
+      "severity": "high",
+      "category": "security",
+      "content": "HRS/AI 受限激活在停止生产前没有执行权威 database_permissions.py audit。prepare_history_live_gap_release 也没有打包和绑定审计脚本/权限契约，CI activation 没有前置 audit；因此数据库权限漂移、未知对象或 owner 异常不会阻止四消费者切换。应在包中绑定审计资源哈希并在 activate 首次 docker update/stop 之前执行 audit，失败保持所有旧实例。",
+      "evidence": "全文件与工作流/打包器调用链；ops-final-health-reproducer.json audit_calls=0。"
+    },
+    {
+      "path": "deployment/history-live-gap/activate.py",
+      "start_line": 158,
+      "end_line": 158,
+      "severity": "medium",
+      "category": "bug",
+      "content": "最终检查只覆盖 protected 容器，没有重新验证已激活的四个目标。第一目标可能在其余目标的最长约300秒启动窗口中退出/重启，函数仍正常返回且保留它早先的 active.json healthy 证据。应将四目标最终身份、镜像、健康、重启和源码复验放进同一失败处理边界，并补首个目标在最后目标启动时退出的故障测试。",
+      "evidence": "纯本地 Docker 状态机重现：activation_returned_success=true，first_candidate_running=false；见 ops-final-health-reproducer.json。"
+    },
+    {
+      "path": ".github/workflows/history-tolerance-build.yml",
+      "start_line": 117,
+      "end_line": 117,
+      "severity": "medium",
+      "category": "security",
+      "content": "新增 SSH 初始化用现场 ssh-keyscan 建立信任，下一步立即经同一连接发送 GHCR_PULL_TOKEN 和部署包。主动中间人可替换扫描结果，StrictHostKeyChecking 默认值无法弥补首次信任来源被劫持。仓库 XAU 工作流已保存核验过的该主机 ed25519 公钥；应复用固定已核验 host key，并显式 StrictHostKeyChecking=yes。",
+      "evidence": "history-tolerance-build.yml 的 Set up SSH 与紧随 Authenticate GHCR 步骤；xau-attribution-release.yml 固定已验证 host key 可复用。"
+    }
+  ],
+  "unconfirmed_not_reported": [],
+  "release_guidance": [
+    "full-regression/build-plan 已覆盖23目标和2保留实验；无需为整合改历史窄发布base。",
+    "重新冻结23+2实际ID/image/runtime和旧pin哈希，通过supersede接续，不能改写旧pin证据。",
+    "source-mount-removals为空符合旧全量释放后的状态，但必须再以当前运行Mounts核对。",
+    "共享classic_attribution变化应验完整镜像source inventory，勿只验7个容器的VERSION。"
+  ],
+  "discarded_false_positives": [
+    {
+      "topic": "registry digest vs Docker Id",
+      "reason": "当前生产镜像存储实际 Id 与 RepoDigests digest 相同；结合该环境约束，不作为本次已部署缺陷。",
+      "evidence": "/tmp/binance-successor-20261128/image-store-check.txt"
+    }
+  ]
+}

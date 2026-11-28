@@ -1,0 +1,93 @@
+{
+  "format": "sorted-csv-gzip-v1",
+  "source": "data/aggtrades/ethusdt_aggtrades.sqlite; read-only consistent transaction; ORDER BY primary key",
+  "classification": "Historical development data already used for parameter selection, not out-of-sample evidence.",
+  "tables": {
+    "agg_trades": {
+      "rows": 2814926,
+      "columns": [
+        {
+          "name": "agg_trade_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "type": "TEXT"
+        },
+        {
+          "name": "price",
+          "type": "TEXT"
+        },
+        {
+          "name": "quantity",
+          "type": "TEXT"
+        },
+        {
+          "name": "first_trade_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "last_trade_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "trade_time_ms",
+          "type": "INTEGER"
+        },
+        {
+          "name": "is_buyer_maker",
+          "type": "INTEGER"
+        },
+        {
+          "name": "received_at_ms",
+          "type": "INTEGER"
+        }
+      ],
+      "schema": "CREATE TABLE agg_trades (\n  agg_trade_id   INTEGER PRIMARY KEY,          -- 币安按品种聚合后的唯一 ID，天然主键\n  symbol         TEXT NOT NULL,                -- ETHUSDT\n  price          TEXT NOT NULL,                -- Decimal 字符串，避免浮点误差\n  quantity       TEXT NOT NULL,                -- Decimal 字符串\n  first_trade_id INTEGER,\n  last_trade_id  INTEGER,\n  trade_time_ms  INTEGER NOT NULL,             -- 交易所事件时间 T（毫秒）\n  is_buyer_maker INTEGER NOT NULL,             -- 0/1\n  received_at_ms INTEGER NOT NULL              -- 本地取得时刻：WS=真实接收时刻；REST/文件=本地拉取/导入时刻\n) WITHOUT ROWID",
+      "csv_sha256": "796b0df8a20493f9688dc010e282b540cb37ab1be111986e23da3d2ddcbaa413",
+      "gzip_sha256": "b078a2b45f9994dd76f9a976f5d93e771a97d1f037915bd307875ff925f4d655",
+      "gzip_bytes": 39018691
+    },
+    "price_samples_1s": {
+      "rows": 172057,
+      "columns": [
+        {
+          "name": "sample_ms",
+          "type": "INTEGER"
+        },
+        {
+          "name": "symbol",
+          "type": "TEXT"
+        },
+        {
+          "name": "price",
+          "type": "TEXT"
+        },
+        {
+          "name": "trade_count",
+          "type": "INTEGER"
+        },
+        {
+          "name": "last_trade_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "anchor_time_ms",
+          "type": "INTEGER"
+        },
+        {
+          "name": "materialized_at_ms",
+          "type": "INTEGER"
+        }
+      ],
+      "schema": "CREATE TABLE price_samples_1s (\n  sample_ms         INTEGER PRIMARY KEY,      -- 整秒决策点 t（.000）；p(t)=不晚于 t 的最后一笔\n  symbol            TEXT NOT NULL,            -- ETHUSDT\n  price             TEXT NOT NULL,            -- 不晚于 t.000 的最后一笔成交价（T<=t，可早于 t）；空缺点沿用前锚点\n  trade_count       INTEGER NOT NULL,         -- 窗口 (t-1s, t] 成交笔数；空缺点=0\n  last_trade_id     INTEGER NOT NULL,         -- 锚点成交 agg_trade_id；空缺点沿用前一笔\n  anchor_time_ms    INTEGER NOT NULL,         -- 锚点成交事件时间，恒 <= sample_ms（逐笔 72h 清理后锚距仍可判）\n  materialized_at_ms INTEGER NOT NULL         -- 物化本地时刻（审计）\n) WITHOUT ROWID",
+      "csv_sha256": "a3a27a4685392daa800dca4ef8fde664ba354e038feac272bc2d5619b2e0796a",
+      "gzip_sha256": "73b9fda60857a2eec6d3dbfeacc5d92da7b9303f6604a505dfb1425f959726e2",
+      "gzip_bytes": 2129248
+    }
+  },
+  "indexes": [
+    "CREATE INDEX idx_agg_symbol_time\n  ON agg_trades(symbol, trade_time_ms)",
+    "CREATE INDEX idx_samples_symbol_time\n  ON price_samples_1s(symbol, sample_ms)"
+  ]
+}

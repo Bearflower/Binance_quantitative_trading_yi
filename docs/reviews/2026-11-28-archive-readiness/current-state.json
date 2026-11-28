@@ -1,0 +1,278 @@
+{
+  "observed_at": 1795795998.7214363,
+  "original_release_source": "c4a0bea5b9304779e4d64a526865541afce764a6",
+  "containers": [
+    {
+      "name": "trading_system-btc_eth",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-mtcps-xau-shadow",
+      "identity_matches_release": false,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+      "deploy_id": "00000401",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-mtcps-xau-calibrated-shadow",
+      "identity_matches_release": false,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+      "deploy_id": "00000401",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-btc_eth_aggressive",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-new_coin",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-grid",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-grid-dashboard-exporter",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-grid-pg-projector",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-grid-notifier",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-grid-realtime",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-hrs",
+      "identity_matches_release": false,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "71384375b63bdd6ead02c6eb7e74a4e54d154fdf",
+      "deploy_id": "00000801",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-hrs-acceptance",
+      "identity_matches_release": false,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "71384375b63bdd6ead02c6eb7e74a4e54d154fdf",
+      "deploy_id": "00000801",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-execution-facts",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-market-cap",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "ai-tuner",
+      "identity_matches_release": false,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "71384375b63bdd6ead02c6eb7e74a4e54d154fdf",
+      "deploy_id": "00000801",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "ai-tuner-snapshot",
+      "identity_matches_release": false,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "71384375b63bdd6ead02c6eb7e74a4e54d154fdf",
+      "deploy_id": "00000801",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "ai-tuner-funding-schedule",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "data-backend",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "dashboard-api",
+      "identity_matches_release": false,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "92b637a0bcd527cb51b6177fac4aeb976be4cb25",
+      "deploy_id": "00000101",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-kline",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-kline-monitor",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-aggtrade-collector",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    },
+    {
+      "name": "trading_system-grid-executor",
+      "identity_matches_release": true,
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "version_sha": "c4a0bea5b9304779e4d64a526865541afce764a6",
+      "deploy_id": "00000601",
+      "error_markers_30m": 0
+    }
+  ],
+  "preserved": [
+    {
+      "name": "trading_system-hrs-research-observer",
+      "running": true,
+      "health": null,
+      "restarts": 0,
+      "identity_matches_release": true
+    },
+    {
+      "name": "trading_system-mtpcs-direction-shadow",
+      "running": true,
+      "health": "healthy",
+      "restarts": 0,
+      "identity_matches_release": true
+    }
+  ],
+  "grid": {
+    "state": "FLAT",
+    "risk": "ALLOW",
+    "stream_ready": true,
+    "heartbeat_age_ms": 3300
+  },
+  "log_window_start_utc": "2026-11-27T15:43:08.261328+00:00",
+  "permissions": {
+    "ok": true,
+    "objects_checked": 1355,
+    "manifest_sha256": "62513735d6954615158f466f8561c1325567efdf3011f6899f75af30849137c1"
+  },
+  "business": {
+    "observed_at": 1795795890.0344176,
+    "hrs_ready": true,
+    "hrs_allowed": true,
+    "gate_unexpired": true,
+    "risk_status": "VERIFIED_WITH_ACCEPTED_HISTORY",
+    "risk_ready": true,
+    "attribution_ready": true,
+    "history_status": "ACCEPTED_GAPS",
+    "original_history_complete": false,
+    "current_coverage_complete": true
+  },
+  "scope": "read-only current-state and archival-readiness audit; not a new full-regression run",
+  "business_evidence_sha256": "3c439b75d685aaf7b0aa76446046730717bc7fcb6c214700204eff7ec21dec05"
+}

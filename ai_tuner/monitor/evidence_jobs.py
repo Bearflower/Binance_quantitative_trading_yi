@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -17,10 +17,16 @@ from ai_tuner.allocation.activity_evidence import (
 from ai_tuner.monitor.trial_risk_evidence import account_initial_margin
 from ai_tuner.allocation.capital_evidence import read_capital_evidence
 from ai_tuner.allocation.shadow_allocation import preview_monthly_allocation
-from ai_tuner.monitor.account_risk import collect_account_risk
+from ai_tuner.monitor.account_risk import classic_budget_block, collect_account_risk, observe_classic_equity
+from ai_tuner.monitor.classic_account_risk import collect_classic_risk, READY, risk_allows_allocation
+from shared.accounting.history_tolerance import read_history_acceptance
 from ai_tuner.monitor.reduced_trial import BEIJING, NotificationState
 from shared.accounting.pm_equity_bridge import observe_pm_equity
+from shared.accounting.account_cutover import account_cutover_ms
 from shared.accounting.published_report import read_published_report
+from shared.new_coin_recovery_evidence import owned_recovery_reduction_algos, verify_tp1_tail
+from shared.condition_orders import classic_owned_algos
+from shared.trade_logger import TradeLogger
 
 
 def atomic_report(path: Path, value: dict):
@@ -41,25 +47,32 @@ def atomic_report(path: Path, value: dict):
 class EvidenceJobs:
     def __init__(self, db, pm, wallet, messenger, config, state_dir: Path):
         self.db, self.pm, self.wallet, self.messenger = db, pm, wallet, messenger
-        self.config, self.state_dir = config, Path(state_dir)
+        self.classic = getattr(pm, 'use_unified_account', True) is False
+        self.config = config
+        self.state_dir = Path(state_dir) / 'classic' if self.classic else Path(state_dir)
         self.budget = dict(config['account_risk']['budget'])
+        self._classic_policy = None
         if self.budget.get('account_id') != 'default':
             raise ValueError('reviewed budget covers only default PM')
 
     def latest_risk(self):
+        if self.classic and self._classic_policy is None:
+            return classic_budget_block(self.budget['account_id'])
         risk = {}
         try:
             risk = json.loads((self.state_dir / 'account-risk-latest.json').read_text())
             if (not isinstance(risk, dict) or risk.get('account_id') != self.budget['account_id']
-                    or risk.get('budget_id') != self.budget['budget_id']):
+                    or risk.get('budget_id') != (f"{self.budget['account_id']}-classic-{self._classic_policy.revision}" if self.classic else self.budget['budget_id'])):
                 raise ValueError('risk identity mismatch')
             age = int(time.time()*1000) - risk['as_of_ms']
             if age < 0 or age > self.budget.get('max_snapshot_age_ms', 120000):
                 raise ValueError('risk snapshot stale')
+            if self.classic and (risk.get('acceptance_sha256') != self._classic_policy.receipt_sha256):
+                raise ValueError('classic acceptance changed')
             return risk
         except (OSError, ValueError, KeyError, TypeError):
             latched = (isinstance(risk, dict) and risk.get('account_id') == self.budget['account_id']
-                       and risk.get('budget_id') == self.budget['budget_id']
+                       and (self.classic or risk.get('budget_id') == self.budget['budget_id'])
                        and (risk.get('known_breach') or risk.get('status') == 'SAFETY_REVIEW'))
             return {'status': 'SAFETY_REVIEW' if latched else 'BLOCKED_DATA',
                     'known_breach': risk.get('known_breach') if latched else None, 'account_id': self.budget['account_id'],
@@ -71,7 +84,7 @@ class EvidenceJobs:
         pin_path = self.state_dir / 'account-risk-baseline-pin.json'
         budget = dict(self.budget)
         try:
-            pin = json.loads(pin_path.read_text())
+            pin = None if self.classic else json.loads(pin_path.read_text())
         except FileNotFoundError:
             pin = None
         if pin is not None:
@@ -79,8 +92,25 @@ class EvidenceJobs:
                     or pin.get('account_identity') != budget['account_identity']):
                 raise ValueError('persisted risk baseline account mismatch')
             budget['expected_baseline_time_ms'] = pin['exchange_time_ms']
-        result = await collect_account_risk(self.db, self.pm, self.wallet, budget)
-        if pin is None and result.get('baseline'):
+        if self.classic:
+            previous = self.latest_risk()
+            try:
+                self._classic_policy = await read_history_acceptance(self.db, budget['account_id'])
+                attribution = None
+                if self._classic_policy is not None:
+                    from shared.accounting.classic_attribution import reconcile_classic_attribution
+                    attribution = await reconcile_classic_attribution(self.db, self.pm, acceptance=self._classic_policy)
+                result = await collect_classic_risk(self.db, self.pm, budget['account_id'], attribution=attribution)
+            except Exception as exc:
+                result = classic_budget_block(budget['account_id'])
+                result.update(status='SAFETY_REVIEW' if previous.get('known_breach') else 'BLOCKED_DATA',
+                    account_id=budget['account_id'], account_mode='classic', as_of_ms=None,
+                    known_breach=previous.get('known_breach'), limit_ratio='0.05',
+                    max_drawdown_ratio=previous.get('max_drawdown_ratio'),
+                    reasons=['classic_risk_collection_failed:'+type(exc).__name__])
+        else:
+            result = await collect_account_risk(self.db, self.pm, self.wallet, budget)
+        if not self.classic and pin is None and result.get('baseline'):
             self.state_dir.mkdir(parents=True, exist_ok=True)
             # Create once; daily jobs, failures and budget renewals never replace it.
             with pin_path.open('x', encoding='utf-8') as handle:
@@ -89,37 +119,42 @@ class EvidenceJobs:
                 os.fsync(handle.fileno())
         # Immutable detailed facts live in PostgreSQL; this pointer is a report cache.
         summary = {key: value for key, value in result.items() if key != 'evidence'}
-        summary['exchange_account_initial_margin_usd'] = account_initial_margin(
-            result.get('evidence'), result.get('as_of_ms'))
+        if not self.classic:
+            summary['exchange_account_initial_margin_usd'] = account_initial_margin(
+                result.get('evidence'), result.get('as_of_ms'))
         atomic_report(self.state_dir / 'account-risk-latest.json', summary)
         signature = json.dumps([summary['status'], sorted({str(r).split(':')[0]
                                  for r in summary.get('reasons', [])})], sort_keys=True)
         state = NotificationState(self.state_dir / 'account-risk-notified.json')
-        if summary['status'] != 'VERIFIED' and state.changed(signature):
+        if summary['status'] not in ('VERIFIED', READY) and state.changed(signature):
             delivered = await self.messenger.send_alert(
-                '【AI Tuner 主账户5%回撤预算】',
-                f"范围: default PM；网格另评\n结论: {summary['status']}\n"
-                f"最大采样回撤: {summary.get('max_drawdown_ratio')}；预算: 0.05\n"
+                '【AI Tuner 主账户回撤预算】',
+                f"账户模式 {'经典合约' if self.classic else 'PM'}，网格另评\n结论: {summary['status']}\n"
+                f"最大采样回撤: {summary.get('max_drawdown_ratio')}；预算: {summary.get('limit_ratio')}\n"
                 f"证据问题: {', '.join(summary.get('reasons', []))}\n"
                 '只读考核；自动分配继续冻结，需复审处理。', level='error')
             if delivered:
                 state.mark_delivered(signature, datetime.now(BEIJING))
-        elif summary['status'] == 'VERIFIED' and state.changed(signature):
+        elif summary['status'] in ('VERIFIED', READY) and state.changed(signature):
             state.mark_delivered(signature, datetime.now(BEIJING))
         return summary
 
     async def sample_equity_valuation(self):
         sampled_at = datetime.now(BEIJING)
         try:
-            result = await asyncio.wait_for(observe_pm_equity(self.pm, self.wallet), timeout=5)
+            observation = (observe_classic_equity(self.pm) if self.classic else
+                           observe_pm_equity(self.pm, self.wallet))
+            result = await asyncio.wait_for(observation, timeout=5)
         except Exception as exc:
             result = {'status': 'BLOCKED_DATA',
                       'reasons': ['valuation_request_failed:' + type(exc).__name__]}
-        sample = dict(result, method='pm-usdt-equity-bridge-v1', sampled_at=sampled_at.isoformat(),
+        method = 'classic-usdt-margin-balance-v1' if self.classic else 'pm-usdt-equity-bridge-v1'
+        sample = dict(result, method=method, sampled_at=sampled_at.isoformat(),
                       account_scope=self.budget['account_id'],
-                      account_identity=self.budget['account_identity'])
+                      account_identity=(None if self.classic else self.budget['account_identity']),
+                      account_mode=('classic' if self.classic else 'pm'))
         body = json.dumps(sample, sort_keys=True).encode()
-        directory = self.state_dir / 'pm-equity' / sampled_at.date().isoformat()
+        directory = self.state_dir / ('classic-equity' if self.classic else 'pm-equity') / sampled_at.date().isoformat()
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         target = directory / f'{sampled_at:%H%M%S%f}-{hashlib.sha256(body).hexdigest()[:16]}.json'
         # Readers see only complete records. A new observation never replaces a prior one.
@@ -135,7 +170,7 @@ class EvidenceJobs:
                        'as_of': datetime.now(BEIJING).isoformat(), 'positions': []}
         try:
             rows = await self.db.fetch_all(
-                """SELECT p.symbol, p.position_id,
+                """SELECT p.symbol, p.position_id, p.quantity, p.entry_price, p.opened_at,
                           p.metadata->>'entry_order_id' AS entry_order_id,
                           p.metadata->>'tp1_algo_id' AS tp1_algo_id,
                           state_data::jsonb->'positions'->p.symbol->>'recovery_position_id'
@@ -152,7 +187,7 @@ class EvidenceJobs:
                 detail = dict(symbol=row['symbol'], position_id=row['position_id'],
                               tp1_algo_id=row['tp1_algo_id'], status='BLOCKED_DATA')
                 try:
-                    detail.update(await asyncio.wait_for(self._inspect_new_coin_tp1(row), timeout=5))
+                    detail.update(await asyncio.wait_for(self._inspect_new_coin_tp1(row), timeout=18))
                 except Exception as exc:
                     detail['reason'] = 'tp1_evidence:' + type(exc).__name__
                 observation['positions'].append(detail)
@@ -174,6 +209,19 @@ class EvidenceJobs:
                 or int(entry) <= 0 or int(tp1) <= 0 or row['position_id'] != f'{symbol}_{entry}'):
             return {'status': 'BLOCKED_DATA', 'reason': 'position_identity_unverified'}
         algo = await self.pm.get_algo_order(int(tp1))
+        account = self.budget['account_id']
+        owner = None
+        if self.classic:
+            owner = TradeLogger(self.db, 'new_coin', account_id=account)
+            opened = row['opened_at']
+            cutoff = account_cutover_ms(account)
+            if not isinstance(opened, datetime) or cutoff is None:
+                return {'status': 'BLOCKED_DATA', 'reason': 'opening_epoch_unverified'}
+            opened = opened if opened.tzinfo else opened.replace(tzinfo=timezone.utc)
+            binding = await classic_owned_algos(self.pm, symbol=symbol, orders=[algo], owner=owner)
+            if (opened.timestamp() * 1000 < cutoff or len(binding) != 1
+                    or binding[0]['tp_level'] != 1 or binding[0]['order_type'] != 'TAKE_PROFIT'):
+                return {'status': 'BLOCKED_DATA', 'reason': 'tp1_strategy_binding_unverified'}
         if (str(algo.get('algoId')) != tp1 or algo.get('symbol') != symbol
                 or algo.get('orderType') != 'TAKE_PROFIT' or algo.get('side') != 'BUY'
                 or algo.get('positionSide') != 'BOTH' or algo.get('reduceOnly') is not True):
@@ -194,8 +242,33 @@ class EvidenceJobs:
             return {'status': 'BLOCKED_DATA', 'reason': 'tp1_order_unverified'}
         recovered = (row['recovered_position_id'] == row['position_id']
                      and row['recovery_tp1_evidence'] == 'verified_tail')
-        return {'status': 'RECOVERY_TAIL_VERIFIED' if recovered else 'WAIT_RECOVERY',
-                'tp1_order_id': actual}
+        detail = {'tp1_order_id': actual}
+        opened = row['opened_at']
+        if not isinstance(opened, datetime):
+            return dict(detail, status='BLOCKED_DATA', reason='opening_time_unverified')
+        opened = opened if opened.tzinfo else opened.replace(tzinfo=timezone.utc)
+        live, account_positions = await asyncio.gather(
+            self.pm.get_position(symbol), self.pm.get_um_account_positions())
+        amounts = [[Decimal(str(p['positionAmt'])) for p in view if p['symbol']==symbol
+                    and Decimal(str(p['positionAmt'])) != 0 and p.get('positionSide')=='BOTH']
+                   for view in (live,account_positions)]
+        if len(amounts[0]) != 1 or amounts[0] != amounts[1] or amounts[0][0] >= 0:
+            return dict(detail, status='BLOCKED_DATA', reason='tail_inventory_unverified')
+        remaining = -amounts[0][0]
+        extra = await owned_recovery_reduction_algos(self.db, account, symbol, int(tp1), opened, classic=self.classic)
+        owned_stops = None
+        if self.classic:
+            owned_stops = {r['algo_id'] for r in await classic_owned_algos(self.pm, symbol=symbol, owner=owner)
+                           if r['orderType'] in ('STOP', 'STOP_MARKET')}
+        verified = await verify_tp1_tail(
+            self.pm, symbol=symbol, entry_order_id=int(entry), tp1_algo_id=int(tp1),
+            opened_at=opened, anchor=row['quantity'], entry_price=row['entry_price'], remaining=remaining,
+            now=datetime.now(timezone.utc), additional_tp_algo_ids=extra, owned_stop_ids=owned_stops)
+        if not verified:
+            return dict(detail, status='BLOCKED_DATA', reason='signed_tail_or_protection_unverified')
+        return dict(detail, status='RECOVERY_TAIL_VERIFIED' if recovered else 'WAIT_RECOVERY',
+                    tail_signed_verified=True, remaining_quantity=str(remaining),
+                    additional_tp_algo_ids=list(extra))
 
     async def sample_activity(self):
         result = await collect_entry_activity(self.db, self.pm, self.budget['account_id'],
@@ -218,7 +291,22 @@ class EvidenceJobs:
         account = self.budget['account_id']
         cfg = self.config['capital_allocation']
         strategies = tuple(cfg['participating_strategies'])
+        if self.classic:
+            # Reporting must observe revocation just like the live publisher.
+            try:
+                self._classic_policy = await read_history_acceptance(self.db, account)
+            except Exception:
+                self._classic_policy = None
         risk = self.latest_risk()
+        live = None
+        if self.classic:
+            policy = self._classic_policy
+            live = dict(approved=bool(policy and policy.automatic_allocation is True),
+                        risk_ready=False, approval_revision=policy.revision if policy else None)
+            try:
+                live['risk_ready'] = risk_allows_allocation(risk, policy, int(time.time()*1000))
+            except (ValueError, TypeError, KeyError):
+                pass
         try:
             report = await read_published_report(self.db, account, start, end,
                                                  f'monthly:{start}', current=False, include_derived_attribution=True)
@@ -241,20 +329,27 @@ class EvidenceJobs:
                                          'profitability_thresholds_unfrozen'])
         if risk['status'] != 'VERIFIED':
             result['activation_blocks'].append('account_risk_unverified_or_budget_breached')
+        if live is not None:
+            result['classic_live_allocation'] = live
+        live_note = '仅生成影子结果，实盘分配保持冻结。'
+        if live and live['approved']:
+            live_note = ('经典账户自动分配已获审批；' +
+                         ('当前风险校验就绪，按月度调度及发布校验执行。' if live['risk_ready']
+                          else '当前风险校验未就绪，本轮实盘发布仍受阻。'))
         atomic_report(self.state_dir / 'allocation-shadow-latest.json', result)
         digest = hashlib.sha256(json.dumps(result, sort_keys=True, default=str).encode()).hexdigest()
         atomic_report(self.state_dir / 'reports' / (digest + '.json'), result)
         state = NotificationState(self.state_dir / 'allocation-shadow-notified.json')
         signature = json.dumps([result['status'], result.get('report_id'),
-                                result.get('reasons'), result['activation_blocks']], sort_keys=True)
+                                result.get('reasons'), result['activation_blocks'], live], sort_keys=True)
         if state.changed(signature):
             delivered = await self.messenger.send_alert(
                 '【AI Tuner 自动分配影子核验】',
-                f"范围: default PM；窗口: {left.isoformat()} 至 {right.isoformat()}\n"
+                f"范围: 主账户 {'经典合约' if self.classic else 'PM'}；窗口: {left.isoformat()} 至 {right.isoformat()}\n"
                 f"核验: {result['status']}；主账户风险: {risk['status']}\n"
                 f"数据问题: {', '.join(result.get('reasons', [])) or '无'}\n"
-                f"恢复前待办: {', '.join(result['activation_blocks'])}\n"
-                '仅生成影子结果，实盘分配保持冻结。', level='warning')
+                f"研究晋级待办: {', '.join(result['activation_blocks'])}\n"
+                + live_note, level='warning')
             if delivered:
                 state.mark_delivered(signature, now)
         return result
@@ -264,9 +359,10 @@ def register_evidence_jobs(scheduler, jobs):
     for name, callback in (('account_risk', jobs.sample_risk),
                            ('entry_activity', jobs.sample_activity)):
         scheduler.add_job(callback, 'interval', minutes=1, id=name, max_instances=1,
-                          replace_existing=True, coalesce=True, misfire_grace_time=30)
+                          replace_existing=True, coalesce=True, misfire_grace_time=30,
+                          next_run_time=datetime.now(BEIJING))
     scheduler.add_job(jobs.sample_equity_valuation, 'interval', minutes=5,
-                      id='pm_equity_valuation', max_instances=1, replace_existing=True,
+                      id=('classic_equity_valuation' if jobs.classic else 'pm_equity_valuation'), max_instances=1, replace_existing=True,
                       coalesce=True, misfire_grace_time=60, next_run_time=datetime.now(BEIJING))
     scheduler.add_job(jobs.sample_new_coin_recovery, 'interval', minutes=5,
                       id='new_coin_recovery', max_instances=1, replace_existing=True,

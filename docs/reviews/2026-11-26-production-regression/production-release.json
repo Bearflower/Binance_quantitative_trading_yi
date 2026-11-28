@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "source": "acee4c82dfefda216ee35b365533284d8ada44ee",
+  "deploy_id": "00000401",
+  "recorded_at_utc": "2026-11-27T03:50:03.454008+00:00",
+  "release_complete": false,
+  "status": "22_verified_grid_handoff_pending",
+  "regression": {
+    "python_files": 541,
+    "python_passed": 9326,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "node_passed": 2,
+    "source_and_test_files_unchanged": 1371
+  },
+  "ocr": {
+    "reviewed": 78,
+    "selected": 78,
+    "unresolved_findings": 0
+  },
+  "ci": {
+    "run_id": 45929301380,
+    "run_attempt": 1,
+    "images": 11,
+    "source_inventory": 774
+  },
+  "runtime": {
+    "expected": 23,
+    "activated": 22,
+    "verified": 22,
+    "preserved_verified": 2,
+    "source_occurrences_verified": 5491,
+    "failures": []
+  },
+  "main_account": {
+    "read_only": true,
+    "passed": true,
+    "requests": 5,
+    "observed_at": 1795751222.9004548
+  },
+  "hrs": {
+    "policy": {
+      "allow_add": false,
+      "effective_at": "2026-11-20 00:43:49.677191+00:00",
+      "entry_ceiling": "26.1800000000",
+      "expires_at": "2026-12-14 03:09:52.457088+00:00",
+      "freeze_allocation": true,
+      "mode": "reduced",
+      "multiplier": "0.5",
+      "ratio_cap": "0.15",
+      "revision": 8,
+      "strategy_id": "hrs"
+    },
+    "policy_preserved": true,
+    "risk_policy_sha256": "247b338afe85572c7f576a770840fbd3790efeaded8501c943a47cdbe03ccbe6",
+    "configuration": {
+      "config_sha256": "80c3cdfe3181a32493722cd282ed24a9a3e7c13b1e2e86fc8ed53c74f61b33d5",
+      "environment_preserved_except_source_metadata": true,
+      "environment_sha256": "1a4c1b34eb2bebdfb0fb9a44f33886a870c930016f84576bb3b2bf3ed1568cff",
+      "equity_gate_enabled": true,
+      "matches_pre_ace": true
+    },
+    "expected_data_blocker": "inventory_owner_path_coverage_missing",
+    "historical_accounting_complete": false
+  },
+  "kline": {
+    "passed": 52,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "completed_at_utc": "2026-11-27T03:23:52.965004+00:00"
+  },
+  "browser": {
+    "http": 200,
+    "requests": 19,
+    "page_errors": 0,
+    "failed_requests": 0
+  },
+  "grid": {
+    "pending": true,
+    "activation_attempted": false,
+    "candidate_started": false,
+    "proof_observed_at": 1795749963.038136,
+    "protected": true,
+    "flat": false,
+    "position": "0.078",
+    "journal_net": "0.078",
+    "state": "PAUSED",
+    "required_next_step": "Fresh natural-flat proof, single-writer handoff, then complete full23 and business acceptance"
+  },
+  "evidence": [
+    {
+      "path": "/tmp/binance-production-readiness/partial22-v2-result.json",
+      "sha256": "f54227255f4706d96fa14c669bda6609d1a7661b50b7d2091dc5782808ab567b"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/partial22-v2-result-summary.json",
+      "sha256": "e0413e48a35e3b59a429d83847e94f79524753f3b8bef95ea223279cdf2ab20d"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/partial-business-result.json",
+      "sha256": "470553486d6c6f0117853cc92d42691db6cfa806fe83e72739242d475cf30ccf"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/kline-after-acee/result.json",
+      "sha256": "b7cc578ed2420c0c646710eba60bd31340f85ae17d4e8d78e873d5d009b3a5e8"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/frontend-browser-after-dashboard.json",
+      "sha256": "fed3574fe6b66378bd172f10d563c78641d4d7f5a0ceb452b03feb11c9647825"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/grid-handoff-blocker.json",
+      "sha256": "f63dc8b380edb8dc096d667ccd65618b0219f3ce767fd9c49e6bd8b46627091d"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/rollout-acee-activate.jsonl",
+      "sha256": "f3de8c55440f43072f11b3f08703bd3189f61b88998ae27d5c959109024d075b"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/rollout-acee-activate-resume1.jsonl",
+      "sha256": "5638d30de1374983f4db7f3f66a4f427e2d7bd1320d21b8efe15d0add2e0779a"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/partial22-runtime-differences.json",
+      "sha256": "98a41b86553b2a1f7b3a80d2af3ff30560adb104ff413fe3e7422b0879ead37a"
+    },
+    {
+      "path": "/tmp/binance-production-readiness/check-released-business-acee-review.json",
+      "sha256": "2511560459257edb9b691daae1da691e2ad10b9831a37b8510ee630d5a08a68c"
+    }
+  ]
+}

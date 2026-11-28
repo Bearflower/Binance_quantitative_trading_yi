@@ -32,7 +32,9 @@ R05 / R06 / R07 修复批次单测（MTPCS 原版 btc_eth + 激进版 btc_eth_ag
 import importlib
 import os
 import sys
+from datetime import datetime, timezone
 from decimal import Decimal
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -65,7 +67,7 @@ def make_signal(**overrides) -> dict:
         'direction': 'LONG',
         'grade': 'A',
         'score': 80,
-        'timestamp': 1700000000,
+        'timestamp': datetime.fromtimestamp(1700000000, timezone.utc),
         'quantity': Decimal('0.1'),
         'entry_price': Decimal('60000'),
         'leverage': 5,
@@ -364,13 +366,18 @@ class TestR05ProtectionState:
             return s.my_record_name
 
         monkeypatch.setattr(strategy_module, 'resolve_position_owner', fake_owner)
+        # 已有可信恢复状态才补完整TP；无元数据的激进仓只补硬止损，不伪造持仓。
+        s.positions['BTCUSDT'] = make_position(position_cls)
         s._check_existing_protection = MagicMock(return_value=(False, False, False))
         s._get_current_price = AsyncMock(return_value=Decimal('60000'))
         s._calc_protection_atr = AsyncMock(return_value=Decimal('1000'))
         s._get_protection_precision = AsyncMock(
             return_value=(Decimal('0.01'), Decimal('0.001')))
         s._calc_protection_prices = MagicMock(return_value={})
-        s._place_protection_stop = AsyncMock(return_value=None)
+        # 激进版只恢复持久化认领的持仓；仅交易所有仓的情形走独立的硬止损核查。
+        if s.my_record_name == "btc_eth_aggressive":
+            s.positions["BTCUSDT"] = make_position(position_cls)
+        s._place_protection_stop = AsyncMock(return_value=s.positions.get("BTCUSDT"))
         s._place_missing_tp_orders = AsyncMock()
         await s._ensure_symbol_protection(
             {'symbol': 'BTCUSDT', 'positionAmt': '0.1', 'entryPrice': '60000'},

@@ -83,6 +83,19 @@ async def test_timeout_does_not_reissue_write():
 
 
 @pytest.mark.asyncio
+async def test_definite_maker_rejection_is_not_an_unknown_write():
+    from strategies.grid.execution.exchange import MakerOrderRejected
+    from shared.binance_api import BinanceAPIError
+    client = FakeClient()
+    client._request_once = AsyncMock(side_effect=BinanceAPIError(-5022, 'post only rejected'))
+    client._request = AsyncMock()
+    with pytest.raises(MakerOrderRejected):
+        await GridExchange(client).place_limit('SELL', Decimal('0.02'), Decimal('1900'), 'eg-rejected')
+    client._request_once.assert_awaited_once()
+    client._request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_income_uses_pm_endpoint():
     client = FakeClient()
     client.responses[("GET", "/papi/v1/um/income")] = []

@@ -44,7 +44,7 @@ async def test_confirmed_allocation_close_retains_direction_for_pnl(strategy_typ
     strategy = object.__new__(strategy_type)
     position = SimpleNamespace(
         direction="LONG", current_quantity=Decimal("1"), entry_price=Decimal("100"),
-        cancel_pending=False,
+        cancel_pending=False, close_progress={},
     )
     strategy.positions = {"BTCUSDT": position}
     strategy.strategy_name = "test"
@@ -55,10 +55,10 @@ async def test_confirmed_allocation_close_retains_direction_for_pnl(strategy_typ
 
     async def sync(*args):
         if strategy._sync_position_with_exchange.await_count == 1:
-            return {"closed": False}
+            return {"closed": False, "actual_quantity": Decimal("1")}
         position.direction = "FLAT"
         position.current_quantity = Decimal("0")
-        return {"closed": True}
+        return {"closed": True, "actual_quantity": Decimal("0")}
 
     strategy._sync_position_with_exchange = AsyncMock(side_effect=sync)
     strategy._get_symbol_precision = AsyncMock(return_value={
@@ -70,22 +70,27 @@ async def test_confirmed_allocation_close_retains_direction_for_pnl(strategy_typ
     strategy._cleanup_position_orders = AsyncMock()
     strategy.binance = MagicMock()
     strategy.binance.get_orderbook = AsyncMock(return_value={"bids": [["110", "1"]]})
-    strategy.binance.place_order = AsyncMock(return_value={"orderId": 123, "avgPrice": "110"})
+    strategy.binance.place_order = AsyncMock(return_value={"orderId": 123, "avgPrice": "110", "status": "FILLED", "executedQty": "1"})
     strategy.binance.get_open_orders = AsyncMock(return_value=[])
+    strategy.binance.get_order = AsyncMock(return_value={
+        'symbol':'BTCUSDT','side':'SELL','orderId':123,'reduceOnly':True,
+        'status':'FILLED','origQty':'1','executedQty':'1','avgPrice':'110'})
     strategy.binance.trade_logger = MagicMock()
     strategy.binance.trade_logger.update_realized_pnl = AsyncMock()
     strategy.binance.trade_logger.log_stop_loss = AsyncMock()
     strategy.notification = MagicMock()
     strategy.notification.send_trade_notification = AsyncMock()
 
-    with patch(f"{strategy_type.__module__}.asyncio.sleep", new=AsyncMock()):
+    with patch(f"{strategy_type.__module__}.asyncio.sleep", new=AsyncMock()), patch(
+            f"{strategy_type.__module__}.record_or_defer_close", new=AsyncMock(return_value=True)) as record:
         assert await strategy._close_position(
             "BTCUSDT", position, Decimal("1"), "ALLOCATION_LIMIT", Decimal("110")
         ) is True
 
-    strategy.binance.trade_logger.update_realized_pnl.assert_awaited_once()
-    assert strategy.binance.trade_logger.update_realized_pnl.await_args.kwargs["realized_pnl"] == Decimal("10")
-    assert strategy.binance.trade_logger.log_stop_loss.await_args.kwargs["side"] == "SELL"
+    record.assert_awaited_once()
+    assert record.await_args.args[3]['side'] == 'SELL'
+    assert record.await_args.args[4] is True
+    strategy.binance.trade_logger.update_realized_pnl.assert_not_awaited()
 
 
 @pytest.mark.asyncio

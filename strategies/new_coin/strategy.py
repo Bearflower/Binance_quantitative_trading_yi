@@ -658,6 +658,8 @@ class NewCoinStrategy(BaseStrategy):
             (是否成功, 失败原因)
         """
         try:
+            if any(pos.get('settlement_pending') for pos in self.positions.values()):
+                return False, "平仓盈亏待完整确认，暂缓新增风险"
             symbol = signal.get('symbol')
             score_result_dict = signal.get('score_result', {})
             action = signal.get('action', 'SHORT')
@@ -1416,9 +1418,12 @@ class NewCoinStrategy(BaseStrategy):
     async def _fetch_exchange_short_symbols(self) -> Optional[set]:
         """获取交易所实际空头币种集合（positionAmt < 0）；接口异常返回 None。"""
         try:
-            positions = await self.binance_client._request(
-                "GET", "/papi/v1/um/positionRisk", signed=True
-            )
+            if getattr(self.binance_client, "use_unified_account", True) is False:
+                positions = await self.binance_client.get_position()
+            else:
+                positions = await self.binance_client._request(
+                    "GET", "/fapi/v2/positionRisk", signed=True
+                )
         except Exception as e:
             logger.warning("获取交易所持仓失败（对账跳过）", error=str(e))
             return None
@@ -1432,18 +1437,16 @@ class NewCoinStrategy(BaseStrategy):
         return shorts
 
     async def _close_stale_memory_positions(self, exchange_short: set) -> bool:
-        """关闭内存中交易所已无仓的脏数据；返回是否发生了关闭。"""
-        stale_symbols = [s for s in self.positions if s not in exchange_short]
-        if not stale_symbols:
-            return False
-        logger.info(
-            f"清理 {len(stale_symbols)} 个已平仓持仓记录（含完整盈亏回写）",
-            symbols=stale_symbols,
-        )
-        for symbol in stale_symbols:
-            await self._handle_position_closed(symbol, self.positions.get(symbol, {}))
-            del self.positions[symbol]
-        return True
+        """交易所已平仓只代表待结算，保留身份供监控取得完整实际盈亏。"""
+        changed = False
+        for symbol, position in self.positions.items():
+            if symbol not in exchange_short and not position.get('settlement_pending'):
+                if getattr(getattr(self, "binance_client", None), "use_unified_account", True) is False:
+                    if await self._reconfirm_symbol_absent(symbol) is not True:
+                        continue
+                position['settlement_pending'] = True
+                changed = True
+        return changed
 
     async def _reconcile_zombies(self, own_open: set, exchange_short: set) -> bool:
         """僵尸对账：DB open 但交易所无仓 → 连续 N 周期确认后关闭；返回是否关闭。"""
@@ -1490,9 +1493,13 @@ class NewCoinStrategy(BaseStrategy):
             Optional[bool]: True=确认无仓；False=有仓；None=回查失败（fail-closed）
         """
         try:
-            positions = await self.binance_client._request(
-                "GET", "/papi/v1/um/positionRisk", signed=True
-            )
+            if getattr(self.binance_client, "use_unified_account", True) is False:
+                positions = await self.binance_client.get_position(symbol)
+                return all(Decimal(str(row["positionAmt"])) == 0 for row in positions)
+            else:
+                positions = await self.binance_client._request(
+                    "GET", "/fapi/v2/positionRisk", signed=True
+                )
         except Exception as e:
             logger.warning("僵尸回查交易所持仓异常", symbol=symbol, error=str(e))
             return None
@@ -1802,9 +1809,6 @@ class NewCoinStrategy(BaseStrategy):
                             failed=cancel_result['failed'],
                         )
                     
-                    # 清理持仓跟踪（幂等）
-                    self.trading_executor.clear_position_tracking(symbol)
-                    
                     # 计算盈亏
                     entry_price = position.get('entry_price', 0)
                     entry_time = position.get('entry_time')
@@ -1812,50 +1816,13 @@ class NewCoinStrategy(BaseStrategy):
                     # 获取平仓价格（从最近的交易记录）
                     pnl = await self._get_position_pnl(symbol, entry_price)
 
-                    # 查不到平仓记录时跳过回撤检查与连续亏损计数，避免污染统计
+                    # 完整成交暂不可见时持久保留本轮身份，等待下次结算，不能取最后一单猜整轮盈亏。
                     if pnl is None:
-                        # 尝试从 trade_records 定位本笔平仓单（做空平仓为 BUY），
-                        # 取真实已实现盈亏判定止损，确保条件单自动平仓的亏损也能打标（问题3）
-                        close_rec = None
-                        entry_time_obj = _entry_time_to_naive_beijing(entry_time)
-                        if entry_time_obj:
-                            upper_time = datetime.now(BEIJING_TZ).replace(tzinfo=None)
-                            close_rec = await self.db.fetch_one(
-                                """
-                                SELECT order_id, realized_pnl
-                                FROM trading.trade_records
-                                WHERE strategy = $1 AND symbol = $2 AND side = 'BUY'
-                                AND executed_at BETWEEN $3 AND $4
-                                AND status <> 'CANCELED'
-                                ORDER BY executed_at DESC
-                                LIMIT 1
-                                """,
-                                self.my_record_name,
-                                symbol,
-                                entry_time_obj,
-                                upper_time
-                            )
-                        if close_rec and close_rec.get('realized_pnl') is not None:
-                            try:
-                                real_pnl = Decimal(str(close_rec['realized_pnl']))
-                            except (TypeError, ValueError):
-                                real_pnl = None
-                            if real_pnl is not None and real_pnl < 0:
-                                await self.mark_stop_loss(
-                                    symbol=symbol,
-                                    side="BUY",        # 做空平仓方向为 BUY
-                                    realized_pnl=real_pnl,
-                                )
-                                self.consecutive_losses += 1
-                                logger.warning(
-                                    f"条件单平仓判定为亏损，已补正止损打标: {symbol}",
-                                    symbol=symbol,
-                                    realized_pnl=real_pnl
-                                )
-                        # 未获取到平仓单据或无法判定，仅清理持仓，不污染统计
-                        del self.positions[symbol]
+                        position['settlement_pending'] = True
                         await self._save_state()
                         continue
+                    position.pop('settlement_pending', None)
+                    self.trading_executor.clear_position_tracking(symbol)
 
                     # 回写平仓盈亏到交易记录（用于周报复盘统计）
                     # 条件单平仓的 trade_records 没有 order_id（只有 algo_id），
@@ -2315,7 +2282,12 @@ class NewCoinStrategy(BaseStrategy):
                 # 从 condition_orders 表恢复条件单 algoId 到 position_tracking
                 # 解决容器重启后 position_tracking 丢失，导致平仓时无法取消条件单的问题
                 try:
-                    open_orders = await get_open_orders(self.db, self.strategy_name)
+                    if getattr(self.binance_client, 'use_unified_account', True) is False:
+                        from shared.condition_orders import classic_owned_algos
+                        open_orders = await classic_owned_algos(self.binance_client,
+                                                               managed_symbols=set(self.positions))
+                    else:
+                        open_orders = await get_open_orders(self.db, self.strategy_name)
                     restored_count = 0
                     for order in open_orders:
                         symbol = order.get('symbol')
@@ -2411,9 +2383,12 @@ class NewCoinStrategy(BaseStrategy):
         if filtered_positions is None:
             return
         rebuilt = self._merge_rebuilt_positions(filtered_positions)
-        self._prune_missing_positions(executor, rebuilt)
+        # 交易所平仓后，实际盈亏可能尚未可见；启动基线不能丢弃结算身份。
+        pending = {symbol: dict(position, settlement_pending=True)
+                   for symbol, position in self.positions.items() if symbol not in rebuilt}
+        self._prune_missing_positions(executor, {**rebuilt, **pending})
 
-        self.positions = rebuilt
+        self.positions = {**rebuilt, **pending}
         # 重启恢复的条目可能缺失 atr，会使 ATR 相关止盈/止损阈值退化为 0 并误触发平仓
         # （资金风险）。故在同步基线前批量算得 ATR，由同步侧仅回填缺失项（不覆盖有效值）。
         atr_map = await self._calc_rebuilt_atr_map(executor, rebuilt)
@@ -3029,6 +3004,60 @@ class NewCoinStrategy(BaseStrategy):
         except Exception as e:
             logger.error(f"评估回撤熔断失败: {e}")
 
+    async def _settlement_entry_quantity(self, symbol: str):
+        """用持久入场身份和同账户终态回执证明原始量，不使用当前余量。"""
+        from shared.accounting.account_cutover import account_cutover_ms, order_epoch
+        position = self.positions.get(symbol, {})
+        entry_id = position.get('order_id')
+        if entry_id is None:
+            identity = position.get('recovery_position_id', '')
+            prefix = symbol + '_'
+            entry_id = identity[len(prefix):] if identity.startswith(prefix) else None
+        if not str(entry_id).isdigit() or int(entry_id) <= 0:
+            return None
+        account = os.environ.get('TRADE_ACCOUNT_ID', '').strip()
+        if not account:
+            return None
+        classic = getattr(self.binance_client, 'use_unified_account', None) is False
+        cutover = account_cutover_ms(account)
+        if classic and cutover is None:
+            return None
+        rows = await self.db.fetch_all(
+            """SELECT p.position_id,p.quantity,p.metadata,p.opened_at,
+                      t.account_id,t.strategy,t.side,t.symbol,t.order_id,t.executed_at
+               FROM new_coin.short_positions p JOIN trading.trade_records t
+                 ON t.symbol=p.symbol AND t.order_id=$2 AND t.account_id=$3
+                    AND t.strategy=$4 AND t.side='SELL'
+               WHERE p.symbol=$1 AND p.position_id=$5""",
+            symbol, str(entry_id), account, self.my_record_name, f'{symbol}_{entry_id}')
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        metadata = row.get('metadata')
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        if (not isinstance(metadata, dict) or str(metadata.get('entry_order_id')) != str(entry_id)
+                or row.get('position_id') != f'{symbol}_{entry_id}'
+                or row.get('account_id') != account or row.get('strategy') != self.my_record_name
+                or row.get('side') != 'SELL' or row.get('symbol') != symbol
+                or str(row.get('order_id')) != str(entry_id)
+                or order_epoch(row.get('executed_at'), cutover) != ('classic' if classic else 'pm')):
+            return None
+        quantity = Decimal(str(row.get('quantity')))
+        if not quantity.is_finite() or quantity <= 0:
+            return None
+        order = await self.binance_client.get_order(symbol, int(entry_id))
+        if (not isinstance(order, dict) or str(order.get('orderId')) != str(entry_id)
+                or order.get('symbol') != symbol or order.get('side') != 'SELL'
+                or order.get('status') not in {'FILLED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH'}
+                or Decimal(str(order.get('executedQty'))) != quantity):
+            return None
+        if cutover is not None:
+            stamp = int(order['time'])
+            if (stamp >= cutover) != classic:
+                return None
+        return quantity
+
     async def _get_position_pnl(self, symbol: str, entry_price: float) -> Optional[float]:
         """
         从真实平仓订单的 userTrades 汇总已实现盈亏。
@@ -3046,16 +3075,22 @@ class NewCoinStrategy(BaseStrategy):
             )
             if entry_time is None:
                 return None
+            entry_quantity = await self._settlement_entry_quantity(symbol)
+            if entry_quantity is None:
+                return None
+            account_id = os.environ.get('TRADE_ACCOUNT_ID', '').strip()
+            if not account_id:
+                return None
             orders = await self.db.fetch_all(
                 """
                 SELECT order_id
                 FROM trading.trade_records
-                WHERE symbol = $1 AND strategy = $2 AND side = 'BUY'
+                WHERE symbol = $1 AND strategy = $2 AND side = 'BUY' AND account_id = $4
                   AND executed_at >= $3 AND order_id IS NOT NULL
                   AND order_type <> 'PNL_SUMMARY'
                 ORDER BY executed_at DESC, id DESC
                 """,
-                symbol, self.my_record_name, entry_time,
+                symbol, self.my_record_name, entry_time, account_id,
             )
             if not orders:
                 logger.warning(f"未找到平仓记录: {symbol}")
@@ -3064,14 +3099,31 @@ class NewCoinStrategy(BaseStrategy):
             order_pnls = {}
             seen_order_ids = set()
             matched = False
+            closed_quantity = Decimal('0')
             for order in orders:
                 order_id = str(order.get('order_id') or '')
                 if not order_id or order_id in seen_order_ids:
                     continue
                 seen_order_ids.add(order_id)
+                # 本地记录也包含已撤销的退出单；以交易所终态区分零成交和待结算。
+                terminal = await self.binance_client.get_order(symbol, int(order_id))
+                if (not terminal or str(terminal.get('orderId')) != order_id
+                        or terminal.get('status') not in {'FILLED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'}
+                        or terminal.get('symbol') != symbol or terminal.get('side') != 'BUY'
+                        or terminal.get('executedQty') is None):
+                    return None
+                executed = Decimal(str(terminal['executedQty']))
+                if not executed.is_finite() or executed < 0:
+                    return None
+                closed_quantity += executed
+                if executed == 0:
+                    continue
                 fills = await self.binance_client.get_user_trades(
                     symbol, order_id=order_id, limit=1000,
                 )
+                if not fills:
+                    logger.warning("平仓订单成交尚未可见，等待完整盈亏证据", symbol=symbol, order_id=order_id)
+                    return None
                 if len(fills) >= 1000:
                     logger.warning("平仓成交达到分页上限，暂不判定盈亏", symbol=symbol, order_id=order_id)
                     return None
@@ -3079,11 +3131,24 @@ class NewCoinStrategy(BaseStrategy):
                        for fill in fills):
                     logger.warning("平仓成交与订单号不一致或盈亏缺失", symbol=symbol, order_id=order_id)
                     return None
+                trade_ids = [str(fill.get('id', '')) for fill in fills]
+                if (any(not tid.isdigit() or int(tid) <= 0 for tid in trade_ids)
+                        or len(set(trade_ids)) != len(trade_ids)
+                        or any(fill.get('symbol') != symbol or fill.get('side') != 'BUY'
+                               or not Decimal(str(fill['realizedPnl'])).is_finite() for fill in fills)):
+                    return None
+                quantities = [Decimal(str(fill.get('qty', '0'))) for fill in fills]
+                if any(not qty.is_finite() or qty <= 0 for qty in quantities) or sum(quantities) != executed:
+                    logger.warning("平仓成交数量尚不完整", symbol=symbol, order_id=order_id)
+                    return None
                 if fills:
                     matched = True
                     order_pnl = sum((Decimal(str(fill['realizedPnl'])) for fill in fills), Decimal('0'))
                     order_pnls[order_id] = order_pnl
                     pnl += order_pnl
+            if closed_quantity != entry_quantity:
+                logger.warning('退出记录尚未覆盖完整入场数量，保留待结算', symbol=symbol)
+                return None
             if matched:
                 if not hasattr(self, '_verified_close_pnl_by_order'):
                     self._verified_close_pnl_by_order = {}

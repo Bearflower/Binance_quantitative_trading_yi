@@ -1,0 +1,215 @@
+{
+  "skill": "open-code-review-delegate",
+  "baseline": "1801ef17",
+  "source_snapshot": "b1af67ace2d59641956449f4ad1b76d4515f7b14",
+  "total_files": 29,
+  "reviewed_files": 29,
+  "skipped_files": 0,
+  "coverage_rate": 1.0,
+  "open_findings": [],
+  "files": [
+    {
+      "path": ".github/workflows/full-regression-release.yml",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "8f001338e823d841c3edd03291726debfa1c7e7652f253fdffd684850111649d",
+      "checks": "Build-only workflow, exact approved branch, least privilege, immutable image tags, no production SSH or latest tag."
+    },
+    {
+      "path": ".github/workflows/history-tolerance-build.yml",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "7d98739aa85055ba580c39ff0557064162b46ad273e5d1d3e12c4e78bd118c48",
+      "checks": "Build-only workflow, exact approved branch, least privilege, immutable image tags, no production SSH or latest tag."
+    },
+    {
+      "path": "ai_tuner/Dockerfile",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "338e9fd9625130bd57e421db6e5d8cfb956c8e690fe6152ab187036e5567ffdd",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/allocation/allocation_calculator.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "d2b062b97a1fa8a2485b9a4ac3ec756834b9cf88bd83aa720c5397409eb85657",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/allocation/classic_publication.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "a8e71f3a5f94933b1add393d47f784e452d45583252b016e781742e6f4e85ae0",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/allocation/config_updater.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "81945b0b888169a33ba29f0278bd274ee589ec1120bd44f88d312df9c2198e40",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/allocation/history_acceptance.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "14b26e8a396a1bfbe3a64d5d0aadbfe039ebaf700f7d6c4b29919a5e0c4c80e5",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/allocation/monthly_job.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "c7989947ae01eaabba4bd6941788ea298f44b928578bdf704fe016d7aa1c28f7",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/main.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "3f1d6f415d3050bc8003cdbaba90faab691f6702608722b2c853e488c02cd790",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/monitor/classic_account_risk.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "91847d938ced5c8f0b389d68881566cb5ec0ed6d516a107d063017b247b1e2ea",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/monitor/evidence_jobs.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "57507b67e0caaa4f1c3ec4eccfa471888bba469e3432294a067f6a61012f48f6",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "ai_tuner/notifier/messenger.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "36795179af57d3dd8fcab16ad4c907cb5b3c91ecfd16a7fdde2621204eff1203",
+      "checks": "Classic approval/revocation, current risk freshness, bounded history fallback, fixed HRS principal, atomic publication, receipt-bound holdings provenance, runtime imports and reporting."
+    },
+    {
+      "path": "database/postgres/migrations/2026-11-27-historical-risk-acceptance.sql",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "a2b90a6e62ffa3bfe9b813a4fdac89403412b6920c8feb5d1b62a81605db3855",
+      "checks": "Administrator ownership, immutable receipt/observation triggers, exact read/append grants from authoritative permission manifest."
+    },
+    {
+      "path": "database/postgres/permissions.json",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "62513735d6954615158f466f8561c1325567efdf3011f6899f75af30849137c1",
+      "checks": "Administrator ownership, immutable receipt/observation triggers, exact read/append grants from authoritative permission manifest."
+    },
+    {
+      "path": "deploy/history-tolerance/bases.json",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "fabdffc3c53d38b034b9680df3829d51ee2ce1052a51b362582456cc46fdac2d",
+      "checks": "Fixed base image digests and explicit overlay files; historical overlay plan is retained, unified release uses full source builds."
+    },
+    {
+      "path": "scripts/activate_history_acceptance.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "f82a247b4c114ebcd4c4e6c4266e0a3aaa08f44fbd1b6470ac66f43bd3e7ac92",
+      "checks": "Immutable evidence, administrator CAS activation, retained observation history, fixed image digest overlays, metadata-independent economic hash, successor pin archival and actual runtime binding."
+    },
+    {
+      "path": "scripts/build_history_tolerance.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "91b6f66e2f51ffad7f4aae33fd75b27215e4232de29146b21973b1cae104f3dd",
+      "checks": "Immutable evidence, administrator CAS activation, retained observation history, fixed image digest overlays, metadata-independent economic hash, successor pin archival and actual runtime binding."
+    },
+    {
+      "path": "scripts/deploy_full_regression.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "f2433d21e37fd7f4bbd294753f39508d70493bfa8982498087b9c26351219be2",
+      "checks": "Immutable evidence, administrator CAS activation, retained observation history, fixed image digest overlays, metadata-independent economic hash, successor pin archival and actual runtime binding."
+    },
+    {
+      "path": "scripts/recover_proven_order_income.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "19bb4bce2aae354597431c5a49ae625c6d60f271bbdcdc1e488298cac7c661e5",
+      "checks": "Immutable evidence, administrator CAS activation, retained observation history, fixed image digest overlays, metadata-independent economic hash, successor pin archival and actual runtime binding."
+    },
+    {
+      "path": "shared/accounting/allocation_provenance.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "d4c352f5a8e2d80fe26220e51b5d309403f3761a0365761f21b7dc68b08cc54c",
+      "checks": "Receipt identity and finite gap window, current native attribution, immutable facts, ancestor chain verification, no forced close on unverifiable metadata."
+    },
+    {
+      "path": "shared/accounting/classic_attribution.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "1f9a9f889817a45f7a94386c0b737c2389fa353afc06c7d37cb8da3d2d285c09",
+      "checks": "Receipt identity and finite gap window, current native attribution, immutable facts, ancestor chain verification, no forced close on unverifiable metadata."
+    },
+    {
+      "path": "shared/accounting/history_tolerance.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "425fc33eba28f4b05a052fd6f18bc0b7e280616c52766b1d5bb7abc74f0d6679",
+      "checks": "Receipt identity and finite gap window, current native attribution, immutable facts, ancestor chain verification, no forced close on unverifiable metadata."
+    },
+    {
+      "path": "shared/capital_manager.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "a1d4afe31e39fcf2926064a25d7d7ca64ae3baea9062235f11c8bf5974155490",
+      "checks": "Receipt identity and finite gap window, current native attribution, immutable facts, ancestor chain verification, no forced close on unverifiable metadata."
+    },
+    {
+      "path": "strategies/hrs/equity_evidence.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "d301e9a1c97d4408d6001e526614d774315a272a8ac52879d910bbd03fb7ce47",
+      "checks": "Original ledger and segment preserved, known loss latches retained, live inventory and funding proof strict, month boundary carry blocks entries without current allocation."
+    },
+    {
+      "path": "strategies/hrs/equity_service.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "69988007c42aee19f65f525ead1aa2f135cbc317ca660c7fd517c8e71b1d13e4",
+      "checks": "Original ledger and segment preserved, known loss latches retained, live inventory and funding proof strict, month boundary carry blocks entries without current allocation."
+    },
+    {
+      "path": "strategies/hrs/history_tolerance.py",
+      "status": "added",
+      "review": "reviewed",
+      "sha256": "b834bc5889e4a6af8b3d6fe2f242439ccd1d6e807f621ed3d07d7ec4599a8509",
+      "checks": "Original ledger and segment preserved, known loss latches retained, live inventory and funding proof strict, month boundary carry blocks entries without current allocation."
+    },
+    {
+      "path": "strategies/hrs/loss_gate.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "3c182985a7f31d90e967c2e31a6451d4e14128de899046658affcf8b3186a5f0",
+      "checks": "Original ledger and segment preserved, known loss latches retained, live inventory and funding proof strict, month boundary carry blocks entries without current allocation."
+    },
+    {
+      "path": "strategies/hrs/risk_ledger.py",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "fcf7d1d98b62758ee695a1ae07a4138199356f6ed80ab5b28d2823329fdeaf76",
+      "checks": "Original ledger and segment preserved, known loss latches retained, live inventory and funding proof strict, month boundary carry blocks entries without current allocation."
+    },
+    {
+      "path": "deployment/full-regression/source-mount-removals.json",
+      "status": "modified",
+      "review": "reviewed",
+      "sha256": "4857b687774b8b036da237e3438900d301937266685b0264a4dbb5a167fb312a",
+      "checks": "Both historical code mounts are absent from current production. Empty removal list preserves all current data/configuration mounts; 23 runtime clones checked against required source paths."
+    }
+  ]
+}

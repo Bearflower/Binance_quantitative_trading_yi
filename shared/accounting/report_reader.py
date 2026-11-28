@@ -8,7 +8,8 @@ import hashlib
 import json
 from typing import Any
 
-from shared.accounting.economic_ledger import build_economic_report, coverage_gaps
+from shared.accounting.account_cutover import account_cutover_ms, observed_symbol_windows, order_epoch
+from shared.accounting.economic_ledger import add_mode_segments, build_economic_report, coverage_gaps
 
 
 BEIJING = timezone(timedelta(hours=8))
@@ -63,7 +64,7 @@ _FILL_SQL = (
     "OR (trade_time_utc >= $4 AND trade_time_utc < $5))"
 )
 _OWNER_SQL = (
-    "SELECT account_id, symbol, order_id, strategy FROM trading.trade_records "
+    "SELECT account_id, symbol, order_id, strategy, executed_at FROM trading.trade_records "
     "WHERE account_id = $1 AND order_id = ANY($2::text[]) "
     "AND symbol = ANY($3::text[])"
 )
@@ -127,9 +128,10 @@ async def read_monthly_economic_report(
         derived = [dict(row) for row in await db.fetch_all(
             _DERIVED_SQL, account_id, tran_ids,
         )]
-    report = build_economic_report(fills, incomes, owners, overrides, derived)
+    cutover = account_cutover_ms(account_id)
+    report = build_economic_report(fills, incomes, owners, overrides, derived, cutover=cutover)
     income_keys = {
-        (str(row["symbol"]), str(row["trade_id"]), str(row["income_type"]))
+        (str(row["symbol"]), str(row["trade_id"]), str(row["income_type"]), order_epoch(row["event_time_utc"], cutover))
         for row in incomes if row.get("trade_id") is not None
     }
     missing_income_fills = []
@@ -144,12 +146,13 @@ async def read_monthly_economic_report(
              if fill.get("commission_asset") == "USDT" else None),
         )
         for kind, amount in expected:
-            if amount is not None and Decimal(str(amount)) != 0 and (*key, kind) not in income_keys:
+            if amount is not None and Decimal(str(amount)) != 0 and (*key, kind, order_epoch(trade_time, cutover)) not in income_keys:
                 missing_income_fills.append({
                     "symbol": key[0], "trade_id": key[1], "income_type": kind,
                 })
     missing_income_fills.sort(key=lambda row: (row["symbol"], row["trade_id"], row["income_type"]))
-    gaps = coverage_gaps(cursors, account_id, start_ms, end_ms, set(symbols))
+    gaps = sorted({gap for left, right, active in observed_symbol_windows(account_id, start_ms, end_ms, incomes, fills)
+                   for gap in coverage_gaps(cursors, account_id, left, right, active)})
     income_gaps = [gap for gap in gaps if gap.startswith("income:")]
     account_complete = not income_gaps and not missing_income_fills
     report.update({
@@ -170,6 +173,7 @@ async def read_monthly_economic_report(
             "资金费率没有成交 ID 时保留未归属",
         ],
     })
+    add_mode_segments(report, cutover)
     report["report_version"] = "exchange-income-v1"
     report["report_id"] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return report

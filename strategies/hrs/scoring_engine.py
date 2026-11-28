@@ -597,6 +597,15 @@ class ScoringEngine:
     # ==================== V2.4: LV-RM 低波动反转评分方法 ====================
 
     async def score_lv_rm(
+        self, symbol: str, direction: str, oi_market_cap_ratio: float,
+        funding_rate: float, has_market_cap: bool, klines_1h: List[Dict],
+        klines_4h: List[Dict],
+    ) -> ScoringResult:
+        """Compatibility coroutine; calculation is shared with offline replay."""
+        return self.score_lv_rm_sync(symbol, direction, oi_market_cap_ratio,
+                                     funding_rate, has_market_cap, klines_1h, klines_4h)
+
+    def score_lv_rm_sync(
         self,
         symbol: str,
         direction: str,

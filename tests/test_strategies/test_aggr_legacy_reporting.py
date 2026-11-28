@@ -1,8 +1,18 @@
 from decimal import Decimal
+from datetime import datetime, timezone
 
 import pytest
 
+from functools import partial
+from shared.position_entry_recovery import fetch_lot_fills
 from strategies.btc_eth_aggressive.strategy import BTCEthStrategy
+
+@pytest.fixture(autouse=True)
+def observation_time(monkeypatch):
+    # 此组回放覆盖截至 11 月 2 日的成交，固定分页截止时间。
+    monkeypatch.setattr("strategies.btc_eth_aggressive.strategy.fetch_lot_fills",
+                        partial(fetch_lot_fills, now_ms=1793577600000))
+
 
 
 def test_verified_legacy_exchange_position_is_in_report_without_software_adoption():
@@ -46,15 +56,32 @@ async def test_live_legacy_verification_populates_report_then_flat_clears_it():
     strategy.binance.get_user_trades = AsyncMock(return_value=[
         {"id": 1, "time": 1793409086845, "side": "BUY", "qty": "0.023"},
     ])
-    strategy.binance.get_open_algo_orders = AsyncMock(return_value=[{
+    strategy._owned_open_protection = AsyncMock(return_value=[{
         "symbol": "ETHUSDT", "side": "SELL", "orderType": "STOP",
         "reduceOnly": True, "quantity": "0.023", "triggerPrice": "2000",
     }])
     with patch("strategies.btc_eth_aggressive.strategy.resolve_position_owner",
-               new=AsyncMock(return_value="btc_eth_aggressive")):
+               new=AsyncMock(return_value="btc_eth_aggressive")), patch(
+            "strategies.btc_eth_aggressive.strategy.datetime", wraps=datetime) as clock:
+        clock.now.return_value = datetime(2026, 11, 2, tzinfo=timezone.utc)
         assert await strategy._check_legacy_untracked_time_stop()
     assert strategy.build_positions_report()[2]["ETHUSDT"] == 0.023
 
     strategy.binance.get_position.return_value = []
     assert await strategy._check_legacy_untracked_time_stop()
     assert "ETHUSDT" not in strategy.build_positions_report()[2]
+
+
+@pytest.fixture(autouse=True)
+def historical_lot_clock(monkeypatch):
+    """历史成交样本固定在当时观测窗，避免随机器日期跨页重复或耗尽假数据。"""
+    from datetime import datetime, timezone
+    import shared.position_entry_recovery as recovery
+    import strategies.btc_eth_aggressive.strategy as strategy_module
+    class HistoricalDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 11, 2, tzinfo=timezone.utc)
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+    monkeypatch.setattr(recovery, 'datetime', HistoricalDatetime)
+    monkeypatch.setattr(strategy_module, 'datetime', HistoricalDatetime)

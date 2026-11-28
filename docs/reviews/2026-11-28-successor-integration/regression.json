@@ -1,0 +1,78 @@
+{
+  "files": 557,
+  "tests": 9696,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "groups": [
+    {
+      "group": "release",
+      "exit_code": 0,
+      "summary": {
+        "files": 5,
+        "failed_files": [],
+        "tests": 189,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "group": "pg",
+      "exit_code": 0,
+      "summary": {
+        "files": 41,
+        "failed_files": [],
+        "tests": 1001,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "group": "grid",
+      "exit_code": 0,
+      "summary": {
+        "files": 72,
+        "failed_files": [],
+        "tests": 1091,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "group": "pure",
+      "exit_code": 0,
+      "summary": {
+        "files": 438,
+        "failed_files": [],
+        "tests": 7367,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "group": "performance",
+      "exit_code": 0,
+      "summary": {
+        "files": 1,
+        "failed_files": [],
+        "tests": 48,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "source_unchanged": true,
+  "source_snapshot_sha256": "bc60620352556fc0062feb027fbf5319dfafe5669077a77f9adf42b0523b0a0c",
+  "candidate_non_document_inventory_sha256": "9599585ea865beac86ce55427714f06f295874ba9ff796282a006f37909bed2c",
+  "test_manifest_sha256": "6a7fa5c9a7e2d35f6677116c10ee001a020009b5a6fe3faa8c8fb423aba2c5db",
+  "private_evidence_directory": "/tmp/binance-successor-20261128/round2",
+  "additional_checks": {
+    "frontend_node_passed": 2,
+    "acceptance_helper_passed": 43
+  }
+}

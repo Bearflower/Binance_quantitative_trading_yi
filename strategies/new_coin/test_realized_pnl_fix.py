@@ -314,7 +314,7 @@ class TestRealizedPnlFix:
         - _get_position_pnl 返回 None 时（查不到平仓记录）
         - 不查询 close_order（db.fetch_one 不被调用）
         - 不调用 update_realized_pnl
-        - 持仓被删除，主流程 continue
+        - 持仓身份持久保留，主流程 continue
         """
         strategy.positions = {
             "BTCUSDT": {
@@ -335,11 +335,12 @@ class TestRealizedPnlFix:
 
         await strategy._monitor_positions()
 
-        # pnl 为 None 时仍查询真实平仓单以判定止损，但不回写估算 pnl。
-        strategy.db.fetch_one.assert_awaited_once()
+        # 未知盈亏只保留结算身份，不从最后一笔单据推算整轮盈亏。
+        strategy.db.fetch_one.assert_not_awaited()
         mock_trade_logger.update_realized_pnl.assert_not_called()
-        # 持仓应被删除
-        assert "BTCUSDT" not in strategy.positions
+        assert strategy.positions['BTCUSDT']['settlement_pending'] is True
+        strategy._save_state.assert_awaited_once()
+        strategy.trading_executor.clear_position_tracking.assert_not_called()
 
     async def test_post_close_skip_when_trade_logger_none(self, strategy):
         """trade_logger 为 None 时跳过回写（不抛异常）
@@ -494,7 +495,7 @@ class TestUpdateRealizedPnlEnhanced:
         - order_id IS NULL
         - realized_pnl IS NULL
         - order_type NOT LIKE 'STOP%'
-        - ORDER BY executed_at DESC LIMIT 1
+        - 当前账户模式下只允许唯一候选
         """
         executed_at = datetime(2026, 7, 27, 10, 0, 0)
         trade_logger.db.execute = AsyncMock(side_effect=["UPDATE 0", "UPDATE 1"])
@@ -514,7 +515,7 @@ class TestUpdateRealizedPnlEnhanced:
         assert "UPDATE trading.trade_records" in fallback_sql
         assert "SET realized_pnl = $1" in fallback_sql
         assert "WHERE id = (" in fallback_sql
-        assert "SELECT tr.id FROM trading.trade_records tr" in fallback_sql
+        assert "SELECT min(tr.id) FROM trading.trade_records tr" in fallback_sql
         assert "tr.order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')" in fallback_sql
         assert "symbol = $3" in fallback_sql
         assert "side = $4" in fallback_sql
@@ -522,8 +523,8 @@ class TestUpdateRealizedPnlEnhanced:
         assert "order_id IS NULL" in fallback_sql
         assert "realized_pnl IS NULL" in fallback_sql
         assert "tr.order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')" in fallback_sql
-        assert "ORDER BY tr.executed_at DESC" in fallback_sql
-        assert "LIMIT 1" in fallback_sql
+        assert "HAVING count(*) = 1" in fallback_sql
+        assert "tr.account_id = $7 AND tr.executed_at <@ $8::tsrange" in fallback_sql
 
         # 验证降级匹配参数：pnl, strategy, symbol, match_side, start_time, end_time
         assert fallback_args[1] == Decimal("50.25")
@@ -1160,11 +1161,7 @@ class TestEntryTimeToNaiveBeijingEndToEnd:
     async def test_fetch_one_args_tzinfo_none_when_pnl_missing(
         self, awaitable_strategy
     ):
-        """pnl 查不到时走条件单补打标分支，$3/$4 仍必须无时区
-
-        覆盖 _monitor_positions 中 pnl is None 分支的 entry_time 解析点：
-        带时区 entry_time 在该分支同样会触发 asyncpg DataError。
-        """
+        """未知盈亏保留带时区入场身份；后续补齐时查询参数仍转成无时区。"""
         awaitable_strategy.positions = {
             "SECZUSDT": {
                 "entry_price": 100.0,
@@ -1178,8 +1175,16 @@ class TestEntryTimeToNaiveBeijingEndToEnd:
 
         await awaitable_strategy._monitor_positions()
 
+        awaitable_strategy.db.fetch_one.assert_not_awaited()
+        pending = awaitable_strategy.positions['SECZUSDT']
+        assert pending['settlement_pending'] is True
+        assert pending['entry_time'] == '2026-10-01T02:35:28+00:00'
+        awaitable_strategy._save_state.assert_awaited_once()
+        awaitable_strategy.trading_executor.clear_position_tracking.assert_not_called()
+        awaitable_strategy._get_position_pnl.return_value = Decimal('0')
+        await awaitable_strategy._monitor_positions()
         call_args = awaitable_strategy.db.fetch_one.call_args
-        assert call_args is not None, "pnl 缺失分支应查询平仓单"
+        assert call_args is not None, "补齐实际零盈亏后应使用原入场时间查询"
         entry_arg = call_args.args[3]
         upper_arg = call_args.args[4]
         assert entry_arg.tzinfo is None, "$3 必须无时区"

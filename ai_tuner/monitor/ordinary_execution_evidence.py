@@ -12,7 +12,8 @@ from shared.entry_fill_evidence import verified_fill
 _LIMIT = 32
 _CANDIDATES = """
 WITH candidates AS (
- SELECT e.account_id,e.symbol,e.order_id,e.strategy,t.side AS stored_side
+ SELECT e.account_id,e.symbol,e.order_id,e.strategy,t.side AS stored_side,
+        TRUE AS ownership_verified,e.observed_at
  FROM trading.order_strategy_evidence e
  JOIN trading.trade_records t ON t.id::text=e.source_id AND t.account_id=e.account_id
       AND t.symbol=e.symbol AND t.order_id=e.order_id::text AND t.strategy=e.strategy
@@ -32,7 +33,20 @@ WITH candidates AS (
          AND f.trade_time_utc>=to_timestamp($2::bigint/1000.0)
          AND f.trade_time_utc<to_timestamp($3::bigint/1000.0)
    )
- ORDER BY e.observed_at DESC,e.symbol,e.order_id
+ UNION ALL
+ SELECT f.account_id,f.symbol,f.order_id,NULL AS strategy,min(f.side) AS stored_side,
+        FALSE AS ownership_verified,max(f.fetched_at) AS observed_at
+ FROM trading.execution_fact_fill f
+ WHERE f.account_id=$1 AND f.trade_time_utc>=to_timestamp($2::bigint/1000.0)
+   AND f.trade_time_utc<to_timestamp($3::bigint/1000.0)
+   AND EXISTS (SELECT 1 FROM trading.trade_records legacy
+       WHERE legacy.account_id=f.account_id AND legacy.symbol=f.symbol AND legacy.order_id=f.order_id::text
+         AND legacy.order_type='EXCHANGE_FILL' AND legacy.side=f.side)
+   AND NOT EXISTS (SELECT 1 FROM trading.order_strategy_evidence e
+       WHERE (e.account_id,e.symbol,e.order_id)=(f.account_id,f.symbol,f.order_id))
+ GROUP BY f.account_id,f.symbol,f.order_id
+ HAVING count(DISTINCT f.side)=1
+ ORDER BY ownership_verified DESC,observed_at DESC,symbol,order_id
  LIMIT $4
 )
 SELECT c.*,
@@ -64,9 +78,11 @@ def _execution_costs(trades):
 
 
 def verify_ordinary_execution(row, order, trades):
+    owned = row.get('ownership_verified', True) is True
     if (not isinstance(order, dict) or type(order.get('reduceOnly')) is not bool
             or order.get('positionSide') != 'BOTH' or order.get('closePosition', False) is not False
-            or row['strategy'] not in STRATEGIES):
+            or (owned and row['strategy'] not in STRATEGIES)
+            or (not owned and order['reduceOnly'] is not True)):
         raise ValueError('ordinary order mode or strategy is unverified')
     record = dict(symbol=row['symbol'], side=row['stored_side'], order_id=row['order_id'])
     verified_fill(record, order, trades)
@@ -77,9 +93,9 @@ def verify_ordinary_execution(row, order, trades):
     if signed != _fill_details(stored):
         raise ValueError('signed and collected trades differ')
     classification = 'ordinary_reduce_only' if order['reduceOnly'] else 'known_strategy_execution'
-    return dict(strategy=row['strategy'], symbol=row['symbol'], order_id=str(row['order_id']),
+    return dict(strategy=row['strategy'] if owned else None, symbol=row['symbol'], order_id=str(row['order_id']),
                 classification=classification, trade_times_ms={k: v[0] for k, v in signed.items()},
-                **_execution_costs(trades))
+                **(_execution_costs(trades) if owned else {}))
 
 
 async def read_ordinary_executions(db, exchange, account, start_ms, end_ms):

@@ -120,6 +120,7 @@ def setup_position_tracking(executor, symbol: str, **overrides) -> dict:
         'entry_price': 100.0,
         'entry_time': datetime.now(timezone.utc),
         'entry_quantity': 1.0,
+        'tp_anchor_quantity': 1.0,
         'atr': 2.0,
         'lowest_price': 100.0,
         'highest_price': 100.0,
@@ -177,7 +178,7 @@ class TestDetectTakeProfitFills:
         executor = create_executor()
         setup_position_tracking(executor, "BTCUSDT")
         executor._last_tracked_qty["BTCUSDT"] = 1.0
-        result = executor.detect_take_profit_fills("BTCUSDT", 0.7)
+        result = executor.detect_take_profit_fills("BTCUSDT", 0.7, current_price=100)
         assert result == 1
         tracking = executor.position_tracking["BTCUSDT"]
         assert tracking["target1_reached"] is True
@@ -189,7 +190,7 @@ class TestDetectTakeProfitFills:
         executor = create_executor()
         setup_position_tracking(executor, "BTCUSDT", target1_reached=True)
         executor._last_tracked_qty["BTCUSDT"] = 0.7
-        result = executor.detect_take_profit_fills("BTCUSDT", 0.3)
+        result = executor.detect_take_profit_fills("BTCUSDT", 0.3, current_price=100)
         assert result == 2
         tracking = executor.position_tracking["BTCUSDT"]
         assert tracking["target1_reached"] is True

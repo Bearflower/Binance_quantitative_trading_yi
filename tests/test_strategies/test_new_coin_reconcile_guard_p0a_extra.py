@@ -52,8 +52,8 @@ class TestReconcileFallbacks:
 
         await strategy._reconcile_positions_with_exchange()
 
-        assert _closed_symbols(strategy) == ['BBBUSDT']
-        assert strategy.positions == {}
+        assert _closed_symbols(strategy) == []
+        assert strategy.positions['BBBUSDT']['settlement_pending'] is True
         # 回退路径不应查询 DB 自有币种集合
         strategy.trading_executor.get_open_short_symbols.assert_not_awaited()
 

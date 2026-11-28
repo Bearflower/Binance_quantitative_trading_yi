@@ -1,8 +1,8 @@
 """Account-bound, append-only evidence of real entry fills.
 
 Collector configuration: use a ReadOnlyBinanceClient constructed from the selected
-PM account's credentials and set ``entry_activity_account_id`` on that instance.
-Only signed GET /papi/v1/um/order responses enter the observation stream. Nothing
+main account's credentials and set ``entry_activity_account_id`` on that instance.
+Signed PM and classic order responses retain their respective sources. Nothing
 here places orders or infers inactivity from missing orders.
 
 Completeness source contract (not produced by today's collector): an administrator
@@ -27,10 +27,13 @@ import re
 import json
 import uuid
 
+from shared.accounting.account_cutover import FILL_SOURCES, account_cutover_ms, coverage_watermark
 from shared.readonly_client import ReadOnlyBinanceClient
 
 STRATEGIES = frozenset(('btc_eth', 'btc_eth_aggressive', 'hrs', 'new_coin'))
 SOURCE = 'signed_pm_get_order_v1'
+CLASSIC_SOURCE = 'signed_classic_get_order_v1'
+ORDER_SOURCES = (SOURCE, CLASSIC_SOURCE)
 _TERMINAL = frozenset(('FILLED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'REJECTED'))
 _ORDER_FIELDS = frozenset(('clientOrderId', 'orderId', 'symbol', 'side', 'status',
                            'origQty', 'executedQty', 'reduceOnly', 'positionSide',
@@ -80,7 +83,7 @@ def _bool(value):
 
 def _valid_order(row):
     raw = _obj(row['raw_payload'])
-    if (row.get('source') != SOURCE or row.get('outcome') != 'ok'
+    if (row.get('source') not in ORDER_SOURCES or row.get('outcome') != 'ok'
             or row.get('payload_sha256') != _digest(raw)
             or len(row.get('credential_fingerprint', '')) != 64):
         raise ValueError('invalid authenticated order')
@@ -102,16 +105,7 @@ def _valid_order(row):
 
 
 def _covered(cursors, account, symbol, start, end):
-    covered = start
-    intervals = sorted((int(c['window_start_ms']), int(c['covered_until_ms']))
-                       for c in cursors if c.get('account_id') == account
-                       and c.get('source') == 'userTrades' and c.get('symbol') == symbol
-                       and c.get('page_complete') is True and c.get('request_status') == 'ok'
-                       and c.get('covered_until_ms') is not None)
-    for left, right in intervals:
-        if left <= covered:
-            covered = max(covered, right)
-    return covered >= end
+    return coverage_watermark(cursors, account, start, end, FILL_SOURCES, None, symbol) >= end
 
 
 def _entry_role(raw, fill, fills, cursors, facts, account, end):
@@ -143,7 +137,7 @@ def _entry_role(raw, fill, fills, cursors, facts, account, end):
         if (payload.get('symbol') == fill['symbol']
                 and type(left) is int and type(right) is int and 0 <= left <= right < target_ms
                 and (left == right or payload.get('source') in
-                     ('signed_pm_position_risk_v1', 'signed_pm_dual_inventory_v1'))
+                     ('signed_pm_position_risk_v1', 'signed_pm_dual_inventory_v1', 'signed_classic_position_risk_v1'))
                 and _covered(cursors, account, fill['symbol'], left, end)
                 and not any(left <= stamp <= right for _, stamp in scoped_fills)
                 and payload.get('payload_sha256') == _digest(original)
@@ -224,7 +218,7 @@ def _verified_never_submitted(current, facts, observations, protocols, account_i
                 continue
             if any(o['outcome'] in ('ok', 'order_identity_conflict') for o in signed[client]):
                 continue
-            if any(o.get('source') == SOURCE and o.get('symbol') == symbol
+            if any(o.get('source') in ORDER_SOURCES and o.get('symbol') == symbol
                    and o['outcome'] == 'order_not_found' and o.get('order_id') is None
                    and _obj(o['raw_payload']) == {} and o.get('payload_sha256') == _digest({})
                    and re.fullmatch(r'[0-9a-f]{64}', o.get('credential_fingerprint') or '')
@@ -282,7 +276,7 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
         if fact.get('account_id') != account_id or fact.get('kind') != 'collection_batch':
             continue
         batch = _obj(fact['payload'])
-        if (batch.get('source') == SOURCE
+        if (batch.get('source') in ORDER_SOURCES
                 and batch.get('finished_ms', 0) >= end_ms
                 and batch.get('candidate_sha256')
                 and isinstance(batch.get('candidate_count'), int)
@@ -512,16 +506,19 @@ _INSERT_ORDER = """INSERT INTO trading.entry_order_observation
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14)"""
 
 
-def _bound_pm(exchange, account_id):
+def _bound_account(exchange, account_id):
     return (account_id == 'default' and isinstance(exchange, ReadOnlyBinanceClient)
             and getattr(exchange, 'entry_activity_account_id', None) == account_id
-            and exchange.use_unified_account is True and not exchange.testnet)
+            and not exchange.testnet and (
+                (exchange.use_unified_account and exchange.base_url == 'https://papi.binance.com')
+                or (not exchange.use_unified_account and exchange.base_url == 'https://fapi.binance.com'
+                    and account_cutover_ms(account_id) is not None)))
 
 
 async def collect_flat_anchors(db, exchange, account_id):
     """Append bounded signed flat evidence for replay, at most hourly per symbol."""
-    if not _bound_pm(exchange, account_id):
-        raise ValueError('Explicit read-only production PM account binding required')
+    if not _bound_account(exchange, account_id):
+        raise ValueError('Explicit read-only production account binding required')
     candidates = {row['symbol'] for row in await db.fetch_all(_FLAT_CANDIDATES, account_id)}
     recent = {row['symbol'] for row in await db.fetch_all(_RECENT_FLAT, account_id)}
     before = await exchange._request('GET', '/fapi/v1/time', signed=False)
@@ -529,7 +526,8 @@ async def collect_flat_anchors(db, exchange, account_id):
     account_positions, one_way = None, False
     if candidates - recent:
         account_positions = await exchange.get_um_account_positions()
-        mode = await exchange._request('GET', '/papi/v1/um/positionSide/dual')
+        endpoint = '/papi/v1/um/positionSide/dual' if exchange.use_unified_account else '/fapi/v1/positionSide/dual'
+        mode = await exchange._request('GET', endpoint)
         one_way = isinstance(mode, dict) and mode.get('dualSidePosition') is False
     after = await exchange._request('GET', '/fapi/v1/time', signed=False)
     left, right = before['serverTime'], after['serverTime']
@@ -552,8 +550,8 @@ async def collect_flat_anchors(db, exchange, account_id):
         if (len(rows) == 1 and rows[0].get('positionSide') == 'BOTH'
                 and _number(rows[0].get('positionAmt')) == 0):
             raw = {key: rows[0][key] for key in ('symbol', 'positionSide', 'positionAmt')}
-            source = 'signed_pm_position_risk_v1'
-        elif (not rows and symbol in candidates and one_way and account_symbols is not None
+            source = 'signed_pm_position_risk_v1' if exchange.use_unified_account else 'signed_classic_position_risk_v1'
+        elif (exchange.use_unified_account and not rows and symbol in candidates and one_way and account_symbols is not None
               and symbol not in account_symbols):
             raw = {'position_risk': [], 'um_account_positions': [], 'dual_side_position': False}
             source = 'signed_pm_dual_inventory_v1'
@@ -574,10 +572,11 @@ async def collect_entry_activity(db, exchange, account_id, *, max_requests=100):
     observations are queried first so successive bounded runs make progress.
     No request parameters, headers, keys or exception messages are persisted.
     """
-    if not _bound_pm(exchange, account_id):
-        raise ValueError('Explicit read-only production PM account binding required')
+    if not _bound_account(exchange, account_id):
+        raise ValueError('Explicit read-only production account binding required')
     if type(max_requests) is not int or max_requests <= 0:
         raise ValueError('max_requests must be a positive integer')
+    source = SOURCE if exchange.use_unified_account else CLASSIC_SOURCE
     fingerprint = hashlib.sha256(exchange._api_key.encode()).hexdigest()
     reservations = [dict(r) for r in await db.fetch_all(_RESERVATIONS, account_id)]
     prior = [dict(r) for r in await db.fetch_all(_OBSERVATIONS, account_id)]
@@ -589,6 +588,10 @@ async def collect_entry_activity(db, exchange, account_id, *, max_requests=100):
             if archived.get('account_id') == account_id and archived['client_order_id'] not in seen:
                 reservations.append(archived)
                 seen.add(archived['client_order_id'])
+    cutover = account_cutover_ms(account_id)
+    if cutover is not None:
+        reservations = [r for r in reservations if r.get('created_at') is not None
+                        and (_ms(r['created_at']) < cutover) == exchange.use_unified_account]
     last_observed = {}
     for old in prior:
         if old.get('observed_at') is not None:
@@ -599,7 +602,7 @@ async def collect_entry_activity(db, exchange, account_id, *, max_requests=100):
     await db.execute(_INSERT_FACT, account_id, 'collection_boundary', _json(dict(
         batch_id=batch, started_ms=start, candidate_count=len(reservations),
         candidate_sha256=_digest(sorted(r['client_order_id'] for r in reservations)),
-        source=SOURCE, credential_fingerprint=fingerprint)))
+        source=source, credential_fingerprint=fingerprint)))
     gaps, observed, succeeded, pending = defaultdict(int), 0, [], []
     for reservation in reservations:
         terminal = False
@@ -627,7 +630,7 @@ async def collect_entry_activity(db, exchange, account_id, *, max_requests=100):
                 probe = dict(account_id=account_id, client_order_id=client_id, symbol=symbol,
                     order_id=str(raw.get('orderId')), side=raw.get('side'), status=raw.get('status'),
                     orig_qty=raw.get('origQty'), executed_qty=raw.get('executedQty'), raw_payload=raw,
-                    payload_sha256=_digest(raw), credential_fingerprint=fingerprint, source=SOURCE,
+                    payload_sha256=_digest(raw), credential_fingerprint=fingerprint, source=source,
                     outcome='ok', observed_at=datetime.now(timezone.utc))
                 _valid_order(probe)
                 if any(p.get('outcome') == 'ok' and p['client_order_id'] == client_id
@@ -650,7 +653,7 @@ async def collect_entry_activity(db, exchange, account_id, *, max_requests=100):
         await db.execute(_INSERT_ORDER, account_id, client_id, symbol,
             str(raw['orderId']) if raw else None, raw.get('side'), raw.get('status'),
             _number(raw['origQty']) if raw else None, _number(raw['executedQty']) if raw else None,
-            outcome, _json(raw), _digest(raw), fingerprint, SOURCE, batch)
+            outcome, _json(raw), _digest(raw), fingerprint, source, batch)
     remaining = max(0, len(pending) - max_requests)
     if remaining:
         gaps['request_budget_exhausted'] = remaining
@@ -660,7 +663,7 @@ async def collect_entry_activity(db, exchange, account_id, *, max_requests=100):
                    candidate_count=len(reservations),
                    candidate_sha256=_digest(sorted(r['client_order_id'] for r in reservations)),
                    succeeded_client_order_ids=succeeded,
-                   source=SOURCE, credential_fingerprint=fingerprint)
+                   source=source, credential_fingerprint=fingerprint)
     await db.execute(_INSERT_FACT, account_id, 'collection_batch', _json(summary))
     return summary
 

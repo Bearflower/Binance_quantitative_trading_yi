@@ -493,9 +493,12 @@ class MarginAdvisor:
         current = self.base_margin
 
         # 3. 动作判定 + 冷却 + 调整量
-        action, adjust_amount, cooldown_blocked, blocked_direction = self._resolve_action(
-            suggested, current
-        )
+        if getattr(self, 'live_reporting', False):
+            action, adjust_amount, cooldown_blocked, blocked_direction = ACTION_NONE, Decimal('0'), False, None
+        else:
+            action, adjust_amount, cooldown_blocked, blocked_direction = self._resolve_action(
+                suggested, current
+            )
 
         # 4. BTC 背离（仅趋势态且 BTC 检测成功时计算）
         divergence_line = await self._maybe_check_divergence(symbol, eth_analysis, btc_state)
@@ -653,6 +656,10 @@ class MarginAdvisor:
         冷却拦截时显示「冷却中，暂不操作」并附加说明行。
         依次为：标题、保证金、调整幅度、因子明细、尾部细节行。
         """
+        if getattr(self, 'live_reporting', False):
+            return ('💡 策略预算建议\n'
+                    f'- 策略建议预算: {advice.suggested_margin} USDT（尚需实盘校验）\n'
+                    '- 实际保证金、杠杆与订单结果见实盘执行回执。')
         title = self._section_title(advice)
         lines = [f"💰 保证金引导（{title}）"]
         lines += self._margin_lines(advice)

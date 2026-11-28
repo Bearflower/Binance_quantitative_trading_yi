@@ -9,7 +9,7 @@
 # 文档依据：docs/plans/fix-2026-09-29-p0-r01-r08-architecture.md §4.4 / §8.4 / §13.2 / §16
 # ============================================
 api_retry:
-  # 总闸（D4）：false 时所有请求回退到既有“全 method 重试”语义（不改代码即可回退）
+  # 总闸（D4）：false 时其他请求回退到既有读重试；下单始终只提交一次
   enabled: true
 
   # 读请求（GET，及幂等写 / DELETE 撤单）重试策略
@@ -18,10 +18,10 @@ api_retry:
     delay_seconds: 1.0    # 初始延迟（秒）
     backoff: 2.0          # 退避系数
 
-  # 非幂等写请求（下单 POST）策略：默认不重试，仅在核对“未受理”后才允许重发
+  # 非幂等写请求（下单 POST）策略：未知结果只能查证，保护交易所可见性延迟期间的订单
   write:
-    max_retries: 0        # 写请求重试次数（0=不盲重发）
-    retry_after_verify: true  # 是否允许“核对未受理后”按同一幂等 ID 重发
+    max_retries: 0        # 兼容旧配置；下单结果未知时不会自动重发
+    retry_after_verify: true  # 是否按原客户端标识核验未知写结果
 
   # 写请求结果未知（超时/断连）后，按 newClientOrderId 核对订单的尝试次数与间隔
   order_verify_max_attempts: 3

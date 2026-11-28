@@ -55,13 +55,13 @@ def make_fill_result(order_id: int, *, filled: bool = True) -> OrderFillResult:
 def create_mock_binance_api():
     """创建 Mock BinanceClient"""
     mock = MagicMock()
-    mock._request = AsyncMock()
+    mock._request = AsyncMock(return_value={'price':'100'})
     mock.place_order = AsyncMock()
-    mock.place_conditional_order = AsyncMock()
+    mock.place_conditional_order = AsyncMock(return_value={})
     mock.cancel_algo_order = AsyncMock()
     mock.get_position = AsyncMock()
-    mock.get_ticker = AsyncMock()
-    mock.get_orderbook = AsyncMock()
+    mock.get_ticker = AsyncMock(return_value={'price':'100', 'lastPrice':'100'})
+    mock.get_orderbook = AsyncMock(return_value={'bids':[['100','1']], 'asks':[['101','1']]})
     mock.cancel_order = AsyncMock()
     mock.get_open_orders = AsyncMock()
     return mock
@@ -182,6 +182,7 @@ def create_executor(
         config=config,
         kline_service=mock_kline,
     )
+    executor.capital_mgr.can_open_within_limit = AsyncMock(return_value=(True, None))
     return executor
 
 
@@ -837,7 +838,7 @@ class TestPlaceShortOrder:
         assert called_kwargs[1]['order_type'] == 'LIMIT'
 
     @pytest.mark.asyncio
-    async def test_execute_short_skipped_when_total_margin_exceeded(self):
+    async def test_execute_short_skipped_when_total_margin_exceeded(self, monkeypatch):
         """总持仓保证金超过生效限额时拒绝开仓，失败原因含真实数值（can_open_within_limit 拒绝分支）"""
         executor = create_executor()
         setup_execute_short_ready(executor)
@@ -846,6 +847,12 @@ class TestPlaceShortOrder:
         executor.calc_current_occupied_margin = AsyncMock(return_value=1250.0)
         # 生效限额 20 USDT（低于已有占用），走真实 can_open_within_limit 判定与文案
         executor.capital_mgr.get_effective_margin_limit = AsyncMock(return_value=(20.0, "static"))
+        # 恢复真实额度判定，并提供独立政策前置证据，拒绝必须来自本例的20U上限。
+        from shared.capital_manager import CapitalManager
+        executor.capital_mgr.can_open_within_limit = CapitalManager.can_open_within_limit.__get__(executor.capital_mgr)
+        executor.capital_mgr.entry_equity_provider = AsyncMock(return_value={'accountEquity':'10000'})
+        monkeypatch.setattr('shared.entry_risk_policy.RiskPolicyStore.policy', AsyncMock(
+            return_value={'mode':'capped', 'ratio_cap':'.3', 'entry_ceiling':'10000'}))
 
         result, reason = await executor.execute_short('ETHUSDT', score_result={'total_score': 7.4}, current_price=100.0)
         assert result is None

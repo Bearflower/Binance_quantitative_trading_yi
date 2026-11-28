@@ -1,9 +1,13 @@
+import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
 from strategies.grid.execution.main import ExecutorService, run_main
+from strategies.grid.execution.planner import PlanLimitExceeded
+from strategies.grid.execution.risk import RiskStatus
 from strategies.grid.execution.store import DecisionStore, migrate
 
 
@@ -47,7 +51,7 @@ async def test_backlog_exit_preempts_older_tradable_signals(tmp_path):
     service.engine = type("FakeEngine", (), {"exit_all": AsyncMock(return_value=True),
                                                "pause": AsyncMock(return_value=True)})()
     assert await service._drain_backlog(store.pending_decisions(), epoch)
-    service.engine.exit_all.assert_awaited_once_with(epoch)
+    service.engine.exit_all.assert_awaited_once_with(epoch, trigger="backlog_exit:NORMAL_STRONG_TREND")
     service.engine.pause.assert_not_awaited()
     assert store.next_decision()["decision_id"] == ids[-1]
     store.close()
@@ -72,7 +76,7 @@ async def test_backlog_without_exit_pauses_before_skipping(tmp_path):
                                                "pause": AsyncMock(return_value=True)})()
     assert await service._drain_backlog(store.pending_decisions(), epoch)
     service.engine.pause.assert_awaited_once_with(
-        epoch, stop_loss_low=Decimal("1800"), stop_loss_high=Decimal("2100"))
+        epoch, stop_loss_low=Decimal("1800"), stop_loss_high=Decimal("2100"), trigger="signal_backlog")
     assert store.next_decision()["state"] == "OSCILLATION"
     store.close()
 
@@ -94,3 +98,94 @@ async def test_locked_state_alerts_once_per_reason_and_ignores_send_failure(tmp_
     await service._alert_if_needed()
     assert service.alert_sender.await_count == 2
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_same_lock_reason_does_not_repeat_after_one_minute(tmp_path, monkeypatch):
+    path = tmp_path / "alerts-cadence.sqlite3"
+    migrate(path)
+    store = DecisionStore(path)
+    service = ExecutorService.__new__(ExecutorService)
+    service.store = store
+    service.alert_sender = AsyncMock(return_value=True)
+    service._last_alert_token = None
+    service._last_alert_at = 0.0
+    store.set_engine_state("LOCKED", "risk: account_transfer")
+    monkeypatch.setattr("strategies.grid.execution.main.time.monotonic", lambda: 1000.0)
+    await service._alert_if_needed()
+    monkeypatch.setattr("strategies.grid.execution.main.time.monotonic", lambda: 1061.0)
+    await service._alert_if_needed()
+    service.alert_sender.assert_awaited_once()
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [False, True])
+async def test_over_budget_plan_is_acknowledged_without_lock_or_order(active):
+    decision = {"decision_id": "budget-1", "state": "OSCILLATION",
+                "feasibility": {"feasible": True}, "grid_params": {
+                    "stop_loss_low": "1800", "stop_loss_high": "2200"}}
+    store = SimpleNamespace(
+        engine_state=lambda: {"state": "ACTIVE"},
+        active_epoch_id=lambda: 7 if active else None,
+        pending_decisions=lambda: [decision],
+        next_decision=lambda: decision,
+        epoch=lambda _epoch: {"stop_loss_low": "1800",
+                              "stop_loss_high": "2200"},
+        acknowledge=lambda _id: None)
+    acknowledged = []
+    store.acknowledge_after_action = lambda decision_id, epoch: acknowledged.append(decision_id)
+    engine = SimpleNamespace(
+        enforce_limits=AsyncMock(return_value=True),
+        pause=AsyncMock(return_value=True),
+        apply_decision=AsyncMock(),
+        exit_all=AsyncMock(),
+        _lock=lambda _reason: pytest.fail("budget rejection locked executor"))
+    service = ExecutorService.__new__(ExecutorService)
+    service.store = store
+    service.engine = engine
+    service.guard = asyncio.Lock()
+    service.stream = SimpleNamespace(ready=True)
+    service._risk = AsyncMock(return_value=SimpleNamespace(status=RiskStatus.ALLOW))
+    service._signal_stale = lambda _now: False
+    service._plan = AsyncMock(side_effect=PlanLimitExceeded("whole-plan margin exceeds limit"))
+    service._drain_backlog = AsyncMock(return_value=True)
+    service._write_heartbeat = lambda _now: None
+    await service.tick()
+    assert acknowledged == ["budget-1"]
+    assert engine.pause.await_count == int(active)
+    engine.apply_decision.assert_not_awaited()
+    engine.exit_all.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_over_budget_plan_waits_when_active_grid_cannot_pause():
+    decision = {"decision_id": "budget-2", "state": "OSCILLATION",
+                "feasibility": {"feasible": True}, "grid_params": {
+                    "stop_loss_low": "1800", "stop_loss_high": "2200"}}
+    acknowledged = []
+    service = ExecutorService.__new__(ExecutorService)
+    service.store = SimpleNamespace(
+        engine_state=lambda: {"state": "ACTIVE"},
+        active_epoch_id=lambda: 7,
+        pending_decisions=lambda: [decision],
+        next_decision=lambda: decision,
+        epoch=lambda _epoch: {"stop_loss_low": "1800",
+                              "stop_loss_high": "2200"},
+        acknowledge=acknowledged.append)
+    service.engine = SimpleNamespace(
+        enforce_limits=AsyncMock(return_value=True),
+        pause=AsyncMock(return_value=False),
+        apply_decision=AsyncMock(),
+        exit_all=AsyncMock(),
+        _lock=lambda _reason: pytest.fail("budget rejection locked executor"))
+    service.guard = asyncio.Lock()
+    service.stream = SimpleNamespace(ready=True)
+    service._risk = AsyncMock(return_value=SimpleNamespace(status=RiskStatus.ALLOW))
+    service._signal_stale = lambda _now: False
+    service._plan = AsyncMock(side_effect=PlanLimitExceeded("whole-plan margin exceeds limit"))
+    service._drain_backlog = AsyncMock(return_value=True)
+    service._write_heartbeat = lambda _now: None
+    await service.tick()
+    assert acknowledged == []
+    service.engine.apply_decision.assert_not_awaited()

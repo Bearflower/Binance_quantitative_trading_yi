@@ -58,7 +58,7 @@ async def test_new_coin_recent_legacy_naive_utc_entry_is_not_treated_as_closed()
 
 
 @pytest.mark.asyncio
-async def test_new_coin_weekly_review_queries_beijing_monday_midnight():
+async def test_new_coin_weekly_review_queries_last_completed_beijing_week():
     strategy = object.__new__(NewCoinStrategy)
     strategy.my_record_name = "new_coin"
     strategy.db = MagicMock()
@@ -66,12 +66,13 @@ async def test_new_coin_weekly_review_queries_beijing_monday_midnight():
 
     await strategy._weekly_review()
 
-    bound_start = strategy.db.fetch_all.await_args.args[2]
+    bound_start, bound_end = strategy.db.fetch_all.await_args.args[2:4]
     now_beijing = datetime.now(BEIJING_TZ)
-    expected = (now_beijing - timedelta(days=now_beijing.weekday())).replace(
+    expected_end = (now_beijing - timedelta(days=now_beijing.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0, tzinfo=None
     )
-    assert bound_start == expected
+    assert bound_end == expected_end
+    assert bound_start == expected_end - timedelta(days=7)
 
 
 @pytest.mark.asyncio

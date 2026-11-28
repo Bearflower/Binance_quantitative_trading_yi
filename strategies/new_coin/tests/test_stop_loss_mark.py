@@ -111,8 +111,8 @@ async def test_真实止损监控_字符串入场时间不会阻断清仓():
     assert strategy.consecutive_losses == 1
 
 
-async def test_止损打标_pnl为None但平仓单为亏损_补正打标():
-    """pnl=None 但 trade_records 中平仓单 realized_pnl<0 时，应补正止损打标并移除持仓。"""
+async def test_止损打标_pnl为None不能用单笔亏损代替整仓结算():
+    """单张订单的亏损不能替代完整仓位盈亏，须保留结算身份。"""
     strategy = make_strategy()
     # pnl 查询失败返回 None，触发 pnl=None 分支
     strategy._get_position_pnl = AsyncMock(return_value=None)
@@ -126,16 +126,12 @@ async def test_止损打标_pnl为None但平仓单为亏损_补正打标():
     await strategy._monitor_positions()
 
     tl = strategy.binance_client.trade_logger
-    tl.log_stop_loss.assert_awaited_once()
-    kwargs = tl.log_stop_loss.await_args.kwargs
-    assert kwargs['symbol'] == symbol
-    assert kwargs['side'] == 'BUY'
-    assert kwargs['realized_pnl'] == Decimal('-8.5')
-    assert symbol not in strategy.positions
+    tl.log_stop_loss.assert_not_awaited()
+    assert strategy.positions[symbol]['settlement_pending']
 
 
-async def test_止损打标_pnl为None且无法判定_不打标仅清理():
-    """pnl=None 且查不到平仓单/无法判定盈亏时，不应误打标，仅清理持仓。"""
+async def test_止损打标_pnl为None且无法判定_不打标保留结算():
+    """无法判定盈亏时保留仓位并等待完整成交，不应误打标或清理身份。"""
     strategy = make_strategy()
     strategy._get_position_pnl = AsyncMock(return_value=None)
     strategy.db.fetch_one = AsyncMock(return_value=None)  # 查不到平仓单
@@ -145,7 +141,7 @@ async def test_止损打标_pnl为None且无法判定_不打标仅清理():
     await strategy._monitor_positions()
 
     strategy.binance_client.trade_logger.log_stop_loss.assert_not_awaited()
-    assert symbol not in strategy.positions
+    assert strategy.positions[symbol]['settlement_pending']
 
 
 async def test_止损打标_trade_logger缺失_静默跳过():
@@ -157,26 +153,32 @@ async def test_止损打标_trade_logger缺失_静默跳过():
     await strategy._monitor_positions()
 
 
-async def test_真实订单两笔成交合计盈亏且排除撤单():
+async def test_真实订单两笔成交合计盈亏且排除撤单(monkeypatch):
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "test")
     strategy = make_strategy()
     symbol = 'PFEUSDT'
     strategy.positions[symbol] = make_position_entry()
     strategy.db.fetch_all = AsyncMock(return_value=[
         {'order_id': '678808'}, {'order_id': '678821'},
     ])
+    strategy.binance_client.get_order = AsyncMock(side_effect=lambda symbol, order_id: {
+        'symbol':symbol, 'side':'BUY', 'orderId': order_id, 'status': 'CANCELED' if order_id == 678808 else 'FILLED',
+        'executedQty': '0' if order_id == 678808 else '10',
+    })
     strategy.binance_client.get_user_trades = AsyncMock(return_value=[
-        {'id': 58293, 'orderId': 678821, 'realizedPnl': '-1.53967682'},
-        {'id': 58294, 'orderId': 678821, 'realizedPnl': '-0.18982317'},
+        {'symbol':'PFEUSDT','side':'BUY','id': 58293, 'orderId': 678821, 'realizedPnl': '-1.53967682'},
+        {'symbol':'PFEUSDT','side':'BUY','id': 58294, 'orderId': 678821, 'realizedPnl': '-0.18982317'},
     ])
     async def fills_for_order(_symbol, *, order_id, limit):
         if order_id == '678808':
             return []
         return [
-            {'id': 58293, 'orderId': 678821, 'realizedPnl': '-1.53967682'},
-            {'id': 58294, 'orderId': 678821, 'realizedPnl': '-0.18982317'},
+            {'symbol':'PFEUSDT','side':'BUY','id': 58293, 'orderId': 678821, 'realizedPnl': '-1.53967682', 'qty': '9'},
+            {'symbol':'PFEUSDT','side':'BUY','id': 58294, 'orderId': 678821, 'realizedPnl': '-0.18982317', 'qty': '1'},
         ]
     strategy.binance_client.get_user_trades.side_effect = fills_for_order
+    strategy._settlement_entry_quantity = AsyncMock(return_value=Decimal('10'))
     pnl = await NewCoinStrategy._get_position_pnl(strategy, symbol, Decimal('100'))
     assert pnl == Decimal('-1.72949999')
     assert 'order_id IS NOT NULL' in strategy.db.fetch_all.await_args.args[0]
-    assert strategy.binance_client.get_user_trades.await_count == 2
+    assert strategy.binance_client.get_user_trades.await_count == 1

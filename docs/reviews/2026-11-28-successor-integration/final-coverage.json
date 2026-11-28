@@ -1,0 +1,173 @@
+{
+  "scope": "successor integration and confirmed defect fixes; HEAD 063a1383 workspace",
+  "independence": "Same-model independent contexts reviewed original delta; parent independently reviewed child patches. No cross-model claim.",
+  "summary": {
+    "total_files": 21,
+    "reviewed_files": 21,
+    "skipped_files": 0,
+    "coverage_rate": 1.0
+  },
+  "files": [
+    {
+      "path": ".github/workflows/dashboard-classic-segments.yml",
+      "status": "added",
+      "review_status": "reviewed",
+      "sha256": "57b0f2170378618e2206b23fcc0a14a88f1cc1c5d38db7f6dfae5871acb8b455"
+    },
+    {
+      "path": ".github/workflows/history-tolerance-build.yml",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "504796049e6254043a20d4fc4f84b778dac3cc22617792d73c4489fb95a17794"
+    },
+    {
+      "path": ".github/workflows/xau-attribution-release.yml",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "5b329fd3868b7df703bf5df6dd548434c539c05a5a5bf1fabb85a248f2518a43"
+    },
+    {
+      "path": "ai_tuner/cleanup/orphan_cleanup.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "738041d44ea0f8429d6b7921f9f56ccca2b9ad6bb411b42cc7d15333481a4f25"
+    },
+    {
+      "path": "dashboard/backend/models/schemas.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "8a22e4460bbacd9ddddef3671c40a3572967f53009a06969fc86801c0c586014"
+    },
+    {
+      "path": "dashboard/backend/services/exchange_ledger.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "fda1802ed22c70a88f154c2218800877bca7a0a9aecaad2048677540b82ed9b4"
+    },
+    {
+      "path": "dashboard/frontend/index.html",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "08b89cb8b23b3eefdd2071fcb404ccd26ce28476ad6888e84f43fdeddfceef1e"
+    },
+    {
+      "path": "dashboard/frontend/js/main.js",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "14eb390d9279ba6828028d3bcdb51b6894bbf62b53a173224e2bdcaf31e33e57"
+    },
+    {
+      "path": "deploy/history-tolerance/bases.json",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "4108ee9b161a38c914616d25f1f558237a6fa2db820010f95eb973ff77cfb24c"
+    },
+    {
+      "path": "deployment/history-live-gap/activate.py",
+      "status": "added",
+      "review_status": "reviewed",
+      "sha256": "5659e896d813df8eb55ec8434cd0a2f829a5a1f69ca1708dd1a8912c8a811423"
+    },
+    {
+      "path": "deployment/xau-attribution/activate.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "b38836297c744b1491e23dfeb770661e58bef5c7c019c21ac622429a1154556a"
+    },
+    {
+      "path": "scripts/build_history_tolerance.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "26595309efe2e7a16453aa5ca508fd6d7219a9f8ee8d241e530819b8c0b748c7"
+    },
+    {
+      "path": "scripts/deploy_full_regression.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "85431e9523a7e54992279f0dd96cc288db8d2fd321337b02a6dde876ee63d561"
+    },
+    {
+      "path": "scripts/prepare_history_live_gap_release.py",
+      "status": "added",
+      "review_status": "reviewed",
+      "sha256": "37eb159a5548327f0375a368aa4d821d39eaf44f9a8d5cf0e961e479753efe82"
+    },
+    {
+      "path": "shared/accounting/classic_attribution.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "36955f471d5154d42d6264a4a10e4cbd74f5a654cffea4c4c193ce6d82374714"
+    },
+    {
+      "path": "strategies/btc_eth/shadow/collector.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "332763eeec9a77b5ed7f49351464bbf25f92f40e73d0c008fdf4db152e6a5a91"
+    },
+    {
+      "path": "strategies/btc_eth/shadow/main.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "f108f9e1ee5afe4b4aafa06e4d7bc3d5ae8eb8c330c618b37737ded95889c475"
+    },
+    {
+      "path": "strategies/hrs/accepted_live_gap.py",
+      "status": "added",
+      "review_status": "reviewed",
+      "sha256": "543839673a25a8f00a3f5c4d2f2e7f66eba71f32c28c020d73239961413013df"
+    },
+    {
+      "path": "strategies/hrs/decision_context.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "f99220e15eba4111bd1bb54c1136fa03bdf46bde52a8fe126eb91da68a900279"
+    },
+    {
+      "path": "strategies/hrs/equity_history_gap.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "4619a1fe71be2628248995ddc38b473debaadbda0e310e3c50cbdf8742b30b4e"
+    },
+    {
+      "path": "strategies/hrs/equity_service.py",
+      "status": "modified",
+      "review_status": "reviewed",
+      "sha256": "371446cdde058f6e50a795e8dde7b878eeaa6151a112422e47a891b56168c31a"
+    }
+  ],
+  "closure": [
+    {
+      "issue": "HRS unrelated strategy symbols",
+      "status": "fixed",
+      "evidence": "business-fix-evidence.json"
+    },
+    {
+      "issue": "HRS midnight parent-version invalidation",
+      "status": "fixed",
+      "evidence": "business-fix-evidence.json"
+    },
+    {
+      "issue": "Missing permission audit before scoped activation",
+      "status": "fixed",
+      "evidence": "ops-fix-result.json"
+    },
+    {
+      "issue": "Scoped activation missing final group verification",
+      "status": "fixed",
+      "evidence": "ops-fix-result.json"
+    },
+    {
+      "issue": "SSH trust on unverified keyscan",
+      "status": "fixed",
+      "evidence": "ops-fix-result.json"
+    }
+  ],
+  "parent_review": [
+    "Unknown unrelated round-trip fills remain rejected by owned_fill_positions; scope filtering does not bypass owner validation.",
+    "Midnight reconstruction retains the original parent and original verification; exact midnight NAV and conservative risk are covered by PostgreSQL tests.",
+    "Audit resources are hash-bound; activation uses audit only. Final health, identity, environment and source failures trigger exact-ID restoration.",
+    "Pinned host key equals the locally trusted known_hosts key.",
+    "Unified clone removes superseded provenance labels while preserving unrelated config and updates existing HRS release metadata."
+  ],
+  "open_findings": []
+}

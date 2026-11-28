@@ -1,0 +1,30 @@
+{
+  "groups": [
+    {
+      "name": "hrs",
+      "base": "ghcr.io/bearflower/trading-hrs@sha256:7b54d1d0f5af55567bcd6b92ff473999389342a813a7d8aee9fef7079e96a0e9",
+      "repository": "ghcr.io/bearflower/trading-hrs",
+      "files": [
+        "strategies/hrs/equity_service.py",
+        "strategies/hrs/equity_history_gap.py",
+        "strategies/hrs/accepted_live_gap.py"
+      ],
+      "containers": [
+        "trading_system-hrs",
+        "trading_system-hrs-acceptance"
+      ]
+    },
+    {
+      "name": "ai-tuner",
+      "base": "ghcr.io/bearflower/trading-ai-tuner@sha256:c1e36e582531a68bb3462eb11c5d8dd9044c3f9a3b8c2f3b7dc4bcbcf44b9a71",
+      "repository": "ghcr.io/bearflower/trading-ai-tuner",
+      "files": [
+        "ai_tuner/cleanup/orphan_cleanup.py"
+      ],
+      "containers": [
+        "ai-tuner",
+        "ai-tuner-snapshot"
+      ]
+    }
+  ]
+}

@@ -1,12 +1,7 @@
-"""补测 strategy.py §3.4 基线重建三个新方法的全部分支。
+"""新币重启恢复证据与档位回填边界。
 
-缺口来源（覆盖率判定脚本识别）：
-  L2317-2350  _sync_baseline_to_tracking（循环 + missing_atr 汇总 + _backfill_target_statuses 调用）
-  L2369-2402  _backfill_anchor_quantity（已有锚点跳过 / db 异常 / 无 open / 多条 warning / anchor>0 写入 / anchor<=0）
-  L2412-2452  _backfill_target_statuses（tracking 缺失 / 锚点缺失 + 预热精度 / remaining<=0 / hit1+hit2 置位 / 已置位不重复）
-
-真实驱动：mock strategy 实例 + mock executor 实例，patch 模块级 to_aware_utc/derive_reached_targets，
-用 assert 真断言覆盖全部分支。
+候选仓位必须是唯一同币种、同价格的有效 open 记录；不再取多行中的最新一条。
+精度不可验证时不推进档位；本组使用真实方法、有状态跟踪夹具与隔离数据库替身。
 """
 
 import types
@@ -27,27 +22,8 @@ def _bind_method(ex, cls, method_name):
 
 
 def _make_strategy_self():
-    """NewCoinStrategy 实例 mock（只含三个基线方法 + _backfill_tracking_atr）。"""
-    from strategies.new_coin import strategy as strategy_module
-
-    class _S:
-        # _backfill_tracking_atr 是静态方法，不需要 self
-        pass
-
-    s = _S()
-    # 绑定三个实例方法
-    s._sync_baseline_to_tracking = _bind_method(
-        s, strategy_module.NewCoinStrategy, '_sync_baseline_to_tracking'
-    )
-    s._backfill_anchor_quantity = _bind_method(
-        s, strategy_module.NewCoinStrategy, '_backfill_anchor_quantity'
-    )
-    s._backfill_target_statuses = _bind_method(
-        s, strategy_module.NewCoinStrategy, '_backfill_target_statuses'
-    )
-    # _backfill_tracking_atr 是静态方法，直接引用
-    s._backfill_tracking_atr = strategy_module.NewCoinStrategy._backfill_tracking_atr
-    return s
+    from strategies.new_coin.strategy import NewCoinStrategy
+    return object.__new__(NewCoinStrategy)
 
 
 def _make_executor_self():
@@ -73,28 +49,55 @@ def _make_executor_self():
     ex._get_symbol_precision = _AM(return_value=(Decimal('0.01'), Decimal('0.001')))
 
     # ensure_tracking_entry
-    ex.ensure_tracking_entry = lambda *a, **kw: {}
+    def ensure(symbol, **kwargs):
+        return ex.position_tracking.setdefault(symbol, {})
+    ex.ensure_tracking_entry = MagicMock(side_effect=ensure)
 
     return ex
 
 
 
 # =============================================================================
-# _backfill_anchor_quantity 全分支（§3.4 第2点 + 第5点 T8）
+# _restore_recovery_evidence 全分支（§3.4 第2点 + 第5点 T8）
 # =============================================================================
 
 
 @pytest.mark.asyncio
-async def test_anchor_skip_if_existing_positive():
-    """tp_anchor_quantity 已有且 >0 → 跳过查询直接 return（L2370-2372）。"""
+@pytest.mark.parametrize("scenario", ["one", "ambiguous", "missing", "unavailable", "wrong_price", "zero"])
+async def test_restore_requires_a_unique_matching_open_record(scenario):
+    strategy, executor = _make_strategy_self(), _make_executor_self()
+    row = dict(symbol="TESTUSDT", status="open", position_id="TESTUSDT_123", opened_at=datetime(2024, 1, 1),
+               quantity=4, entry_price=100, metadata={"entry_order_id": 123})
+    rows = [row]
+    if scenario == "ambiguous":
+        rows.append(row.copy())
+    elif scenario == "missing":
+        rows = []
+    elif scenario == "wrong_price":
+        row["entry_price"] = 99
+    elif scenario == "zero":
+        row["quantity"] = 0
+    executor.db.fetch_all = AsyncMock(return_value=rows, side_effect=OSError() if scenario == "unavailable" else None)
+    pos = dict(quantity=2, entry_price=100)
+    tracking = {}
+    await strategy._restore_recovery_evidence(executor, "TESTUSDT", tracking, pos)
+    if scenario == "one":
+        assert tracking["tp_anchor_quantity"] == 4 and tracking["recovery_entry_order_id"] == 123
+    else:
+        assert "tp_anchor_quantity" not in tracking and pos["time_exit_status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_anchor_existing_value_does_not_skip_identity_verification():
+    """已有锚点也必须查询同一仓位身份，不能跳过恢复校验。"""
     s = _make_strategy_self()
     ex = _make_executor_self()
     entry = {'tp_anchor_quantity': 2.5}  # 已有有效值
 
-    await s._backfill_anchor_quantity(ex, 'TESTUSDT', entry)
+    await s._restore_recovery_evidence(ex, 'TESTUSDT', entry, {'quantity': Decimal('1'), 'entry_price': Decimal('100')})
 
-    # db.fetch_all 没被调（快速 return）
-    ex.db.fetch_all.assert_not_awaited()
+    # 已有量也不能跳过恢复身份验证。
+    ex.db.fetch_all.assert_awaited_once()
     assert entry['tp_anchor_quantity'] == 2.5  # 原值保留
 
 
@@ -106,7 +109,7 @@ async def test_anchor_query_db_exception_ignored():
     ex.db.fetch_all = AsyncMock(side_effect=Exception("DB down"))
     entry = {'tp_anchor_quantity': None}
 
-    await s._backfill_anchor_quantity(ex, 'TESTUSDT', entry)
+    await s._restore_recovery_evidence(ex, 'TESTUSDT', entry, {'quantity': Decimal('1'), 'entry_price': Decimal('100')})
 
     # tp_anchor_quantity 保持 None（fail-closed）
     assert entry.get('tp_anchor_quantity') is None
@@ -120,26 +123,26 @@ async def test_anchor_no_open_rows_skip():
     ex.db.fetch_all = AsyncMock(return_value=[])
     entry = {'tp_anchor_quantity': None}
 
-    await s._backfill_anchor_quantity(ex, 'TESTUSDT', entry)
+    await s._restore_recovery_evidence(ex, 'TESTUSDT', entry, {'quantity': Decimal('1'), 'entry_price': Decimal('100')})
 
     assert entry.get('tp_anchor_quantity') is None
 
 
 @pytest.mark.asyncio
-async def test_anchor_multiple_rows_warning_takes_latest():
-    """命中多条 open 记录 → 取最新第一条 + 打 warning（L2395-2399）。"""
+async def test_anchor_multiple_rows_rejected_as_ambiguous():
+    """多条 open 候选存在歧义，不选最新记录冒充同一仓位。"""
     s = _make_strategy_self()
     ex = _make_executor_self()
     ex.db.fetch_all = AsyncMock(return_value=[
-        {'quantity': 5.0, 'opened_at': '2026-10-15'},
-        {'quantity': 3.0, 'opened_at': '2026-10-14'},
+        {'symbol':'TESTUSDT','status':'open','position_id':'one','entry_price':100,'quantity': 5.0, 'opened_at': '2026-10-15'},
+        {'symbol':'TESTUSDT','status':'open','position_id':'two','entry_price':100,'quantity': 3.0, 'opened_at': '2026-10-14'},
     ])
     entry = {'tp_anchor_quantity': None}
 
-    await s._backfill_anchor_quantity(ex, 'TESTUSDT', entry)
+    await s._restore_recovery_evidence(ex, 'TESTUSDT', entry, {'quantity': Decimal('1'), 'entry_price': Decimal('100')})
 
-    # 取最新一条（第一个）
-    assert entry['tp_anchor_quantity'] == 5.0
+    # 多条候选不能选择最新一条冒充同一仓位。
+    assert entry['tp_anchor_quantity'] is None
 
 
 @pytest.mark.asyncio
@@ -147,10 +150,10 @@ async def test_anchor_anchor_positive_writes():
     """anchor > 0 → 写入 tp_anchor_quantity（L2400-2402）。"""
     s = _make_strategy_self()
     ex = _make_executor_self()
-    ex.db.fetch_all = AsyncMock(return_value=[{'quantity': 4.2, 'opened_at': '2026-10-15'}])
+    ex.db.fetch_all = AsyncMock(return_value=[{'symbol':'TESTUSDT','status':'open','position_id':'one','entry_price':100,'quantity': 4.2, 'opened_at': '2026-10-15'}])
     entry = {'tp_anchor_quantity': None}
 
-    await s._backfill_anchor_quantity(ex, 'TESTUSDT', entry)
+    await s._restore_recovery_evidence(ex, 'TESTUSDT', entry, {'quantity': Decimal('1'), 'entry_price': Decimal('100')})
 
     assert entry['tp_anchor_quantity'] == 4.2
 
@@ -160,10 +163,10 @@ async def test_anchor_anchor_zero_no_write():
     """anchor = 0 → 不写入（L2400-2402 fail-closed）。"""
     s = _make_strategy_self()
     ex = _make_executor_self()
-    ex.db.fetch_all = AsyncMock(return_value=[{'quantity': 0, 'opened_at': '2026-10-15'}])
+    ex.db.fetch_all = AsyncMock(return_value=[{'symbol':'TESTUSDT','status':'open','position_id':'one','entry_price':100,'quantity': 0, 'opened_at': '2026-10-15'}])
     entry = {'tp_anchor_quantity': None}
 
-    await s._backfill_anchor_quantity(ex, 'TESTUSDT', entry)
+    await s._restore_recovery_evidence(ex, 'TESTUSDT', entry, {'quantity': Decimal('1'), 'entry_price': Decimal('100')})
 
     assert entry.get('tp_anchor_quantity') is None
 
@@ -205,7 +208,7 @@ async def test_target_status_no_anchor_skips_with_precision_warmup():
 
 @pytest.mark.asyncio
 async def test_target_status_no_anchor_precision_exception_swallowed():
-    """锚点缺失时预热精度抛异常 → except 吞掉（L2421-2422），不崩溃。"""
+    """精度获取失败时保守暂停回填，不用默认步长推断档位。"""
     s = _make_strategy_self()
     ex = _make_executor_self()
     ex.position_tracking['TESTUSDT'] = {
@@ -216,10 +219,10 @@ async def test_target_status_no_anchor_precision_exception_swallowed():
     from unittest.mock import AsyncMock
     ex._get_symbol_precision = AsyncMock(side_effect=Exception("API down"))
 
-    # 不应崩溃，derive_reached_targets 继续用默认 step_size
+    # 不应崩溃，也不能用默认步长推进档位
     with patch('strategies.new_coin.strategy.derive_reached_targets', return_value=(True, False)) as mock_d:
         await s._backfill_target_statuses(ex, ['TESTUSDT'])
-    mock_d.assert_called_once()  # 继续走自愈
+    mock_d.assert_not_called()  # 精度未知，保留原档位
 
 
 @pytest.mark.asyncio
@@ -321,27 +324,27 @@ async def test_sync_baseline_loop_populates_tracking_and_calls_backfillers():
     atr_map = {'TESTUSDT': Decimal('2.0')}
 
     # mock ensure_tracking_entry 返回一个空 dict，然后让各方法填充
-    ex.ensure_tracking_entry = MagicMock(return_value={})
+    ex.ensure_tracking_entry = MagicMock(side_effect=lambda symbol, **_: ex.position_tracking.setdefault(symbol, {}))
 
     # patch s 实例上的属性（因为 types.MethodType 已绑定，patch 类方法无效）
     anchor_spy = AsyncMock()
     target_spy = AsyncMock()
 
     # 先保存原绑定方法
-    orig_anchor = s._backfill_anchor_quantity
+    orig_anchor = s._restore_recovery_evidence
     orig_target = s._backfill_target_statuses
-    s._backfill_anchor_quantity = anchor_spy
+    s._restore_recovery_evidence = anchor_spy
     s._backfill_target_statuses = target_spy
 
     try:
         await s._sync_baseline_to_tracking(ex, rebuilt, atr_map)
     finally:
-        s._backfill_anchor_quantity = orig_anchor
+        s._restore_recovery_evidence = orig_anchor
         s._backfill_target_statuses = orig_target
 
     # ensure_tracking_entry 被调一次
     ex.ensure_tracking_entry.assert_called_once()
-    # _backfill_anchor_quantity 被调
+    # _restore_recovery_evidence 被调
     anchor_spy.assert_awaited_once()
     # _backfill_target_statuses 被调（传入 list(rebuilt.keys())）
     target_spy.assert_awaited_once()
@@ -369,17 +372,17 @@ async def test_sync_baseline_missing_atr_triggers_warning():
     }
     atr_map = {}  # 空 → 全部缺 ATR
 
-    ex.ensure_tracking_entry = MagicMock(return_value={'atr': Decimal('0')})
+    ex.ensure_tracking_entry = MagicMock(side_effect=lambda symbol, **_: ex.position_tracking.setdefault(symbol, {'atr': Decimal('0')}))
 
-    orig_anchor = s._backfill_anchor_quantity
+    orig_anchor = s._restore_recovery_evidence
     orig_target = s._backfill_target_statuses
-    s._backfill_anchor_quantity = AsyncMock()
+    s._restore_recovery_evidence = AsyncMock()
     s._backfill_target_statuses = AsyncMock()
     try:
         with patch('strategies.new_coin.strategy.logger.warning') as mock_warn:
             await s._sync_baseline_to_tracking(ex, rebuilt, atr_map)
     finally:
-        s._backfill_anchor_quantity = orig_anchor
+        s._restore_recovery_evidence = orig_anchor
         s._backfill_target_statuses = orig_target
 
     # 至少有一次 warning（汇总缺失 ATR）

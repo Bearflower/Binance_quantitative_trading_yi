@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import structlog
 
+from shared.binance_account_mode import verify_cutover_ledger, verify_trading_mode
 from shared.binance_api import BinanceClient
 from shared.config_loader import load_strategy_config_with_metadata, record_loaded_version
 from shared.database import DatabaseManager
@@ -62,6 +63,7 @@ async def main():
             api_secret=os.getenv("BINANCE_API_SECRET"),
             testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true"
         )
+        await verify_trading_mode(binance_client)
 
         kline_service = KLineService(
             service_url=os.getenv("KLINE_SERVICE_URL"),
@@ -96,14 +98,10 @@ async def main():
         await strategy.set_database(db_manager)
 
         # 初始化策略
-        await strategy.initialize()
-
-        logger.info("策略初始化完成，开始运行")
-
-        # 使用异步上下文管理器管理资源
         async with binance_client, kline_service, notification_client:
             # 连接数据库
             await db_manager.connect()
+            await verify_cutover_ledger(binance_client, db_manager, trading_writer=True)
             
             # 初始化交易记录器（自动记录所有下单到 trading.trade_records）
             # 写库名统一取本策略归属名（strategy.record_name，与 position_ownership 同源），避免硬编码漂移
@@ -116,6 +114,8 @@ async def main():
             logger.info("交易记录器初始化完成", strategy="新币做空策略")
 
             try:
+                await strategy.initialize()
+                logger.info("策略初始化完成，开始运行")
                 # 运行策略
                 await strategy.run()
             finally:

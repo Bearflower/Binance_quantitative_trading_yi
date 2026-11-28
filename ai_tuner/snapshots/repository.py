@@ -37,7 +37,7 @@ ON CONFLICT (strategy_id, symbol, bucket_start) DO UPDATE SET
     raw_payload = EXCLUDED.raw_payload,
     collected_at = NOW()
 WHERE $18 > CASE
-    WHEN ai_tuner_market_snapshots.market_cap_source = 'coingecko'
+    WHEN ai_tuner_market_snapshots.market_cap_source IN ('coingecko', 'coinmarketcap')
          AND ai_tuner_market_snapshots.open_interest_usd > 0
          AND ai_tuner_market_snapshots.market_cap_usd > 0
          AND ai_tuner_market_snapshots.funding_rate IS NOT NULL
@@ -79,7 +79,7 @@ WHERE $18 > CASE
          ) <= 1e-9 * GREATEST(
              1.0, ABS(ai_tuner_market_snapshots.funding_rate * 3 * 365 * 100)
          ) THEN 4
-    WHEN ai_tuner_market_snapshots.market_cap_source = 'coingecko' THEN 3
+    WHEN ai_tuner_market_snapshots.market_cap_source IN ('coingecko', 'coinmarketcap') THEN 3
     WHEN ai_tuner_market_snapshots.market_cap_source IN ('cache_hit', 'coingecko_cache') THEN 2
     WHEN ai_tuner_market_snapshots.market_cap_source = 'oi_proxy' THEN 1
     ELSE 0
