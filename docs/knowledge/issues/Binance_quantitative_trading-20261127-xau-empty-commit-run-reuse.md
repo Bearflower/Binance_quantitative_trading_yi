@@ -6,7 +6,7 @@ id: Binance_quantitative_trading-20261127-xau-empty-commit-run-reuse
 日期: 2026-11-27
 标签: [bug, XAU, 归因, 版本证据, 受限发布]
 任务标识: xau-version-provenance-20261127
-状态: 待复查
+状态: 已解决
 审查: 已审查
 ---
 
@@ -48,3 +48,9 @@ AI 归纳，仅供参考：运行版本必须按完整身份判断；空字符�
 ## 受限重试结果（22:21 北京时间）
 
 PR #61 / d402ad0c，Actions46014565497成功。两个影子healthy、0重启、版本/文件/运行配置核对通过；两个新run的commit/SHA已落库一致，冻结参数未变化。158个排除容器在重试中不变，四production表0。原ID停机备份保留；初次误删的两个旧备份仍仅为配置替代，不称完整恢复。最终相关549passed1skipped，独立52passed。新版本三profile自然事件待23:15/23:20，不提前标已解决。旧空版本累计36条不回填。
+
+## 2026-11-28 自然周期补验
+
+本轮整合发布前通过受限业务角色只读查询，`d402ad0c` 的三个 profile 各已有 8 条自然事件，scheduled_at 从 11 月 27 日15:00 至22:00 UTC；事件版本与 producer 来源不匹配为0，质量标记为0。原待23:15/23:20自然运行的工程验证已完成，旧空版本事件和研究观察缺口保留，不等同于候选开仓或策略晋级。证据：[本轮只读快照](../../reviews/2026-11-28-successor-integration/xau-before.json)。后继整合版继续按[新报告](../../reports/successor-unified-production-acceptance-2026-11-28.md)独立验收。
+
+本轮统一版本补验：`46fa983c` 已在两个实例分别建立唯一 active run，三个 profile 均自然写入 2026-11-27 23:00 UTC 对应事件，版本与 producer 来源一致，质量标记为 0；配置指纹与发布前一致。[新版本自然事件证据](../../reviews/2026-11-28-successor-integration/xau-after.json)。未手动触发采集或生成交易。

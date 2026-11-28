@@ -1,0 +1,87 @@
+{
+  "instances": [
+    {
+      "event_count": 16,
+      "latest_events": [
+        {
+          "data_quality_reason": null,
+          "decision": "no_signal",
+          "evaluated_at": "2026-11-27 22:15:00.969121+00:00",
+          "git_commit": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+          "producer_git_commit": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+          "profile_id": "xau_aggressive",
+          "scheduled_at": "2026-11-27 22:00:00+00:00"
+        },
+        {
+          "data_quality_reason": null,
+          "decision": "no_signal",
+          "evaluated_at": "2026-11-27 22:15:00.624471+00:00",
+          "git_commit": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+          "producer_git_commit": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+          "profile_id": "xau_original",
+          "scheduled_at": "2026-11-27 22:00:00+00:00"
+        }
+      ],
+      "profile_stats": [
+        {
+          "events": 8,
+          "first_at": "2026-11-27 15:00:00+00:00",
+          "last_at": "2026-11-27 22:00:00+00:00",
+          "profile_id": "xau_aggressive",
+          "quality_flags": 0,
+          "version_mismatches": 0
+        },
+        {
+          "events": 8,
+          "first_at": "2026-11-27 15:00:00+00:00",
+          "last_at": "2026-11-27 22:00:00+00:00",
+          "profile_id": "xau_original",
+          "quality_flags": 0,
+          "version_mismatches": 0
+        }
+      ],
+      "run": {
+        "config_hashes": "{\"xau_original\": \"bb2ee47cf51dbfebaad0d8f71c2fe3dd633dd45921f64352e2008291be7e609a\", \"xau_aggressive\": \"e4b468caaa3fc321d78e46a9e0c75f1e3de1d0a0ed9b99a4bdfa061894077c46\"}",
+        "git_commit": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+        "git_sha": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+        "instance_id": "mtcps_xau_shadow",
+        "run_id": "xau-shadow-20261127141943-b38cdde224914128",
+        "started_at": "2026-11-27 14:19:43.955233+00:00"
+      }
+    },
+    {
+      "event_count": 8,
+      "latest_events": [
+        {
+          "data_quality_reason": null,
+          "decision": "no_signal",
+          "evaluated_at": "2026-11-27 22:20:00.839826+00:00",
+          "git_commit": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+          "producer_git_commit": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+          "profile_id": "xau_calibrated",
+          "scheduled_at": "2026-11-27 22:00:00+00:00"
+        }
+      ],
+      "profile_stats": [
+        {
+          "events": 8,
+          "first_at": "2026-11-27 15:00:00+00:00",
+          "last_at": "2026-11-27 22:00:00+00:00",
+          "profile_id": "xau_calibrated",
+          "quality_flags": 0,
+          "version_mismatches": 0
+        }
+      ],
+      "run": {
+        "config_hashes": "{\"xau_calibrated\": \"5720d6bd44a9276bf19c7e5ae4a533453be72c8a8a3c97199aec5cd0bfb7bbb7\"}",
+        "git_commit": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+        "git_sha": "d402ad0c06a5c501277d1f03d6c8b172768ac2b3",
+        "instance_id": "mtcps_xau_calibrated_shadow",
+        "run_id": "xau-calibrated-shadow-20261127142051-e9663e8424bec4da",
+        "started_at": "2026-11-27 14:20:51.223683+00:00"
+      }
+    }
+  ],
+  "observed_at": 1795820955.3709364,
+  "read_only": true
+}
