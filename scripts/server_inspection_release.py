@@ -306,7 +306,13 @@ class Release:
         expected_host = copy.deepcopy(body['HostConfig'])
         if active:
             expected_host['RestartPolicy'] = old['HostConfig']['RestartPolicy']
-        require(current['HostConfig'] == expected_host and mount_signature(current) == mount_signature(old), 'candidate host or mount drift')
+        actual_host = copy.deepcopy(current['HostConfig'])
+        # Docker create reports false, while restart-policy update may return
+        # null for the same default. Preserve true and every other host field.
+        for host in (expected_host, actual_host):
+            if 'OomKillDisable' in host and host['OomKillDisable'] is None:
+                host['OomKillDisable'] = False
+        require(actual_host == expected_host and mount_signature(current) == mount_signature(old), 'candidate host or mount drift')
         require(set(current['NetworkSettings']['Networks']) == set(old['NetworkSettings']['Networks']), 'candidate network drift')
         for name, value in network_config(old).items():
             require(set(value['Aliases']) <= set(network_config(current)[name]['Aliases']), 'candidate network alias drift')

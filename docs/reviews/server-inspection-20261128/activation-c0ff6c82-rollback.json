@@ -1,0 +1,43 @@
+{
+  "activation": {
+    "rollback_failures": [],
+    "source": "c0ff6c822fcd338ed2425e8db3beb25247cd8a7a",
+    "status": "failed",
+    "targets": [
+      {
+        "name": "ai-tuner",
+        "new_id": "fe0d0cb84f87b4fc6c8a009c62270072258378270e2cb53906e620a1124cf0e1",
+        "old_id": "70564e814edbbb466f2d773108ffe1732ebd2b208ae0caad11da241d409d3028",
+        "phase": "stopping"
+      }
+    ]
+  },
+  "report_probe": {
+    "database_snapshot_coherent": true,
+    "rss_kib": 117276,
+    "source_error_code": null,
+    "source_error_type": null,
+    "status": "PENDING"
+  },
+  "candidates": [
+    {
+      "id": "fe0d0cb84f87b4fc6c8a009c62270072258378270e2cb53906e620a1124cf0e1",
+      "name": "/ai-tuner-inspection-failed-c0ff6c82",
+      "image": "sha256:418a164b9b5c1bd8dfb48e0d7bccec94f0613ca1399971955ede3b92ddf9f437",
+      "state": "exited",
+      "exit": 0,
+      "oom": false,
+      "source": "c0ff6c822fcd338ed2425e8db3beb25247cd8a7a"
+    },
+    {
+      "id": "e8da26bada0f184873c31a7187c9db55c08144ed3dc777573597d2cd4f36ac32",
+      "name": "/trading_system-hrs-acceptance-inspection-ready-c0ff6c82",
+      "image": "sha256:c4a4444353df4d512e0bf4f708bc943fb935f88cf3013be701e136c96bbf7d00",
+      "state": "created",
+      "exit": 0,
+      "oom": false,
+      "source": "c0ff6c822fcd338ed2425e8db3beb25247cd8a7a"
+    }
+  ],
+  "protected_unchanged": true
+}

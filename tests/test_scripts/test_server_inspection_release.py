@@ -232,3 +232,22 @@ def test_new_branch_workflow_can_build_without_installing_it_on_main():
     doc=yaml.safe_load((ROOT/'.github/workflows/server-inspection-release.yml').read_text())
     triggers=doc.get('on',doc.get(True))
     assert triggers['push']['branches']==['codex/server-inspection-fix-20261128']
+
+
+def test_active_clone_accepts_docker_update_null_oom_default_only():
+    row=plan()['targets'][1];previous=old(row)
+    body=release.clone_body(previous,row,IMAGE,SHA)
+    current=copy.deepcopy(previous)
+    current['Config']={k:v for k,v in body.items() if k not in ('HostConfig','NetworkingConfig')}
+    current['HostConfig']=copy.deepcopy(body['HostConfig'])
+    current['HostConfig']['RestartPolicy']=previous['HostConfig']['RestartPolicy']
+    # Production Docker returns null after updating only the restart policy.
+    current['HostConfig']['OomKillDisable']=None
+    before=copy.deepcopy(current)
+    r=release.Release.__new__(release.Release)
+    r.verify_clone(previous,current,body,active=True)
+    assert current==before
+    for key,value in [('OomKillDisable',True),('Memory',536870912),('ReadonlyRootfs',True)]:
+        changed=copy.deepcopy(current);changed['HostConfig'][key]=value
+        with pytest.raises(release.ReleaseError,match='host or mount drift'):
+            r.verify_clone(previous,changed,body,active=True)
